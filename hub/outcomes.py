@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from commontrace import experiment
+from unimem import experiment
 
 PROPORTION_METRICS: tuple[tuple[str, str, str], ...] = (
     ("resolution_rate", "resolved", "up"),
@@ -29,7 +29,7 @@ OBSERVATIONAL_CAVEAT = (
     "upgrade, a shift in task mix, the team getting better -- is confounded "
     "with this product's contribution and cannot be separated from it here. "
     "For a claim that survives 'what else changed?', use the randomized "
-    "holdout (commontrace/experiment.py): it withholds lessons at random, so "
+    "holdout (unimem/experiment.py): it withholds lessons at random, so "
     "the arms differ only by the treatment."
 )
 
@@ -45,7 +45,7 @@ def _is_bool(value: object) -> bool:
 
 
 def _is_number(value: object) -> bool:
-    from commontrace.validate import finite_number
+    from unimem.validate import finite_number
 
     return finite_number(value)
 
@@ -242,8 +242,8 @@ def headline(rows: list[dict], n_baseline: int) -> str:
         return (
             "No baseline window recorded, so there is nothing to compare against. "
             "Capture traces with `outcome.baseline: true` during a period before "
-            "lessons are being injected (`commontrace capture --baseline`) and push "
-            "them with `commontrace sync --push-traces` -- captured traces sit in "
+            "lessons are being injected (`unimem capture --baseline`) and push "
+            "them with `unimem sync --push-traces` -- captured traces sit in "
             "the local store until that push, and fleet_outcomes only ever reads "
             "what has actually reached the Hub -- or run a randomized holdout "
             "instead, which needs no baseline window at all."

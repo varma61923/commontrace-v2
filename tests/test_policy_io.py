@@ -6,9 +6,9 @@ from copy import deepcopy
 
 import pytest
 
-from commontrace import frontier_protocol as fp
-from commontrace import memory_authority
-from commontrace import policy_io as io
+from unimem import frontier_protocol as fp
+from unimem import memory_authority
+from unimem import policy_io as io
 from tests import test_skill_foundry
 from tests.test_policy_proof import example
 
@@ -118,7 +118,7 @@ def test_concurrent_same_generation_activation_has_exactly_one_winner(tmp_path, 
 
 def test_cedar_proposal_runs_actual_sdk_analysis_before_certification(tmp_path, clock):
     pytest.importorskip("cedarpy", reason="optional native Cedar validation")
-    from commontrace import policy_cedar
+    from unimem import policy_cedar
 
     policy = configured_policy()
     exported = policy_cedar.export(policy)
@@ -130,7 +130,7 @@ def test_cedar_proposal_runs_actual_sdk_analysis_before_certification(tmp_path, 
 def test_cli_policy_review_and_activation_round_trip(tmp_path, clock, capsys):
     import json
 
-    from commontrace import cli
+    from unimem import cli
 
     def invoke(operation, body):
         assert cli.main(["prove", "policy", operation, json.dumps(body), "--dest", str(tmp_path)]) == 0

@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from commontrace import frontmatter, lesson_cache, mcp_server
+from unimem import frontmatter, lesson_cache, mcp_server
 
 pytest.importorskip("mcp")
 

@@ -6,7 +6,7 @@ import weakref
 
 import pytest
 
-from commontrace import lesson_cache, retrieval
+from unimem import lesson_cache, retrieval
 
 
 def source(label="store", n=50):
@@ -82,6 +82,6 @@ def test_unique_query_workloads_can_disable_result_retention(monkeypatch):
     retrieval._QUERY_CACHE.clear()
     assert retrieval.rank_lessons("retry", rows, term_cache=terms, cache_results=False) == expected
     assert retrieval._QUERY_CACHE.stats()["entries"] == 0
-    monkeypatch.setenv("COMMONTRACE_QUERY_CACHE", "0")
+    monkeypatch.setenv("UNIMEM_QUERY_CACHE", "0")
     assert retrieval.rank_lessons("retry", rows, term_cache=terms) == expected
     assert retrieval._QUERY_CACHE.stats()["entries"] == 0

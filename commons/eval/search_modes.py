@@ -10,11 +10,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from commontrace import overlap, retrieval  # noqa: E402
+from unimem import overlap, retrieval  # noqa: E402
 from hub import commons as hub_commons  # noqa: E402
 
-CORPUS = Path(os.environ.get("COMMONTRACE_EVAL_CORPUS", "corpus.jsonl"))  # bring your own corpus
-PROBES = Path(os.environ.get("COMMONTRACE_EVAL_PROBES", "probes.jsonl"))  # bring your own probes
+CORPUS = Path(os.environ.get("UNIMEM_EVAL_CORPUS", "corpus.jsonl"))  # bring your own corpus
+PROBES = Path(os.environ.get("UNIMEM_EVAL_PROBES", "probes.jsonl"))  # bring your own probes
 
 KS = (1, 3, 5, 10)
 

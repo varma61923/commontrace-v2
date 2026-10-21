@@ -187,7 +187,7 @@
             "type": "array"
           },
           "token": {
-            "description": "shown once; store it as COMMONTRACE_AGENT_TOKEN",
+            "description": "shown once; store it as UNIMEM_AGENT_TOKEN",
             "type": "string"
           }
         },
@@ -2023,7 +2023,7 @@
       "name": "GNU Affero General Public License v3.0 only",
       "url": "https://www.gnu.org/licenses/agpl-3.0.html"
     },
-    "title": "CommonTrace gateway",
+    "title": "UniMem gateway",
     "version": "1"
   },
   "openapi": "3.0.3",
@@ -3432,7 +3432,7 @@
             "bearer": []
           }
         ],
-        "summary": "Run one store-scoped CommonTrace CLI command.",
+        "summary": "Run one store-scoped UniMem CLI command.",
         "tags": [
           "Console"
         ]

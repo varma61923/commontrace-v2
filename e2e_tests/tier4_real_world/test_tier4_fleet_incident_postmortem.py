@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 
-from commontrace import frontmatter
+from unimem import frontmatter
 from e2e_tests.harness.cli_runner import run_cli
 
 

@@ -8,7 +8,7 @@ from dataclasses import replace
 import pytest
 from sqlalchemy import select
 
-from commontrace.memory_record import MemoryRecord
+from unimem.memory_record import MemoryRecord
 from hub import auth, scopes
 from hub.db import session_scope
 from hub.memory_records import PostgresJournal

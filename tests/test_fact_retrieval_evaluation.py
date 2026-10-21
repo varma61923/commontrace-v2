@@ -26,7 +26,7 @@ from benchmarks.fact_retrieval import (
     summarize,
     validate_case,
 )
-from commontrace import hierarchical
+from unimem import hierarchical
 
 
 def populate(root: str, case: Case) -> dict[str, str]:

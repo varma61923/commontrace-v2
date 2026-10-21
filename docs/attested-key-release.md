@@ -17,7 +17,7 @@ the canonical profile hash. Revocation appends a signed monotone revocation
 entry; revoked measurements cannot be re-enabled under the same identifier.
 `POST /v1/attestation/measurements-list` returns the tenant's enrollment and
 log receipts. Memory measurement enrollment is separate from the local store's
-operator-only `commontrace prove measurements register|list` interface.
+operator-only `unimem prove measurements register|list` interface.
 
 An AMD SEV-SNP profile pins the Azure Attestation `sevsnpvm` claim, 48-byte
 launch measurement, boot-loader SVN, TEE SVN, microcode SVN and SNP firmware
@@ -37,7 +37,7 @@ deployment-owned absolute `HUB_ATTESTATION_CONFIG` JSON file, mode 0600 or 0640,
 plus the native NVIDIA `nvattest` absolute binary and SHA-256 when configured.
 The file may also map tenant IDs to base64 KMS ciphertext and key IDs. It never
 contains plaintext data keys. `hub.kms.TenantKeyProvider` sends KMS the exact
-context `{purpose: commontrace-attested-tenant-key-v1, tenant: TENANT_ID}`;
+context `{purpose: unimem-attested-tenant-key-v1, tenant: TENANT_ID}`;
 provision ciphertext with that context and a restrictive KMS IAM policy.
 These tenant release keys are distinct from the Hub's general at-rest key.
 

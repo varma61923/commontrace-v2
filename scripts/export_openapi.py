@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # Export the checkout this script lives in, not whichever copy is installed.
 sys.path.insert(0, str(ROOT))
 
-from commontrace.gateway import Gateway  # noqa: E402
+from unimem.gateway import Gateway  # noqa: E402
 
 
 def full_document() -> dict:

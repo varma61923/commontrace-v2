@@ -27,10 +27,10 @@ uvicorn = pytest.importorskip("uvicorn")
 from mcp import ClientSession  # noqa: E402
 from mcp.client.sse import sse_client  # noqa: E402
 
-from commontrace import gateway_tokens, mcp_server  # noqa: E402
-from commontrace.cli import main  # noqa: E402
-from commontrace.conversation.store import Store, db_path  # noqa: E402
-from commontrace.mcp_transport import build_http_app  # noqa: E402
+from unimem import gateway_tokens, mcp_server  # noqa: E402
+from unimem.cli import main  # noqa: E402
+from unimem.conversation.store import Store, db_path  # noqa: E402
+from unimem.mcp_transport import build_http_app  # noqa: E402
 
 
 @contextlib.contextmanager
@@ -115,15 +115,15 @@ def test_sdk_negotiation_tools_resources_and_correlated_progress(tmp_path: Path,
             async with connected(base, transport, token) as client:
                 initialized = await client.initialize()
                 info = getattr(initialized, "server_info", None) or initialized.serverInfo
-                assert info.name == "commontrace-local"
+                assert info.name == "unimem-local"
                 tools = await client.list_tools()
                 assert {tool.name for tool in tools.tools} == set(mcp_server.LOCAL_TOOLS)
                 assert all("ctx" not in (
                     getattr(tool, "input_schema", None) or tool.inputSchema
                 ).get("properties", {}) for tool in tools.tools)
                 resources = await client.list_resources()
-                assert "commontrace://profile" in {str(resource.uri) for resource in resources.resources}
-                profile = await client.read_resource("commontrace://profile")
+                assert "unimem://profile" in {str(resource.uri) for resource in resources.resources}
+                profile = await client.read_resource("unimem://profile")
                 assert profile.contents
                 progress: list[float] = []
 
@@ -206,9 +206,9 @@ def test_cli_network_transports_preserve_no_approval_policy(
         reservation.bind(("127.0.0.1", 0))
         port = reservation.getsockname()[1]
     base = f"http://127.0.0.1:{port}"
-    env = {**os.environ, "COMMONTRACE_MCP_WARM": "0", "COMMONTRACE_CONVERSATION_EMBEDDER": "none"}
+    env = {**os.environ, "UNIMEM_MCP_WARM": "0", "UNIMEM_CONVERSATION_EMBEDDER": "none"}
     process = subprocess.Popen([
-        sys.executable, "-m", "commontrace.cli", "serve", "--dest", str(tmp_path),
+        sys.executable, "-m", "unimem.cli", "serve", "--dest", str(tmp_path),
         "--transport", transport, "--port", str(port), "--no-approval",
     ], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:

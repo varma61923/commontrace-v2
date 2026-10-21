@@ -6,8 +6,8 @@ import os
 
 import pytest
 
-from commontrace import overlap
-from commontrace.commands import commons_cmd
+from unimem import overlap
+from unimem.commands import commons_cmd
 
 
 def _write_trace(root, name, title, context, tags, repeated_error):
@@ -87,7 +87,7 @@ class TestResolveHubWarnsOnCliApiKey:
         assert "--hub-api-key" in err
 
     def test_no_warning_when_key_comes_from_the_environment(self, capsys, monkeypatch):
-        monkeypatch.setenv("COMMONTRACE_HUB_API_KEY", "ct_live_from_env")
+        monkeypatch.setenv("UNIMEM_HUB_API_KEY", "ct_live_from_env")
         commons_cmd._resolve_hub(self._args(hub_api_key=None))
         err = capsys.readouterr().err
         assert "WARN" not in err
@@ -359,7 +359,7 @@ class TestSignFromAnExistingExport:
                      "Duplicate charge,webhook redelivered after a timeout\n")
         return p
 
-    def test_signs_without_any_commontrace_store(self, tmp_path, capsys):
+    def test_signs_without_any_unimem_store(self, tmp_path, capsys):
         out = os.path.join(str(tmp_path), "sig.json")
         rc = commons_cmd.run_sign(argparse.Namespace(
             out=out, from_file=self._export(tmp_path), dest=str(tmp_path),

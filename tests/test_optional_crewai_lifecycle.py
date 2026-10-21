@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from commontrace.client import MemoryClient
+from unimem.client import MemoryClient
 
 
 def test_crewai_kickoff_entry_points_with_callbacks(monkeypatch, tmp_path):
@@ -21,7 +21,7 @@ def test_crewai_kickoff_entry_points_with_callbacks(monkeypatch, tmp_path):
     from crewai.llms.base_llm import BaseLLM
     from pydantic import PrivateAttr
 
-    from commontrace.framework_middleware import Middleware
+    from unimem.framework_middleware import Middleware
 
     class ScriptedLLM(BaseLLM):
         _calls: list[tuple[Any, ...]] = PrivateAttr(default_factory=list)
@@ -83,7 +83,7 @@ def test_crewai_kickoff_entry_points_with_callbacks(monkeypatch, tmp_path):
             context={"tenant": "acme", "user": "alice"},
         )
         middleware = Middleware(memory, session_id)
-        llm = ScriptedLLM(model="commontrace-test")
+        llm = ScriptedLLM(model="unimem-test")
         agent = Agent(
             role="release auditor",
             goal="Read the supplied evidence and answer",
@@ -94,7 +94,7 @@ def test_crewai_kickoff_entry_points_with_callbacks(monkeypatch, tmp_path):
             verbose=False,
         )
         task = Task(
-            description="Use the CommonTrace evidence {commontrace_memory}. Task: {task}",
+            description="Use the UniMem evidence {unimem_memory}. Task: {task}",
             expected_output="One sentence.",
             agent=agent,
         )

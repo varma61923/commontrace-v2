@@ -5,7 +5,7 @@ import random
 
 import pytest
 
-from commontrace import sycophancy
+from unimem import sycophancy
 
 
 def traffic(rng, effects, *, n=800, propensity=.7):

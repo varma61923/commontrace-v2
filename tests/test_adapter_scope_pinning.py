@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from commontrace.memory_adapters import Mem0Adapter
+from unimem.memory_adapters import Mem0Adapter
 
 
 @pytest.mark.parametrize("key", ["user_id", "org_id", "tenant_id", "agent_id", "session_id", "run_id", "filters"])

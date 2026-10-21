@@ -1,4 +1,4 @@
-# CommonTrace Hub server — not packaged/distributed via pyproject.toml
+# UniMem Hub server — not packaged/distributed via pyproject.toml
 # (the Hub is a service you deploy from a checkout, not a pip-installed
 # library). Install with: pip install -r hub/requirements.txt
 #

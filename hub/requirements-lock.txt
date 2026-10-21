@@ -12,7 +12,7 @@
 #
 # That is not a theoretical gap: `mcp==2.3.0` requires `httpx2` (a distinct
 # package from the `httpx` this Hub's own code uses directly in
-# hub/smoke.py / commontrace/hub_client.py -- both are legitimate, official
+# hub/smoke.py / unimem/hub_client.py -- both are legitimate, official
 # packages from the same original authors, not a typosquat) and
 # `starlette>=0.27`. Neither is pinned anywhere in hub/requirements.txt, so
 # an unconstrained install resolves whatever `mcp` currently allows -- on

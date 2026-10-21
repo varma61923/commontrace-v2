@@ -13,7 +13,7 @@ as its own cluster (so missing a mode and merging two modes both cost).
 The target is ARI >= 0.8. The default similarity was chosen on seeds 100-104 and this reports seeds 0-19,
 which were not used to choose it. The wording is synthetic: it checks
 that the clustering is not brittle to paraphrase and boilerplate, not that it generalises to your
-traces. `commontrace signals list` on your own store is the real check.
+traces. `unimem signals list` on your own store is the real check.
 """
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ import sys
 import tempfile
 from collections import Counter
 
-from commontrace import failure_signals, frontmatter, paths, templates
+from unimem import failure_signals, frontmatter, paths, templates
 
 TARGET = 0.8
 TRACES_PER_MODE = 12
@@ -209,7 +209,7 @@ def _write(root: str, rows: list[dict]) -> None:
 
 def score_seed(seed: int, **cluster_kwargs) -> dict:
     rows = generate(seed)
-    with tempfile.TemporaryDirectory(prefix="commontrace-ari-") as root:
+    with tempfile.TemporaryDirectory(prefix="unimem-ari-") as root:
         _write(root, rows)
         signals, _ = failure_signals.build_signals(root, **cluster_kwargs)
     assigned = {tid: i for i, s in enumerate(signals) for tid in s.trace_ids}

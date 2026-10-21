@@ -3,9 +3,9 @@ on:
   workflow_dispatch:
   push:
     branches: ['main']
-    paths: ['commontrace/**', 'hub/**', 'scripts/graphify_audit.py', '.github/workflows/graphify.yml']
+    paths: ['unimem/**', 'hub/**', 'scripts/graphify_audit.py', '.github/workflows/graphify.yml']
   pull_request:
-    paths: ['commontrace/**', 'hub/**', 'scripts/graphify_audit.py', '.github/workflows/graphify.yml']
+    paths: ['unimem/**', 'hub/**', 'scripts/graphify_audit.py', '.github/workflows/graphify.yml']
 permissions:
   contents: read
 jobs:

@@ -13,8 +13,8 @@ from contextlib import contextmanager
 
 import pytest
 
-from commontrace.hook_kit import AGENTS, HookKit
-from commontrace.memory_journal import Journal
+from unimem.hook_kit import AGENTS, HookKit
+from unimem.memory_journal import Journal
 from tests.test_hook_service import functional_command
 
 pytestmark = pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="Unix socket transport")

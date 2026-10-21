@@ -5,11 +5,11 @@ import json
 
 import pytest
 
-from commontrace import hierarchical, providers, recall, reranking
-from commontrace.conversation import Options, Store
-from commontrace.conversation import recall as conversation_recall
-from commontrace.reranking import Hit, TextReranker
-from commontrace.search_recipes import search
+from unimem import hierarchical, providers, recall, reranking
+from unimem.conversation import Options, Store
+from unimem.conversation import recall as conversation_recall
+from unimem.reranking import Hit, TextReranker
+from unimem.search_recipes import search
 from tests.test_multichannel_recall import store  # noqa: F401 - fixture
 
 FAKE = "fake-text-for-test"
@@ -130,7 +130,7 @@ def test_recall_rejects_unknown_rerankers_and_reports_unavailable_ones(store, mo
         recall.recall(store, "postgres", reranker="nope")
     with pytest.raises(ValueError, match="rerank_blend"):
         recall.recall(store, "postgres", reranker=FAKE, rerank_blend=2)
-    from commontrace import rerank_arm
+    from unimem import rerank_arm
 
     monkeypatch.setattr(rerank_arm, "available", lambda: False)
     result = recall.recall(store, "postgres failover", reranker="bge-reranker-v2-m3")

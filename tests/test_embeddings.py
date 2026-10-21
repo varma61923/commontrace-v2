@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from commontrace import embeddings
+from unimem import embeddings
 
 
 class _Recorder:
@@ -126,9 +126,9 @@ def test_short_replies_bad_vectors_and_missing_keys_fail_clearly(monkeypatch):
 
 
 def test_offline_mode_refuses_hosted_providers(monkeypatch):
-    from commontrace import llm
+    from unimem import llm
 
-    monkeypatch.setenv("COMMONTRACE_OFFLINE", "1")
+    monkeypatch.setenv("UNIMEM_OFFLINE", "1")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     with pytest.raises(llm.LLMUnavailable, match="offline"):
         embeddings.provider("openai:text-embedding-3-small").embed(["a"], query=False)
@@ -178,7 +178,7 @@ def test_fastembed_cache_miss_is_cache_only_and_does_not_touch_network(monkeypat
             raise FileNotFoundError("model missing from cache")
 
     monkeypatch.setitem(sys.modules, "fastembed", SimpleNamespace(TextEmbedding=CacheOnlyMiss))
-    monkeypatch.setenv("COMMONTRACE_OFFLINE", "1")
+    monkeypatch.setenv("UNIMEM_OFFLINE", "1")
     provider = embeddings.provider("fastembed:BAAI/bge-small-en-v1.5")
 
     with pytest.raises(embeddings.EmbeddingError, match="not available in the local cache"):
@@ -221,7 +221,7 @@ def test_fastembed_projection_identity_binds_model_revision_version_and_dimensio
 
 
 def test_fastembed_conversation_availability_needs_numpy_and_fastembed(monkeypatch):
-    from commontrace.conversation import embed
+    from unimem.conversation import embed
 
     found = {"numpy": object(), "fastembed": object()}
     monkeypatch.setattr(embed.importlib.util, "find_spec", lambda name: found.get(name))
@@ -248,7 +248,7 @@ def test_custom_providers_register_once():
 
 def test_conversation_vectors_from_a_hosted_provider_are_cached_by_content(tmp_path, monkeypatch):
     pytest.importorskip("numpy")
-    from commontrace.conversation import embed
+    from unimem.conversation import embed
 
     calls = []
 

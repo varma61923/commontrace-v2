@@ -4,11 +4,11 @@ import json
 
 import pytest
 
-pytest.importorskip("mcp", reason="`commontrace serve` needs the MCP SDK: pip install 'commontrace[serve]'")
+pytest.importorskip("mcp", reason="`unimem serve` needs the MCP SDK: pip install 'unimem[serve]'")
 
-from commontrace import holdout_io, integrity, mcp_server, rerank_arm, retrieval_io, semantic_arm  # noqa: E402
-from commontrace.cli import main  # noqa: E402
-from commontrace.commands import query_cmd  # noqa: E402
+from unimem import holdout_io, integrity, mcp_server, rerank_arm, retrieval_io, semantic_arm  # noqa: E402
+from unimem.cli import main  # noqa: E402
+from unimem.commands import query_cmd  # noqa: E402
 from tests import test_mcp_fusion as fusion_tests  # noqa: E402
 from tests.test_hybrid_retrieval import _args  # noqa: E402
 from tests.test_mcp_fusion import SEMANTIC, TASK, _logged, _slugs, _stub_both  # noqa: E402
@@ -166,7 +166,7 @@ def test_semantic_ranking_stub_is_the_fusion_one():
 
 
 def test_withdrawal_names_only_what_the_reranked_page_would_have_shown(store, ce, monkeypatch):
-    from commontrace import evidence
+    from unimem import evidence
 
     _stub_both(monkeypatch)
     _rerank_store(store)
@@ -369,7 +369,7 @@ def test_gated_fusion_without_a_reranker_is_lexical_and_says_so(store, monkeypat
 def test_a_new_store_fuses_gated_by_default_where_both_models_are_installed(
     tmp_path, no_override, monkeypatch,
 ):
-    from commontrace import semantic_arm
+    from unimem import semantic_arm
 
     monkeypatch.delenv(retrieval_io.DEFAULT_FUSION_ENV, raising=False)
     monkeypatch.setattr(rerank_arm, "available", lambda: True)

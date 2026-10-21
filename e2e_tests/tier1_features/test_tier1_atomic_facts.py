@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 
-from commontrace import hierarchical
+from unimem import hierarchical
 from e2e_tests.harness.cli_runner import run_cli
 
 

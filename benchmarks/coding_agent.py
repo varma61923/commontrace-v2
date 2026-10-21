@@ -6,8 +6,8 @@ import json
 import os
 import sys
 
-from commontrace import llm
-from commontrace.llm_runtime import purpose
+from unimem import llm
+from unimem.llm_runtime import purpose
 
 
 def main():

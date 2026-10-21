@@ -1,6 +1,6 @@
 import pytest
 
-from commontrace.context_template import render_slots
+from unimem.context_template import render_slots
 
 
 def test_bounded_slots_escape_and_replace_delta():

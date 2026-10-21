@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from commontrace import holdout_io, recovery
+from unimem import holdout_io, recovery
 from tests.test_safety import protected_fact
 
 CONTEXT = {"site": "warehouse", "robot": "r7", "embodiment": "parallel-jaw", "environment": "sim"}

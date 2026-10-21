@@ -59,11 +59,11 @@ success cannot grant instruction authority. Configure the experiment and collect
 matched pilot traffic for the `unimem-skill` scorer before enabling the harm gate.
 
 ```sh
-commontrace skill induce ./induction.json --dest ./store
-commontrace skill screen ./screen.json --dest ./store
-commontrace skill trial ./trial.json --dest ./store
-commontrace skill status ./skill-id.json --dest ./store
-commontrace skill publish ./skill-id.json --dest ./store
+unimem skill induce ./induction.json --dest ./store
+unimem skill screen ./screen.json --dest ./store
+unimem skill trial ./trial.json --dest ./store
+unimem skill status ./skill-id.json --dest ./store
+unimem skill publish ./skill-id.json --dest ./store
 ```
 
 `induction.json` contains `name`, `description`, `trace_ids` and optional scope
@@ -79,7 +79,7 @@ The local MCP tool `skill_catalog(occasion, context, segment)` returns the exact
 catalog to deliver. Honor it and record that occasion's outcome with the existing
 outcome API. `skill_evidence(identity, context)` verifies current source,
 certificate, calibration, expiry and transparency state before returning a card.
-The Python API is in `commontrace.skill_foundry` and `commontrace.skill_io`.
+The Python API is in `unimem.skill_foundry` and `unimem.skill_io`.
 
 Publication writes `store/skills/<name>/SKILL.md` with exactly the Agent Skills
 `name` and `description` frontmatter, plus `EVIDENCE.json`. The signed card carries

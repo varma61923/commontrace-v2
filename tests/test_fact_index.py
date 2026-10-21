@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from commontrace import fact_index, hierarchical
+from unimem import fact_index, hierarchical
 
 
 def corpus(root, size=200):

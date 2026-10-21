@@ -3,8 +3,8 @@ import json
 
 import pytest
 
-from commontrace.history_import import import_history
-from commontrace.memory_journal import Journal
+from unimem.history_import import import_history
+from unimem.memory_journal import Journal
 
 
 def test_authorship_code_verification_and_coverage(tmp_path):
@@ -33,7 +33,7 @@ def test_authorship_code_verification_and_coverage(tmp_path):
 
 
 def test_actionable_code_grounded_import_seeds_only_quarantined_candidates(tmp_path):
-    from commontrace.session_learning import shadow
+    from unimem.session_learning import shadow
 
     (tmp_path / "parser.py").write_text("def parse():\n    return 1\n")
     source = tmp_path / "history.json"
@@ -67,7 +67,7 @@ def test_actionable_code_grounded_import_seeds_only_quarantined_candidates(tmp_p
 
 
 def test_verification_requires_all_quoted_symbols_and_rejects_foreign_paths(tmp_path):
-    from commontrace.history_import import verify_code
+    from unimem.history_import import verify_code
 
     (tmp_path / "parser.py").write_text("def parse():\n    return 1\n")
     assert not verify_code(str(tmp_path), "parser.py has `parse` and `missing_symbol`")
@@ -75,7 +75,7 @@ def test_verification_requires_all_quoted_symbols_and_rejects_foreign_paths(tmp_
 
 
 def test_backticked_source_path_is_a_citation_and_can_seed_a_verified_claim(tmp_path):
-    from commontrace.history_import import verify_code
+    from unimem.history_import import verify_code
 
     (tmp_path / "parser.py").write_text("def parse():\n    return 1\n")
     evidence = verify_code(str(tmp_path), "Use `parser.py` and verify `parse` before running tests.")

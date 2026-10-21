@@ -8,8 +8,8 @@ from datetime import datetime, timezone
 from sqlalchemy import DateTime, case, cast, select
 from starlette.responses import HTMLResponse, JSONResponse
 
-from commontrace import frontier_protocol as fp
-from commontrace import incident, origin
+from unimem import frontier_protocol as fp
+from unimem import incident, origin
 from hub import retention, transparency
 from hub.db import session_scope
 from hub.models import AuditLogEntry, HoldoutObservation, IncidentSnapshot, MemoryRecordEvent

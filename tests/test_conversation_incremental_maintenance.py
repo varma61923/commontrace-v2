@@ -3,8 +3,8 @@ import json
 
 import pytest
 
-from commontrace.conversation.extract import BATCH, extract
-from commontrace.conversation.store import Store, write_txn
+from unimem.conversation.extract import BATCH, extract
+from unimem.conversation.store import Store, write_txn
 
 
 def test_deletion_repairs_only_affected_owner_slots(tmp_path):
@@ -121,7 +121,7 @@ def test_purged_session_tail_rewinds_checkpoint_before_index_reuse(tmp_path):
 @pytest.mark.parametrize("operation", ["session", "purge"])
 @pytest.mark.parametrize("emit_memory", [False, True])
 def test_extraction_rejects_recycled_source_id_even_with_same_external_ref(tmp_path, operation, emit_memory):
-    from commontrace.conversation.store import ConversationError
+    from unimem.conversation.store import ConversationError
 
     with Store(str(tmp_path), "memory") as store:
         store.add("s", [{"id": "source-reference", "text": "Ana lives in London.", "expires": "2025-01-01"}],

@@ -5,7 +5,7 @@ from contextlib import contextmanager
 
 import pytest
 
-from commontrace import hierarchical, otel_memory, search_recipes, telemetry
+from unimem import hierarchical, otel_memory, search_recipes, telemetry
 
 
 class Tracer:
@@ -49,7 +49,7 @@ def test_invisible_memory_never_produces_a_span_or_count(tmp_path, monkeypatch):
         pass
     assert len(tracer.spans) == 1
     assert tracer.spans[0]["attributes"]["gen_ai.memory.query.text"] == "authorized question"
-    assert not any(k.startswith("commontrace.gen_ai") for k in tracer.spans[0]["attributes"])
+    assert not any(k.startswith("unimem.gen_ai") for k in tracer.spans[0]["attributes"])
 
 
 def test_missing_sdk_degrades_cleanly_and_causal_extensions_are_bounded(tmp_path, monkeypatch):
@@ -82,7 +82,7 @@ def test_pinned_fixture_batch_types_and_authenticated_writer(tmp_path):
     import json
     from pathlib import Path
 
-    from commontrace import memory_authority
+    from unimem import memory_authority
 
     fixture = json.loads((Path(__file__).parent / "fixtures" / "otel_memory_contract.json").read_text())
     root = str(tmp_path)
@@ -142,7 +142,7 @@ def test_disabled_wrapper_uses_only_its_cheap_flag(tmp_path, monkeypatch):
 
 
 def test_create_update_delete_use_real_operations_without_resurrecting_data(tmp_path, monkeypatch):
-    from commontrace import privacy_erasure
+    from unimem import privacy_erasure
 
     root = str(tmp_path)
     tracer = Tracer()
@@ -156,7 +156,7 @@ def test_create_update_delete_use_real_operations_without_resurrecting_data(tmp_
 
 
 def test_outcome_spans_use_canonical_arms_and_omit_invisible_memories(tmp_path, monkeypatch):
-    from commontrace import holdout_io
+    from unimem import holdout_io
 
     root = str(tmp_path)
     visible, _ = hierarchical.add_fact(root, "Check controlled release signatures.")

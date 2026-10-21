@@ -5,8 +5,8 @@ from dataclasses import replace
 
 import pytest
 
-from commontrace.conversation import Options, Store, recall
-from commontrace.conversation.context_selection import (
+from unimem.conversation import Options, Store, recall
+from unimem.conversation.context_selection import (
     MAX_CANDIDATES,
     MAX_FACETS,
     MAX_PASSAGE_CHARS,
@@ -14,7 +14,7 @@ from commontrace.conversation.context_selection import (
     Candidate,
     prioritize,
 )
-from commontrace.conversation.search import _excerpt
+from unimem.conversation.search import _excerpt
 
 
 def candidate(identity: int, body: str, cost: int = 20) -> Candidate:

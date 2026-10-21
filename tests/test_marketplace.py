@@ -6,7 +6,7 @@ import pytest
 
 pytest.importorskip("cryptography")
 
-from commontrace import frontmatter, holdout_io, lesson_io, marketplace, paths, templates  # noqa: E402
+from unimem import frontmatter, holdout_io, lesson_io, marketplace, paths, templates  # noqa: E402
 
 
 def _store(tmp_path, name):
@@ -137,7 +137,7 @@ def _call(gw, token, method, path, body=None):
 
 
 def test_gateway_catalog_accepts_only_verified_listings_and_installs_for_review(market):
-    from commontrace import gateway
+    from unimem import gateway
 
     token = "t" * 40
     gw = gateway.Gateway(market["buyer"], token=token, allow_approval=True)
@@ -157,7 +157,7 @@ def test_gateway_catalog_accepts_only_verified_listings_and_installs_for_review(
 
 
 def test_cli_round_trip(market, tmp_path, capsys):
-    from commontrace import cli
+    from unimem import cli
 
     listing_path = tmp_path / "listing.json"
     listing_path.write_text(json.dumps(market["listing"]))
@@ -178,7 +178,7 @@ def test_cli_round_trip(market, tmp_path, capsys):
 
 
 def test_a_signed_but_schema_invalid_lesson_is_refused(market, tmp_path):
-    from commontrace import market_listing, origin
+    from unimem import market_listing, origin
 
     pub = market["ids"]["pub"]
     record = json.loads(json.dumps(market["listing"]["record"]))
@@ -199,7 +199,7 @@ def _activate(root, slug):
 
 
 def test_settlement_pays_fees_and_shares_only_locally_proven_lift(market, capsys):
-    from commontrace import holdout_io, market_settlement
+    from unimem import holdout_io, market_settlement
 
     licence = {"id": "COMMERCIAL-1", "terms": "Per-install fee plus 20% of proven value.",
                "price": {"amount_usd": 12, "per": "install"}, "outcome_share": 0.2}
@@ -236,13 +236,13 @@ def test_settlement_pays_fees_and_shares_only_locally_proven_lift(market, capsys
 
 
 def cli_main_settle(root, period):
-    from commontrace import cli
+    from unimem import cli
 
     return cli.main(["market", "settle", "--period", period, "--value-per-occasion", "10", "--dest", root])
 
 
 def test_licences_reject_unknown_terms_and_oversized_shares():
-    from commontrace import market_listing
+    from unimem import market_listing
 
     with pytest.raises(market_listing.MarketError, match="unknown licence terms"):
         market_listing._licence({"id": "X", "terms": "t", "royalty": 1})

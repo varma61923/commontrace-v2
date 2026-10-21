@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from commontrace import integrity, survival
+from unimem import integrity, survival
 
 NOW = dt.datetime(2026, 9, 11, 12, 0, tzinfo=dt.timezone.utc)
 

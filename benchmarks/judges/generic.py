@@ -1,4 +1,4 @@
-# Generic judge reproducing CommonTrace's initial conversation benchmark judge.
+# Generic judge reproducing UniMem's initial conversation benchmark judge.
 # Reproduces JUDGE_PROMPT and grading logic from benchmarks/conversation_bench.py verbatim.
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ def score(response: str) -> float:
 
 
 class GenericJudge:
-    """Generic benchmark judge reproducing CommonTrace's baseline judge logic."""
+    """Generic benchmark judge reproducing UniMem's baseline judge logic."""
 
     name: str = "generic"
     default_model: str = DEFAULT_MODEL
@@ -76,7 +76,7 @@ class GenericJudge:
         prompt = self.format_prompt(question=q_text, gold=gold_text, answer=answer)
 
         if complete_fn is None:
-            from commontrace import llm
+            from unimem import llm
 
             cfg = llm.Config(
                 provider="anthropic",

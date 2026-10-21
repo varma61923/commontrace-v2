@@ -4,7 +4,7 @@ import datetime
 
 import pytest
 
-from commontrace import decay, experiment, integrity, value
+from unimem import decay, experiment, integrity, value
 
 NOW = datetime.datetime(2026, 9, 12, tzinfo=datetime.timezone.utc)
 HORIZON = 180

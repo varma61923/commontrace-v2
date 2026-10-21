@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import inspect
 
-from commontrace import graph
+from unimem import graph
 
 
 def _build_chain_graph(root: str):

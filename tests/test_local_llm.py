@@ -8,16 +8,16 @@ from benchmarks.cache import CostGuard
 from benchmarks.judges import ExactJudge, get_judge
 from benchmarks.judges.exact import token_f1
 from benchmarks.requests import bounded_complete
-from commontrace import llm, local_llm
+from unimem import llm, local_llm
 
 
 def test_local_provider_needs_no_key_and_defaults_the_model(monkeypatch):
-    monkeypatch.setenv("COMMONTRACE_LLM_PROVIDER", "local")
-    monkeypatch.delenv("COMMONTRACE_LLM_API_KEY", raising=False)
-    monkeypatch.delenv("COMMONTRACE_LLM_MODEL", raising=False)
+    monkeypatch.setenv("UNIMEM_LLM_PROVIDER", "local")
+    monkeypatch.delenv("UNIMEM_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("UNIMEM_LLM_MODEL", raising=False)
     cfg = llm.load_config()
     assert cfg.provider == "local" and cfg.model == local_llm.DEFAULT_MODEL and cfg.api_key == ""
-    monkeypatch.setenv("COMMONTRACE_LLM_MODEL", "org/tiny")
+    monkeypatch.setenv("UNIMEM_LLM_MODEL", "org/tiny")
     assert llm.load_config().model == "org/tiny"
 
 
@@ -29,7 +29,7 @@ def test_complete_dispatches_to_the_in_process_model(monkeypatch):
         return "Paris", {"input_tokens": 7, "output_tokens": 1}
 
     monkeypatch.setattr(local_llm, "complete", fake)
-    monkeypatch.delenv("COMMONTRACE_LLM_CACHE", raising=False)
+    monkeypatch.delenv("UNIMEM_LLM_CACHE", raising=False)
     text, usage = llm.complete("capital of France?", llm.Config(provider="local", model="org/tiny", api_key=""))
     assert text == "Paris" and usage["output_tokens"] == 1 and seen["model"] == "org/tiny"
 
@@ -109,7 +109,7 @@ def _fake_runtime(monkeypatch, calls):
 def test_greedy_generation_counts_tokens_and_offline_loads_cache_only(monkeypatch):
     calls = []
     _fake_runtime(monkeypatch, calls)
-    monkeypatch.setenv("COMMONTRACE_OFFLINE", "1")
+    monkeypatch.setenv("UNIMEM_OFFLINE", "1")
     cfg = llm.Config(provider="local", model="org/tiny", api_key="")
     text, usage = local_llm.complete(cfg, "hi", max_new_tokens=8)
     assert text == "answer" and usage == {"input_tokens": 3, "output_tokens": 2}
@@ -123,7 +123,7 @@ def test_greedy_generation_counts_tokens_and_offline_loads_cache_only(monkeypatc
 def test_a_pinned_revision_reaches_both_loaders(monkeypatch):
     calls = []
     _fake_runtime(monkeypatch, calls)
-    monkeypatch.setenv("COMMONTRACE_LOCAL_LLM_REVISION", "0123abcd")
+    monkeypatch.setenv("UNIMEM_LOCAL_LLM_REVISION", "0123abcd")
     local_llm.complete(llm.Config(provider="local", model="org/tiny", api_key=""), "hi", max_new_tokens=4)
     assert [c for c in calls if c[0] == "revision"] == [("revision", "0123abcd")] * 2
 

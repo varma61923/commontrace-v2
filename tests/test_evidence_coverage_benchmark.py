@@ -4,7 +4,7 @@ import pytest
 
 from benchmarks.evidence_coverage import reference, run
 from benchmarks.task_suite import TASKS
-from commontrace.conversation.coverage import assess
+from unimem.conversation.coverage import assess
 
 
 @pytest.mark.parametrize("question,evidence,labels", [

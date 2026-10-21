@@ -1,7 +1,7 @@
 import pytest
 
-from commontrace import reliability as rel
-from commontrace.reliability import Evidence
+from unimem import reliability as rel
+from unimem.reliability import Evidence
 
 
 class TestWilsonLowerBound:
@@ -159,19 +159,19 @@ class TestRender:
     def test_says_out_loud_that_lift_is_correlational(self):
         out = rel.render([], [], 5)
         assert "correlational, not causal" in out
-        assert "commontrace experiment" in out
+        assert "unimem experiment" in out
 
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
-    monkeypatch.delenv("COMMONTRACE_ROOT", raising=False)
+    monkeypatch.delenv("UNIMEM_ROOT", raising=False)
     monkeypatch.chdir(tmp_path)
     return tmp_path
 
 
 class TestReliabilityCLI:
     def test_no_evidence_explains_what_is_missing_rather_than_failing(self, store, capsys):
-        from commontrace.cli import main
+        from unimem.cli import main
 
         main(["init", "--agent-type", "code", "--dest", str(store)])
         capsys.readouterr()
@@ -181,8 +181,8 @@ class TestReliabilityCLI:
     def test_holdout_only_evidence_is_reported_distinctly_from_no_evidence_at_all(
         self, store, capsys,
     ):
-        from commontrace import holdout_io
-        from commontrace.cli import main
+        from unimem import holdout_io
+        from unimem.cli import main
 
         main(["init", "--agent-type", "code", "--dest", str(store)])
         holdout_io.assign_and_log(
@@ -197,8 +197,8 @@ class TestReliabilityCLI:
     def test_uncaptured_retrievals_appear_alongside_scored_lessons(self, store, capsys):
         import yaml
 
-        from commontrace import holdout_io
-        from commontrace.cli import main
+        from unimem import holdout_io
+        from unimem.cli import main
 
         main(["init", "--agent-type", "code", "--dest", str(store)])
         eps = store / "memory" / "episodes"
@@ -221,8 +221,8 @@ class TestReliabilityCLI:
     def test_json_output_carries_uncaptured_retrievals(self, store, capsys):
         import json
 
-        from commontrace import holdout_io
-        from commontrace.cli import main
+        from unimem import holdout_io
+        from unimem.cli import main
 
         main(["init", "--agent-type", "code", "--dest", str(store)])
         eps = store / "memory" / "episodes"
@@ -244,7 +244,7 @@ class TestReliabilityCLI:
     def test_scores_lessons_from_episode_evidence(self, store, capsys):
         import yaml
 
-        from commontrace.cli import main
+        from unimem.cli import main
 
         main(["init", "--agent-type", "code", "--dest", str(store)])
         eps = store / "memory" / "episodes"
@@ -268,7 +268,7 @@ class TestReliabilityCLI:
     def test_strict_exits_nonzero_on_a_harmful_lesson(self, store, capsys):
         import yaml
 
-        from commontrace.cli import main
+        from unimem.cli import main
 
         main(["init", "--agent-type", "code", "--dest", str(store)])
         eps = store / "memory" / "episodes"

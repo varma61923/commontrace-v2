@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from commontrace import llm
-from commontrace import secrets_provider as secrets
+from unimem import llm
+from unimem import secrets_provider as secrets
 
 
 class Client:
@@ -86,8 +86,8 @@ def test_file_precedence_and_rotation_and_aws_opt_in(tmp_path, monkeypatch):
 def test_llm_config_uses_rotating_mounted_secret(tmp_path, monkeypatch):
     path = tmp_path / "key"
     path.write_text("first\n")
-    monkeypatch.setenv("COMMONTRACE_LLM_API_KEY_FILE", str(path))
-    monkeypatch.setenv("COMMONTRACE_LLM_PROVIDER", "anthropic")
+    monkeypatch.setenv("UNIMEM_LLM_API_KEY_FILE", str(path))
+    monkeypatch.setenv("UNIMEM_LLM_PROVIDER", "anthropic")
     assert llm.load_config().api_key == "first"
     path.write_text("next\n")
     assert llm.load_config().api_key == "next"
@@ -99,9 +99,9 @@ def test_secret_provider_is_an_extensible_structural_contract():
 
 
 def test_llm_secret_failure_is_classified_as_provider_unavailability(tmp_path, monkeypatch):
-    monkeypatch.setenv("COMMONTRACE_LLM_PROVIDER", "anthropic")
-    monkeypatch.setenv("COMMONTRACE_LLM_API_KEY_FILE", str(tmp_path / "missing"))
-    monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "stale-key-must-not-be-used")
+    monkeypatch.setenv("UNIMEM_LLM_PROVIDER", "anthropic")
+    monkeypatch.setenv("UNIMEM_LLM_API_KEY_FILE", str(tmp_path / "missing"))
+    monkeypatch.setenv("UNIMEM_LLM_API_KEY", "stale-key-must-not-be-used")
     with pytest.raises(llm.LLMUnavailable, match="API secret") as error:
         llm.load_config()
     assert "stale-key-must-not-be-used" not in str(error.value)

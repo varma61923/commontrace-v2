@@ -24,13 +24,13 @@ VERSION = "7.26.0"
 SHA256 = "1760050094997b9cc790cc1350be095f15da8c08a996b184d3eadc4ccda5e35e"
 GENERATORS = {"typescript": "typescript-fetch", "go": "go", "rust": "rust", "java": "java", "kotlin": "kotlin"}
 PROPERTIES = {
-    "typescript": "npmName=@commontrace/sdk,npmVersion=0.1.0,supportsES6=true,"
+    "typescript": "npmName=@unimem/sdk,npmVersion=0.1.0,supportsES6=true,"
     "prefixParameterInterfaces=true,licenseName=AGPL-3.0-only",
-    "go": "packageName=commontrace,packageVersion=0.1.0,generateInterfaces=true",
-    "rust": "packageName=commontrace-sdk,packageVersion=0.1.0,reqwestDefaultFeatures=rustls",
-    "java": "groupId=io.commontrace,artifactId=memory-sdk,artifactVersion=0.1.0,"
-    "apiPackage=io.commontrace.api,modelPackage=io.commontrace.model,dateLibrary=java8",
-    "kotlin": "packageName=io.commontrace,groupId=io.commontrace,artifactId=memory-sdk-kotlin,artifactVersion=0.1.0",
+    "go": "packageName=unimem,packageVersion=0.1.0,generateInterfaces=true",
+    "rust": "packageName=unimem-sdk,packageVersion=0.1.0,reqwestDefaultFeatures=rustls",
+    "java": "groupId=io.unimem,artifactId=memory-sdk,artifactVersion=0.1.0,"
+    "apiPackage=io.unimem.api,modelPackage=io.unimem.model,dateLibrary=java8",
+    "kotlin": "packageName=io.unimem,groupId=io.unimem,artifactId=memory-sdk-kotlin,artifactVersion=0.1.0",
 }
 
 
@@ -124,7 +124,7 @@ def generate(command: list[str], spec: Path, language: str, target: Path, *,
             "--git-user-id",
             "varma61923",
             "--git-repo-id",
-            "commontrace-v2",
+            "unimem-v2",
             "--additional-properties",
             PROPERTIES[language] if package_version is None else re.sub(
                 r"(npmVersion|packageVersion|artifactVersion)=[^,]+",
@@ -146,7 +146,7 @@ def normalize_kotlin_transport(target: Path) -> None:
     This bounded generation repair adds no SDK operations or handwritten client.
     Fail on template drift rather than changing unknown generated transport code.
     """
-    source = target / "src/main/kotlin/io/commontrace/infrastructure/ApiClient.kt"
+    source = target / "src/main/kotlin/io/unimem/infrastructure/ApiClient.kt"
     text = source.read_text(encoding="utf-8")
     expression = "val body = response.body ?: return null"
     if text.count(expression) != 1:
@@ -183,7 +183,7 @@ def main() -> int:
         if target.is_symlink() or (target.exists() and any(target.iterdir())):
             parser.error("generation requires a fresh output directory: " + str(target))
         if language == "kotlin":
-            with tempfile.TemporaryDirectory(prefix="commontrace-kotlin-openapi-") as directory:
+            with tempfile.TemporaryDirectory(prefix="unimem-kotlin-openapi-") as directory:
                 normalized = kotlin_compatible_spec(spec, Path(directory) / "openapi.json")
                 generate(command, normalized, language, target, package_version=args.package_version)
         else:

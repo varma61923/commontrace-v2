@@ -4,12 +4,12 @@ import os
 
 import pytest
 
-from commontrace import holdout_io, lesson_io, paths
+from unimem import holdout_io, lesson_io, paths
 
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
-    monkeypatch.delenv("COMMONTRACE_ROOT", raising=False)
+    monkeypatch.delenv("UNIMEM_ROOT", raising=False)
     monkeypatch.chdir(tmp_path)
     return tmp_path
 
@@ -76,7 +76,7 @@ class TestExcludeShownThroughTheCliQueryCommand:
         return argparse.Namespace(**base)
 
     def test_a_previously_shown_lesson_is_excluded_on_the_next_call(self, store, capsys):
-        from commontrace.commands import query_cmd
+        from unimem.commands import query_cmd
 
         _lesson(str(store), "shown", "refund policy for enterprise accounts")
         rc = query_cmd.run(self._args(
@@ -98,7 +98,7 @@ class TestExcludeShownThroughTheCliQueryCommand:
         assert slugs == {"not_yet"}
 
     def test_a_core_lesson_is_never_excluded_even_if_the_log_names_it(self, store, capsys):
-        from commontrace.commands import query_cmd
+        from unimem.commands import query_cmd
 
         _lesson(str(store), "always_on", "refund policy for enterprise accounts", core=True)
         _lesson(str(store), "matched", "refund policy for enterprise accounts")
@@ -116,7 +116,7 @@ class TestExcludeShownThroughTheCliQueryCommand:
         assert slugs == {"always_on"}
 
     def test_a_non_experiment_prior_call_leaves_nothing_to_exclude(self, store, capsys):
-        from commontrace.commands import query_cmd
+        from unimem.commands import query_cmd
 
         _lesson(str(store), "shown", "refund policy enterprise accounts")
         rc = query_cmd.run(self._args(
@@ -134,7 +134,7 @@ class TestExcludeShownThroughTheCliQueryCommand:
         assert "shown" in out
 
     def test_the_flag_is_a_no_op_when_not_given(self, store, capsys):
-        from commontrace.commands import query_cmd
+        from unimem.commands import query_cmd
 
         _lesson(str(store), "shown", "refund policy enterprise accounts")
         query_cmd.run(self._args(

@@ -6,7 +6,7 @@ import html
 import math
 from datetime import date, datetime, timezone
 
-from commontrace.ui_style import THEME_CSS
+from unimem.ui_style import THEME_CSS
 
 
 def h(value: object) -> str:

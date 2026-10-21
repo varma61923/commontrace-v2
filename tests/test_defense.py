@@ -1,6 +1,6 @@
 import pytest
 
-from commontrace.defense import (
+from unimem.defense import (
     DefenseAction,
     DefensePolicy,
     PolicyRule,

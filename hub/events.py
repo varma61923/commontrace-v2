@@ -15,7 +15,7 @@ from sqlalchemy import select
 from hub.encryption import NULL_CIPHER, EnvelopeCipher
 from hub.models import WebhookDelivery, WebhookEndpoint
 
-_SECRET_DOMAIN = "commontrace-webhook-secret-v1"
+_SECRET_DOMAIN = "unimem-webhook-secret-v1"
 _SIGNATURE_VERSION = "v1"
 
 REPLAY_TOLERANCE_SECONDS = 300
@@ -236,7 +236,7 @@ def derive_secret(signing_key: str, endpoint_id: str, key_version: int) -> str:
 
 
 def signature_header(secret: str, timestamp: int, body: str) -> str:
-    """The `X-CommonTrace-Signature` value for one delivery."""
+    """The `X-UniMem-Signature` value for one delivery."""
     signed = f"{timestamp}.{body}".encode("utf-8")
     digest = hmac.new(secret.encode("utf-8"), signed, hashlib.sha256).hexdigest()
     return f"t={timestamp},{_SIGNATURE_VERSION}={digest}"
@@ -392,9 +392,9 @@ async def deliver_pending(
         timestamp = int(moment.timestamp())
         headers = {
             "Content-Type": "application/json",
-            "X-CommonTrace-Event": delivery.event_type,
-            "X-CommonTrace-Event-Id": delivery.id,
-            "X-CommonTrace-Signature": signature_header(
+            "X-UniMem-Event": delivery.event_type,
+            "X-UniMem-Event-Id": delivery.id,
+            "X-UniMem-Signature": signature_header(
                 derive_secret(signing_key, endpoint.id, endpoint.key_version),
                 timestamp, body,
             ),

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from commontrace import fact_conflicts, hierarchical
+from unimem import fact_conflicts, hierarchical
 
 
 @pytest.mark.parametrize("payload", [
@@ -32,7 +32,7 @@ def test_typed_judgment_keeps_only_offered_ids_and_supports_legacy_replaces():
 
 def test_interrupted_or_malformed_queue_preserves_valid_pending_conflicts(tmp_path, monkeypatch):
     root = str(tmp_path)
-    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "off")
+    monkeypatch.setenv("UNIMEM_FACT_CONFLICTS", "off")
     older = hierarchical.add_fact(root, "Alice likes spicy food")[0]
     newer = hierarchical.add_fact(root, "Alice does not like spicy food")[0]
     conflict = fact_conflicts.Conflict(older.id, newer.id, "negation", older.statement,

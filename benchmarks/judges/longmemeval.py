@@ -185,7 +185,7 @@ class LongMemEvalJudge:
         )
 
         if complete_fn is None:
-            from commontrace import llm
+            from unimem import llm
 
             cfg = llm.Config(
                 provider="openai-compatible",

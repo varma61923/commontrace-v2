@@ -11,7 +11,7 @@ from tests.e2e.conftest import CLIResult
 
 
 def test_trace_schema_validates_complete_instance() -> None:
-    from commontrace import validate
+    from unimem import validate
 
     schema = validate.load_schema("trace.schema.json")
     trace_data = {
@@ -35,7 +35,7 @@ def test_trace_schema_validates_complete_instance() -> None:
 
 
 def test_trace_schema_rejects_missing_required_fields() -> None:
-    from commontrace import validate
+    from unimem import validate
 
     schema = validate.load_schema("trace.schema.json")
     incomplete_trace = {
@@ -48,7 +48,7 @@ def test_trace_schema_rejects_missing_required_fields() -> None:
 
 
 def test_trace_schema_rejects_boolean_for_numeric_field() -> None:
-    from commontrace import validate
+    from unimem import validate
 
     schema = validate.load_schema("trace.schema.json")
     bad_trace = {
@@ -69,7 +69,7 @@ def test_trace_schema_rejects_boolean_for_numeric_field() -> None:
 
 
 def test_lesson_schema_validates_complete_instance() -> None:
-    from commontrace import validate
+    from unimem import validate
 
     schema = validate.load_schema("lesson.schema.json")
     lesson_data = {
@@ -91,7 +91,7 @@ def test_lesson_schema_validates_complete_instance() -> None:
 
 
 def test_lesson_schema_rejects_out_of_bound_importance() -> None:
-    from commontrace import validate
+    from unimem import validate
 
     schema = validate.load_schema("lesson.schema.json")
     base = {
@@ -115,7 +115,7 @@ def test_lesson_schema_rejects_out_of_bound_importance() -> None:
 
 
 def test_lesson_schema_rejects_invalid_status_enum() -> None:
-    from commontrace import validate
+    from unimem import validate
 
     schema = validate.load_schema("lesson.schema.json")
     bad_lesson = {
@@ -225,7 +225,7 @@ def test_benchmark_execution_time_bounded(
 
 
 def test_lexical_dedup_scales_with_corpus() -> None:
-    from commontrace.reference.measure_performance import compute_lexical_duplicates
+    from unimem.reference.measure_performance import compute_lexical_duplicates
 
     corpus = {
         f"lesson_{i}": {
@@ -245,7 +245,7 @@ def test_lexical_dedup_scales_with_corpus() -> None:
 
 def test_chunked_similarity_memory_bounded() -> None:
     np = pytest.importorskip("numpy", reason="numpy required for memory bounded chunked similarity test")
-    from commontrace.reference.measure_performance import compute_semantic_duplicates
+    from unimem.reference.measure_performance import compute_semantic_duplicates
 
     n = 200
     dim = 64
@@ -265,7 +265,7 @@ def test_lesson_cache_avoids_redundant_disk_io(
     isolated_store: Path,
     lesson_factory: Callable[..., Path],
 ) -> None:
-    from commontrace import lesson_cache
+    from unimem import lesson_cache
 
     lesson_factory(isolated_store, slug="lesson_cached_01")
     lesson_factory(isolated_store, slug="lesson_cached_02")

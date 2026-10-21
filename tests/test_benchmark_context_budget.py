@@ -117,8 +117,8 @@ def test_counter_contract_changes_cannot_be_silently_paired(tmp_path, monkeypatc
 
 
 def test_unfitting_native_context_fails_before_reader_dispatch(tmp_path, monkeypatch):
-    from commontrace import llm
-    from commontrace.conversation.search import Recall
+    from unimem import llm
+    from unimem.conversation.search import Recall
     from tests.test_benchmark_measurement import _args
 
     bench = _fixture_counter(monkeypatch)
@@ -167,7 +167,7 @@ def test_reference_only_modes_skip_unrequested_memory_retrieval(tmp_path, monkey
 def test_native_vendor_is_reassembled_instead_of_context_truncation(tmp_path, monkeypatch):
     import contextlib
 
-    from commontrace.conversation.search import Recall
+    from unimem.conversation.search import Recall
     from tests.test_benchmark_measurement import _args
 
     bench = _fixture_counter(monkeypatch)

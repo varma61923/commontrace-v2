@@ -13,15 +13,15 @@ recomputed from the leaves, so this saves an fsynced checkpoint per write withou
 weakening tamper evidence. `protocol/conformance/transparency.json` carries the
 RFC 6962 reference roots, inclusion and consistency proofs as golden vectors.
 
-Use `commontrace log head`, `log prove --leaf N`, `log consistency --from N`,
+Use `unimem log head`, `log prove --leaf N`, `log consistency --from N`,
 and `log verify --receipt FILE`, with `--dest STORE`. MCP `log_verify` checks
 membership and signatures against the store's pinned identity. Head exports can
 be co-signed by an external witness. Keep the old checkpoint and require a
 consistency proof before accepting a new one.
 
 HMAC is a shared-secret MAC, not public non-repudiation. Configure the store's
-Ed25519 identity with `commontrace assurance signing --algorithm ed25519` and
-install `commontrace[security]` for public verification. Verifiers must obtain
+Ed25519 identity with `unimem assurance signing --algorithm ed25519` and
+install `unimem[security]` for public verification. Verifiers must obtain
 the public key through a trusted channel, not from an untrusted receipt.
 
 On the Hub, configure `HUB_LEDGER_SIGNING_KEY` (at least 32 bytes) and optionally

@@ -8,9 +8,9 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import delete
 
-from commontrace.memory_record import MemoryRecord
-from commontrace.vector_snapshots import SnapshotConflict
-from commontrace.vector_store import PostgresVectorIndex, SQLiteVectorIndex, VectorRecord
+from unimem.memory_record import MemoryRecord
+from unimem.vector_snapshots import SnapshotConflict
+from unimem.vector_store import PostgresVectorIndex, SQLiteVectorIndex, VectorRecord
 from hub.db import session_scope
 from hub.memory_projection import HostedProjection, ProjectionIdentity
 from hub.models import (
@@ -67,9 +67,9 @@ async def projection(request, session_factory, tmp_path):
         session.add(Organization(id=org, name=org))
     embedder = CountingEmbedder()
     if request.param == "postgres":
-        dsn = os.environ.get("COMMONTRACE_TEST_PGVECTOR_DSN")
+        dsn = os.environ.get("UNIMEM_TEST_PGVECTOR_DSN")
         if not dsn:
-            pytest.skip("set COMMONTRACE_TEST_PGVECTOR_DSN for hosted PostgreSQL vector projection checks")
+            pytest.skip("set UNIMEM_TEST_PGVECTOR_DSN for hosted PostgreSQL vector projection checks")
         index = await PostgresVectorIndex.open(
             dsn, tenant=org, namespace=embedder.identity.namespace, model=embedder.identity.model,
             dimension=embedder.identity.dimension, approximate=True,
@@ -85,9 +85,9 @@ async def projection(request, session_factory, tmp_path):
     finally:
         if request.param == "postgres":
             async with index._pool.acquire() as connection, connection.transaction():
-                for table in ("commontrace_vector_stages", "commontrace_vector_readers", "commontrace_vector_builds",
-                              "commontrace_vector_snapshots", "commontrace_vector_versions", "commontrace_vector_heads",
-                              "commontrace_vectors", "commontrace_vector_sources"):
+                for table in ("unimem_vector_stages", "unimem_vector_readers", "unimem_vector_builds",
+                              "unimem_vector_snapshots", "unimem_vector_versions", "unimem_vector_heads",
+                              "unimem_vectors", "unimem_vector_sources"):
                     await connection.execute(f"DELETE FROM {table} WHERE tenant=$1", org)
         await index.close()
 

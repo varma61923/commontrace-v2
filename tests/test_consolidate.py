@@ -4,8 +4,8 @@ import json
 
 import pytest
 
-from commontrace import consolidate, templates
-from commontrace.cli import main
+from unimem import consolidate, templates
+from unimem.cli import main
 
 
 def _lesson(slug, description, applies_when, body, *, status="active",
@@ -121,7 +121,7 @@ class TestIsClean:
         assert not consolidate.build_report(lessons).is_clean
 
     def test_only_high_severity_contradictions_are_not_clean(self):
-        from commontrace import reliability as rel
+        from unimem import reliability as rel
 
         review_contradiction = rel.Contradiction(
             slug_a="always", slug_b="never", activation_overlap=0.9,
@@ -135,7 +135,7 @@ class TestIsClean:
         assert report.is_clean
 
     def test_a_high_severity_contradiction_is_not_clean(self):
-        from commontrace import reliability as rel
+        from unimem import reliability as rel
 
         high_contradiction = rel.Contradiction(
             slug_a="a", slug_b="b", activation_overlap=0.9,
@@ -171,13 +171,13 @@ class TestRender:
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
-    monkeypatch.delenv("COMMONTRACE_ROOT", raising=False)
+    monkeypatch.delenv("UNIMEM_ROOT", raising=False)
     monkeypatch.chdir(tmp_path)
     return tmp_path
 
 
 def _write_lesson(store, slug, description, applies_when, body, **extra):
-    from commontrace import lesson_io, paths
+    from unimem import lesson_io, paths
 
     root = str(store)
     path = f"{paths.lessons_dir(root)}/lesson_{slug}.md"
@@ -267,10 +267,10 @@ class TestConsolidateDraft:
         import json as _json
         import os
 
-        from commontrace import frontmatter, llm, paths
+        from unimem import frontmatter, llm, paths
 
         self._pair(store)
-        monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "k")
+        monkeypatch.setenv("UNIMEM_LLM_API_KEY", "k")
         reply = {"rule": "Make webhook handlers idempotent on the provider's event id.",
                  "applies_when": "handling a webhook the provider may redeliver",
                  "do_not_apply_when": "the handler has no side effects",
@@ -294,10 +294,10 @@ class TestConsolidateDraft:
     def test_no_llm_configured_writes_nothing(self, store, monkeypatch, capsys):
         import os
 
-        from commontrace import paths
+        from unimem import paths
 
         self._pair(store)
-        monkeypatch.delenv("COMMONTRACE_LLM_API_KEY", raising=False)
+        monkeypatch.delenv("UNIMEM_LLM_API_KEY", raising=False)
         before = sorted(os.listdir(paths.lessons_dir(str(store))))
         capsys.readouterr()
         assert main(["consolidate", "--draft", "--dest", str(store)]) == 0
@@ -305,10 +305,10 @@ class TestConsolidateDraft:
         assert "0 draft(s) written" in capsys.readouterr().err
 
     def test_without_draft_no_llm_is_called(self, store, monkeypatch):
-        from commontrace import llm
+        from unimem import llm
 
         self._pair(store)
-        monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "k")
+        monkeypatch.setenv("UNIMEM_LLM_API_KEY", "k")
 
         def boom(cfg, prompt):
             raise AssertionError("no LLM call without --draft")
@@ -319,10 +319,10 @@ class TestConsolidateDraft:
     def test_a_pending_draft_is_not_rewritten(self, store, monkeypatch, capsys):
         import json as _json
 
-        from commontrace import llm
+        from unimem import llm
 
         self._pair(store)
-        monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "k")
+        monkeypatch.setenv("UNIMEM_LLM_API_KEY", "k")
         reply = {"rule": "r", "applies_when": "a", "do_not_apply_when": "d", "evidence": ["first"]}
         monkeypatch.setattr(llm, "_call_anthropic", lambda cfg, prompt: (_json.dumps(reply), {}))
         main(["consolidate", "--draft", "--dest", str(store)])

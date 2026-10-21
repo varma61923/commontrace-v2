@@ -8,9 +8,9 @@ langgraph = pytest.importorskip("langgraph.graph", reason="langgraph is an optio
 
 from typing import TypedDict  # noqa: E402
 
-from commontrace import holdout_io  # noqa: E402
-from commontrace.integrations import langgraph as ct_langgraph  # noqa: E402
-from commontrace.measure import CausalMemory  # noqa: E402
+from unimem import holdout_io  # noqa: E402
+from unimem.integrations import langgraph as ct_langgraph  # noqa: E402
+from unimem.measure import CausalMemory  # noqa: E402
 
 StateGraph = langgraph.StateGraph
 END = langgraph.END
@@ -18,7 +18,7 @@ END = langgraph.END
 
 class _State(TypedDict, total=False):
     input: str
-    commontrace_lessons: list
+    unimem_lessons: list
     resolved: bool
 
 
@@ -67,7 +67,7 @@ class TestWithLessons:
         memory = CausalMemory(store.search, root=str(tmp_path))
 
         def node(state, config=None):
-            return {"resolved": bool(state.get("commontrace_lessons"))}
+            return {"resolved": bool(state.get("unimem_lessons"))}
 
         wrapped = ct_langgraph.with_lessons(node, memory)
         compiled = _build_graph(wrapped)
@@ -99,7 +99,7 @@ class TestWithLessons:
         seen = {}
 
         def node(state, config=None):
-            seen["lessons"] = state.get("commontrace_lessons")
+            seen["lessons"] = state.get("unimem_lessons")
             return {"resolved": True}
 
         compiled = _build_graph(ct_langgraph.with_lessons(node, memory))
@@ -134,7 +134,7 @@ class TestWithLessons:
         seen = {}
 
         def node(state, config=None):
-            seen["lessons"] = state.get("commontrace_lessons")
+            seen["lessons"] = state.get("unimem_lessons")
             return {"resolved": True}
 
         compiled = _build_graph(ct_langgraph.with_lessons(node, memory))

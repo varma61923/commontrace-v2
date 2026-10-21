@@ -5,8 +5,8 @@ import re
 
 import pytest
 
-from commontrace.conversation import timeparse
-from commontrace.conversation.store import split_units
+from unimem.conversation import timeparse
+from unimem.conversation.store import split_units
 
 
 def _previous_units(text, limit):

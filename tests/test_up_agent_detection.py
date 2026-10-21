@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from commontrace.bootstrap_runtime import detect_installed_agents, setup
-from commontrace.native_hooks import install_special
+from unimem.bootstrap_runtime import detect_installed_agents, setup
+from unimem.native_hooks import install_special
 
 
 def _executable(path: Path):
@@ -67,7 +67,7 @@ def test_setup_auto_detection_writes_project_hooks_and_skips_kimi_global_config(
 
     # Existing project exports remain discoverable. A detected host's private
     # home history is never scanned as a side effect of hook setup.
-    history = root / ".commontrace" / "history" / "codex" / "session.jsonl"
+    history = root / ".unimem" / "history" / "codex" / "session.jsonl"
     history.parent.mkdir(parents=True)
     row = json.dumps({
         "type": "response_item",
@@ -112,7 +112,7 @@ def test_explicit_agent_name_preserves_selection_and_kimi_is_an_opt_in(tmp_path,
 
 
 def test_global_config_flag_can_opt_in_to_detected_kimi(tmp_path, monkeypatch, capsys):
-    from commontrace.cli import main
+    from unimem.cli import main
 
     root = tmp_path / "repo"
     home = tmp_path / "home"
@@ -145,7 +145,7 @@ def test_kimi_global_config_reader_rejects_files_over_64_kib(tmp_path):
     target.parent.mkdir(parents=True)
     original = b"# user configuration\n" + b"x" * 65537
     target.write_bytes(original)
-    manifest = {"events": {"Stop": "commontrace-hook --event Stop"}}
+    manifest = {"events": {"Stop": "unimem-hook --event Stop"}}
 
     with pytest.raises(ValueError, match="Kimi config exceeds 64 KiB"):
         install_special(str(root), "kimi", str(target), manifest, allow_external=True)

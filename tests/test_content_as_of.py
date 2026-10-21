@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-from commontrace import lesson_io, templates
+from unimem import lesson_io, templates
 
 
 def _lesson_fm(applies_when="original condition") -> dict:
@@ -119,7 +119,7 @@ def _now_iso() -> str:
 
 class TestLessonHistoryAsOfCli:
     def test_prints_the_reconstructed_content(self, tmp_path, capsys):
-        from commontrace.cli import main
+        from unimem.cli import main
 
         store = str(tmp_path)
         assert main(["init", "--agent-type", "code", "--dest", store]) == 0
@@ -135,7 +135,7 @@ class TestLessonHistoryAsOfCli:
         assert "when X" in out
 
     def test_an_unparseable_as_of_exits_nonzero_with_a_clear_message(self, tmp_path, capsys):
-        from commontrace.cli import main
+        from unimem.cli import main
 
         store = str(tmp_path)
         main(["init", "--agent-type", "code", "--dest", store])
@@ -150,7 +150,7 @@ class TestLessonHistoryAsOfCli:
         assert "could not parse" in capsys.readouterr().err
 
     def test_without_as_of_the_ordinary_change_list_still_prints(self, tmp_path, capsys):
-        from commontrace.cli import main
+        from unimem.cli import main
 
         store = str(tmp_path)
         main(["init", "--agent-type", "code", "--dest", store])

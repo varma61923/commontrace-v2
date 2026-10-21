@@ -2,8 +2,8 @@ import os
 
 import pytest
 
-from commontrace.cli import main
-from commontrace.paths import (
+from unimem.cli import main
+from unimem.paths import (
     PathTraversalError,
     enforce_boundary,
     is_within_directory,

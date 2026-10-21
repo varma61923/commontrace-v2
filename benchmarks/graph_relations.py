@@ -11,7 +11,7 @@ import statistics
 import tempfile
 import time
 
-from commontrace import graph
+from unimem import graph
 
 BASE = "2024-01-01T00:00:00+00:00"
 AS_OF = "2025-01-01"
@@ -38,7 +38,7 @@ def measure(*, edges: int = 20_000, trials: int = 5) -> dict:
         raise ValueError("edges must be an integer in 100..1000000")
     if isinstance(trials, bool) or not isinstance(trials, int) or not 1 <= trials <= 100:
         raise ValueError("trials must be an integer in 1..100")
-    with tempfile.TemporaryDirectory(prefix="commontrace-typed-graph-") as root:
+    with tempfile.TemporaryDirectory(prefix="unimem-typed-graph-") as root:
         nodes = {identity: graph.GraphNode(identity, "concept", identity, {}, BASE, BASE)
                  for identity in ("hub", *(f"peer-{i}" for i in range(edges)))}
         records = [graph.GraphEdge("hub", f"peer-{i}", "resolves" if i < 5 else "uses", 1,

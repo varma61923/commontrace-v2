@@ -3,7 +3,7 @@ import os
 
 import pytest
 
-from commontrace import gateway, holdout_io
+from unimem import gateway, holdout_io
 
 
 @pytest.fixture
@@ -129,7 +129,7 @@ def test_reports_are_reused_while_the_data_is_unchanged_and_refreshed_once_it_ch
 
 
 def test_a_report_is_refreshed_after_its_maximum_age_or_when_a_trace_or_episode_appears(root, monkeypatch):
-    from commontrace import paths
+    from unimem import paths
     clock = [1000.0]
     monkeypatch.setattr(gateway.time, "monotonic", lambda: clock[0])
     _assign(root, 0, 4)

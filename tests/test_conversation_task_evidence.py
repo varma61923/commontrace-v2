@@ -4,9 +4,9 @@ from dataclasses import replace
 
 import pytest
 
-from commontrace.conversation import Options, Store, coverage, recall, timeparse
-from commontrace.conversation.answer import _follow_ups, _grounded_reply, answer
-from commontrace.conversation.context_selection import Candidate, prioritize, prioritize_history
+from unimem.conversation import Options, Store, coverage, recall, timeparse
+from unimem.conversation.answer import _follow_ups, _grounded_reply, answer
+from unimem.conversation.context_selection import Candidate, prioritize, prioritize_history
 
 
 def test_history_preserves_distinct_sessions_after_topic_facets_are_covered():

@@ -85,14 +85,14 @@ def score(rows: list[dict[str, Any]], predictions: list[str | None]) -> dict[str
 
 
 def predict_classifier(rows, onto, **options) -> list[str | None]:
-    from commontrace import ontology_classify
+    from unimem import ontology_classify
 
     return [ontology_classify.classify(r["name"], r["context"], onto=onto, **options).type for r in rows]
 
 
 def predict_pipeline(rows, onto, embedder=None) -> list[str | None]:
-    from commontrace import entities
-    from commontrace.ontology import FALLBACK_TYPE
+    from unimem import entities
+    from unimem.ontology import FALLBACK_TYPE
 
     out: list[str | None] = []
     for row in rows:
@@ -107,7 +107,7 @@ def predict_pipeline(rows, onto, embedder=None) -> list[str | None]:
 
 def run(path: str, *, methods: tuple[str, ...] = ("keyword",), embedder=None,
         llm=None) -> dict[str, Any]:
-    from commontrace import ontology
+    from unimem import ontology
 
     rows = load_fixture(path)
     onto = ontology.Ontology.default()
@@ -138,7 +138,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     llm = None
     if args.llm:
-        from commontrace import llm as llm_mod
+        from unimem import llm as llm_mod
 
         llm = llm_mod.complete
     methods = tuple(m.strip() for m in args.methods.split(",") if m.strip())

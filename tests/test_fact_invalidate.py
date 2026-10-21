@@ -1,8 +1,8 @@
 """Bi-temporal invalidation: a fact stops being true without being replaced or deleted."""
 import pytest
 
-from commontrace import hierarchical
-from commontrace.cli import main
+from unimem import hierarchical
+from unimem.cli import main
 
 
 def _fact(root, text="Ana works at Acme", since="2026-01-01T00:00:00+00:00"):

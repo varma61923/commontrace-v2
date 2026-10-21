@@ -9,9 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from commontrace import frontmatter, hierarchical, holdout_io, paths, privacy_erasure, rl_io
-from commontrace import nextwave_store as store
-from commontrace import rl_export as rl
+from unimem import frontmatter, hierarchical, holdout_io, paths, privacy_erasure, rl_io
+from unimem import nextwave_store as store
+from unimem import rl_export as rl
 
 
 def episode(i, *, treated=True, outcome=True, scopes=(), rate=.5):
@@ -143,7 +143,7 @@ def test_qualified_artifact_sources_validate_scope_cycle_and_erasure(tmp_path):
 
 
 def test_stream_preserves_authorization_context_and_aborts_after_erasure(tmp_path, monkeypatch):
-    from commontrace import gateway, memory_control
+    from unimem import gateway, memory_control
 
     token = memory_control.REQUIRED_PRINCIPAL_SCOPE.set("container:a")
     try:
@@ -169,8 +169,8 @@ def test_http_and_cli_export_use_the_real_wire_format(tmp_path, monkeypatch, cap
     import urllib.error
     import urllib.request
 
-    from commontrace import gateway
-    from commontrace.commands import nextwave
+    from unimem import gateway
+    from unimem.commands import nextwave
 
     monkeypatch.setattr("os.fsync", lambda fd: None)
     root = str(tmp_path)
@@ -212,7 +212,7 @@ def test_http_and_cli_export_use_the_real_wire_format(tmp_path, monkeypatch, cap
 
 @pytest.mark.parametrize("format,connector", [("dpo", "generic"), ("advantage", "agent-lightning"), ("replay", "grader")])
 def test_cli_parser_emits_all_formats(tmp_path, monkeypatch, capsys, format, connector):
-    from commontrace import cli
+    from unimem import cli
 
     monkeypatch.setattr("os.fsync", lambda fd: None)
     root = str(tmp_path)
@@ -230,7 +230,7 @@ def test_cli_parser_emits_all_formats(tmp_path, monkeypatch, capsys, format, con
 
 
 def test_authenticated_scope_label_lists_and_egress_canaries(tmp_path, monkeypatch):
-    from commontrace import memory_ifc
+    from unimem import memory_ifc
 
     monkeypatch.setattr("os.fsync", lambda _: None)
     root = str(tmp_path / "valid")

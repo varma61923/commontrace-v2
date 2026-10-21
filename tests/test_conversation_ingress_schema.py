@@ -12,9 +12,9 @@ from typing import Any
 
 import pytest
 
-from commontrace import gateway, mcp_server
-from commontrace.conversation.store import Store, db_path
-from commontrace.conversation.validation import validate_messages
+from unimem import gateway, mcp_server
+from unimem.conversation.store import Store, db_path
+from unimem.conversation.validation import validate_messages
 
 
 @contextlib.contextmanager

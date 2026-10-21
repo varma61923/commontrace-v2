@@ -1571,7 +1571,7 @@ class TestUsageReportFromTheConsole:
         org_id, raw_key = org_and_key
         async with session_scope(session_factory) as session:
             await events_module.add_endpoint(
-                session, org_id, "https://example.invalid/hooks/commontrace",
+                session, org_id, "https://example.invalid/hooks/unimem",
                 signing_key="test-signing-key",
             )
         async with _client(_app(session_factory=session_factory)) as client:
@@ -1615,7 +1615,7 @@ class TestWebhookManagement:
             await _signed_in(client, raw_key)
             response = await client.post(
                 f"{console.CONSOLE_PATH}/webhooks/create",
-                data={"url": "https://example.invalid/hooks/commontrace"},
+                data={"url": "https://example.invalid/hooks/unimem"},
             )
         assert "shown once" in response.text
         assert "example.invalid" in response.text
@@ -1628,7 +1628,7 @@ class TestWebhookManagement:
             await _signed_in(client, raw_key)
             response = await client.post(
                 f"{console.CONSOLE_PATH}/webhooks/create",
-                data={"url": "https://example.invalid/hooks/commontrace"},
+                data={"url": "https://example.invalid/hooks/unimem"},
             )
         assert response.status_code == 200
         assert "no HUB_LEDGER_SIGNING_KEY" in response.text
@@ -1640,7 +1640,7 @@ class TestWebhookManagement:
             await client.post(
                 f"{console.CONSOLE_PATH}/webhooks/create",
                 data={
-                    "url": "https://example.invalid/hooks/commontrace",
+                    "url": "https://example.invalid/hooks/unimem",
                     "events": ["trace.quarantined", "experiment.verdict"],
                 },
             )

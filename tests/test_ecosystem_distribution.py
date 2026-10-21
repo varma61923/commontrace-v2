@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from commontrace.commands.integration_cmd import CLIENTS, configuration
+from unimem.commands.integration_cmd import CLIENTS, configuration
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -15,20 +15,20 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.mark.parametrize('client', CLIENTS)
 def test_native_configuration_keeps_argument_boundaries_and_disables_approval(client, tmp_path):
     root = str(tmp_path / 'store with spaces')
-    config = configuration(client, root, command='/executables with spaces/commontrace')
+    config = configuration(client, root, command='/executables with spaces/unimem')
     if client == 'zed':
-        server = config['context_servers']['commontrace']['command']
-        assert server['path'] == '/executables with spaces/commontrace'
+        server = config['context_servers']['unimem']['command']
+        assert server['path'] == '/executables with spaces/unimem'
     else:
-        server = config['servers' if client == 'vscode' else 'mcpServers']['commontrace']
+        server = config['servers' if client == 'vscode' else 'mcpServers']['unimem']
     assert server['args'] == ['serve', '--dest', root, '--no-approval']
     assert not os.path.exists(root)
 
 
 def test_cli_prints_json_without_creating_a_store(tmp_path):
-    result = subprocess.run([sys.executable, '-m', 'commontrace', 'integration', '--client', 'zed',
+    result = subprocess.run([sys.executable, '-m', 'unimem', 'integration', '--client', 'zed',
                              '--dest', str(tmp_path)], check=True, capture_output=True, text=True)
-    assert json.loads(result.stdout)['context_servers']['commontrace']['command']['args'][-1] == '--no-approval'
+    assert json.loads(result.stdout)['context_servers']['unimem']['command']['args'][-1] == '--no-approval'
     assert not list(tmp_path.iterdir())
 
 
@@ -56,7 +56,7 @@ def action_module():
 
 def test_action_rejects_path_escape_before_running_any_command(tmp_path, monkeypatch):
     monkeypatch.setenv('GITHUB_WORKSPACE', str(tmp_path))
-    monkeypatch.setenv('COMMONTRACE_ACTION_STORE', '../outside')
+    monkeypatch.setenv('UNIMEM_ACTION_STORE', '../outside')
     with pytest.raises(ValueError, match='inside'):
         action_module().main()
 
@@ -64,7 +64,7 @@ def test_action_rejects_path_escape_before_running_any_command(tmp_path, monkeyp
 def test_action_uses_real_installed_cli_to_initialize_and_check(tmp_path):
     result = subprocess.run([sys.executable, str(ROOT / 'distribution' / 'action' / 'check.py')],
                             env={**os.environ, 'GITHUB_WORKSPACE': str(tmp_path),
-                                 'COMMONTRACE_ACTION_INITIALIZE': 'true', 'COMMONTRACE_ACTION_STORE': '.'},
+                                 'UNIMEM_ACTION_INITIALIZE': 'true', 'UNIMEM_ACTION_STORE': '.'},
                             capture_output=True, text=True)
     assert result.returncode == 0, result.stdout + result.stderr
     assert (tmp_path / 'memory' / 'INDEX.md').is_file()

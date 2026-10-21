@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from commontrace import graph, lesson_cache
+from unimem import graph, lesson_cache
 
 BASE = "2024-01-01T00:00:00+00:00"
 

@@ -6,7 +6,7 @@ import json
 import statistics
 import time
 
-from commontrace.conversation import coverage, profile
+from unimem.conversation import coverage, profile
 
 
 def reference(question, evidence, *, labels=()):

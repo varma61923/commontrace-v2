@@ -2,9 +2,9 @@ name: Supply chain and CodeQL
 on:
   push:
     branches: [main]
-    paths: ['commontrace/**', 'hub/**', 'sdk/**', 'pyproject.toml', '.github/workflows/**']
+    paths: ['unimem/**', 'hub/**', 'sdk/**', 'pyproject.toml', '.github/workflows/**']
   pull_request:
-    paths: ['commontrace/**', 'hub/**', 'sdk/**', 'pyproject.toml', '.github/workflows/**']
+    paths: ['unimem/**', 'hub/**', 'sdk/**', 'pyproject.toml', '.github/workflows/**']
   schedule:
     - cron: '23 4 * * 1'
   workflow_dispatch:

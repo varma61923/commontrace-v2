@@ -11,7 +11,7 @@ from contextlib import closing, contextmanager
 
 import pytest
 
-from commontrace import jobs
+from unimem import jobs
 
 
 @pytest.fixture
@@ -198,7 +198,7 @@ def test_live_worker_renews_lease_and_stops_heartbeat(root, monkeypatch):
     job = jobs.enqueue(root, "slow-test")
     assert jobs.run_pending(root, limit=1, lease=0.3)["done"] == 1
     assert jobs.get(root, job.id).attempts == 1
-    assert not any(t.name == "commontrace-job-lease" for t in threading.enumerate())
+    assert not any(t.name == "unimem-job-lease" for t in threading.enumerate())
 
 
 def test_queue_migrates_legacy_schema_without_losing_jobs(root, flaky):
@@ -275,7 +275,7 @@ def test_run_batch_falls_back_per_item():
 
 
 def test_daemon_runs_queued_jobs(root, flaky):
-    from commontrace import daemon
+    from unimem import daemon
 
     job = jobs.enqueue(root, "test", {})
     out = daemon.run_once(root)
@@ -285,7 +285,7 @@ def test_daemon_runs_queued_jobs(root, flaky):
 
 def test_cli(root):
     def ct(*args):
-        return subprocess.run([sys.executable, "-m", "commontrace.cli", "jobs", *args, "--dest", root],  # nosec
+        return subprocess.run([sys.executable, "-m", "unimem.cli", "jobs", *args, "--dest", root],  # nosec
                               capture_output=True, text=True, check=False)
     out = ct("add", "link", "--payload", '{"spacy": false}', "--json")
     job_id = json.loads(out.stdout)["id"]

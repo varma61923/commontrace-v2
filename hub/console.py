@@ -20,7 +20,7 @@ from sqlalchemy import or_, select
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
-from commontrace import raw_export
+from unimem import raw_export
 from hub import alerts, audit, auth, commons, crud, events, manage, plans, rbac, scopes, ui_kit
 from hub.abuse import RateLimited, TraceRejected, make_named_limiter, make_rate_limiter, rate_limit_key
 from hub.admin import (
@@ -40,7 +40,7 @@ from hub.db import session_scope
 from hub.encryption import NULL_CIPHER, EnvelopeCipher
 from hub.models import AlertRule, ApiKey, AuditLogEntry, Organization, User, WebhookEndpoint
 
-logger = logging.getLogger("commontrace.hub.console")
+logger = logging.getLogger("unimem.hub.console")
 
 CONSOLE_PATH = "/app"
 SESSION_COOKIE = "ct_console"
@@ -197,7 +197,7 @@ def _sidebar(title: str) -> str:
     )
     return (
         '<aside class="side">'
-        f'<a class="brand" href="{CONSOLE_PATH}"><span class="mark">{ui_kit.icon("mark")}</span>CommonTrace</a>'
+        f'<a class="brand" href="{CONSOLE_PATH}"><span class="mark">{ui_kit.icon("mark")}</span>UniMem</a>'
         f'<div class="orgcard"><span class="avatar" aria-hidden="true">{h(ui_kit.initials(org_name))}</span>'
         f'<div class="who"><b title="{h(org_name)}">{h(org_name)}</b>'
         f'<span>{h(access)}{" · " + h(key) if key else ""}</span></div></div>'
@@ -234,7 +234,7 @@ def _document(
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
         '<meta name="color-scheme" content="light dark">'
-        f"<title>{h(title)} · CommonTrace</title>{_FAVICON_LINK}{head_script}"
+        f"<title>{h(title)} · UniMem</title>{_FAVICON_LINK}{head_script}"
         f"<style>{ui_kit.CSS}</style></head><body>{body}{''.join(scripts)}</body></html>",
         headers=html_headers(head_script, *scripts, referrer=referrer),
     )
@@ -260,11 +260,11 @@ def _shared_page(body: str, *, expires_at: int) -> HTMLResponse:
     until = f"{_expires_dt:%B} {_expires_dt.day}, {_expires_dt:%Y}"
     banner = (
         f'<div class="shared-banner">{ui_kit.icon("shield")}<span>Shared, read-only report — generated '
-        f"from live data by a CommonTrace customer. Link active until {h(until)}.</span></div>"
+        f"from live data by a UniMem customer. Link active until {h(until)}.</span></div>"
     )
     top = (
         '<header class="shared-top">'
-        f'<span class="brand"><span class="mark">{ui_kit.icon("mark")}</span>CommonTrace</span>'
+        f'<span class="brand"><span class="mark">{ui_kit.icon("mark")}</span>UniMem</span>'
         '<span class="badge">shared report</span></header>'
     )
     return _document("Proof", f"{top}<main id=\"main\">{banner}{body}</main>", referrer="no-referrer",
@@ -1434,7 +1434,7 @@ def _setup_steps(data: dict, causal: dict, setup: dict | None) -> str:
     steps = [
         (traces > 0, "Capture a first trace",
          "Your agents call <code>contribute_trace</code> after a task, or import one with "
-         "<code>commontrace sync</code>."),
+         "<code>unimem sync</code>."),
         (searches > 0, "Retrieve before a task",
          "Agents call <code>search_traces</code> with the task in their own words."),
         (bool(causal.get("experiment_running")), "Start a randomized holdout",
@@ -1524,7 +1524,7 @@ def _working_panel(causal: dict, activity: dict | None) -> str:
 
 _SIGNIN = (
     '<div class="box">'
-    f'<span class="brand"><span class="mark">{ui_kit.icon("mark")}</span>CommonTrace</span>'
+    f'<span class="brand"><span class="mark">{ui_kit.icon("mark")}</span>UniMem</span>'
     "<div><h1>Sign in to your console</h1>"
     '<p class="sub">Use an API key for your organisation — the same key your agents '
     "authenticate with. It is verified once and never stored in your browser.</p></div>"
@@ -1854,7 +1854,7 @@ def add_console_routes(
         return Response(
             result.csv_text, media_type="text/csv",
             headers={
-                "Content-Disposition": 'attachment; filename="commontrace-assignments.csv"',
+                "Content-Disposition": 'attachment; filename="unimem-assignments.csv"',
                 "Cache-Control": "no-store, private",
             },
         )

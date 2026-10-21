@@ -20,9 +20,9 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from commontrace import frontier_protocol as fp
-from commontrace import origin
-from commontrace import transparency_log as merkle
+from unimem import frontier_protocol as fp
+from unimem import origin
+from unimem import transparency_log as merkle
 from hub.models import TransparencyEntry, TransparencyHead
 
 # Proof and consistency exports hold one 64-character hash per leaf in memory.
@@ -38,7 +38,7 @@ def signer(org_id: str, secret: str, algorithm: str = "hmac-sha256") -> origin.P
         raise ValueError("Hub transparency needs a configured signing key of at least 32 bytes")
     if algorithm not in ("hmac-sha256", "ed25519"):
         raise ValueError("unsupported transparency signature algorithm")
-    key = hmac.new(secret.encode(), b"commontrace-transparency-v1\0" + org_id.encode(), hashlib.sha256).digest()
+    key = hmac.new(secret.encode(), b"unimem-transparency-v1\0" + org_id.encode(), hashlib.sha256).digest()
     public = b""
     if algorithm == "ed25519":
         public = origin.ed25519_public_bytes(key)

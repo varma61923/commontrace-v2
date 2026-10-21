@@ -22,14 +22,14 @@ def main() -> int:
         help="Parent directory for the disposable store (defaults to the system temp directory).",
     )
     args = parser.parse_args()
-    cli = shutil.which("commontrace")
+    cli = shutil.which("unimem")
     if not cli:
-        print("commontrace is not on PATH; install this checkout with `python -m pip install -e .` first.",
+        print("unimem is not on PATH; install this checkout with `python -m pip install -e .` first.",
               file=sys.stderr)
         return 2
 
     env = os.environ.copy()
-    env["COMMONTRACE_OFFLINE"] = "1"
+    env["UNIMEM_OFFLINE"] = "1"
     timings: dict[str, float] = {}
 
     def run(label: str, arguments: list[str]) -> subprocess.CompletedProcess[str]:
@@ -41,12 +41,12 @@ def main() -> int:
                 print(result.stdout, file=sys.stderr, end="")
             if result.stderr:
                 print(result.stderr, file=sys.stderr, end="")
-            raise RuntimeError(f"commontrace {arguments[0]} failed with exit code {result.returncode}")
+            raise RuntimeError(f"unimem {arguments[0]} failed with exit code {result.returncode}")
         return result
 
     started = time.perf_counter()
     try:
-        with tempfile.TemporaryDirectory(prefix="commontrace-first-recall-", dir=args.temp_dir) as temporary:
+        with tempfile.TemporaryDirectory(prefix="unimem-first-recall-", dir=args.temp_dir) as temporary:
             store = str(Path(temporary) / "store")
             run("init_s", ["init", "--dest", store])
             run("add_s", ["fact", "add", STATEMENT, "--dest", store])

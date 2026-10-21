@@ -16,10 +16,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-from commontrace import attested_keys as keys
-from commontrace import frontier_protocol as fp
-from commontrace import origin
-from commontrace import transparency_log as merkle
+from unimem import attested_keys as keys
+from unimem import frontier_protocol as fp
+from unimem import origin
+from unimem import transparency_log as merkle
 from hub import transparency
 from hub.db import session_scope
 from hub.models import AttestationChallenge, AttestedMeasurement, TransparencyEntry

@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://commontrace.dev/schemas/trace.schema.json",
-  "title": "CommonTrace Trace",
-  "description": "The universal, agent-agnostic unit of captured experience. Shape is aligned 1:1 with the CommonTrace Hub's live trace object (search_traces / get_trace / contribute_trace) so a local trace and a Hub trace are the same object at different sync states.",
+  "$id": "https://unimem.dev/schemas/trace.schema.json",
+  "title": "UniMem Trace",
+  "description": "The universal, agent-agnostic unit of captured experience. Shape is aligned 1:1 with the UniMem Hub's live trace object (search_traces / get_trace / contribute_trace) so a local trace and a Hub trace are the same object at different sync states.",
   "type": "object",
   "required": ["id", "title", "context_text", "solution_text", "tags", "agent_type"],
   "properties": {
@@ -183,7 +183,7 @@
         },
         "baseline": {
           "type": "boolean",
-          "description": "True if this trace was captured during a pre-CommonTrace baseline measurement window (see \"Deploying to Production\" in README.md), for before/after comparison. False (default) means it was captured with CommonTrace lesson injection active.",
+          "description": "True if this trace was captured during a pre-UniMem baseline measurement window (see \"Deploying to Production\" in README.md), for before/after comparison. False (default) means it was captured with UniMem lesson injection active.",
           "default": false
         }
       },
@@ -191,7 +191,7 @@
     },
     "shared_with_commons": {
       "type": "boolean",
-      "description": "True if this trace has been seeded into or shared with the CommonTrace Knowledge Base.",
+      "description": "True if this trace has been seeded into or shared with the UniMem Knowledge Base.",
       "default": false
     },
     "quarantined": {

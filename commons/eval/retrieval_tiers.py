@@ -10,10 +10,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from commontrace import retrieval  # noqa: E402
+from unimem import retrieval  # noqa: E402
 
-CORPUS = Path(os.environ.get("COMMONTRACE_EVAL_CORPUS", "corpus.jsonl"))  # bring your own corpus
-PROBES = Path(os.environ.get("COMMONTRACE_EVAL_PROBES", "probes.jsonl"))  # bring your own probes
+CORPUS = Path(os.environ.get("UNIMEM_EVAL_CORPUS", "corpus.jsonl"))  # bring your own corpus
+PROBES = Path(os.environ.get("UNIMEM_EVAL_PROBES", "probes.jsonl"))  # bring your own probes
 
 
 def _load(p: Path) -> list[dict]:
@@ -77,7 +77,7 @@ def main() -> int:
     print(f"corpus {r['n_corpus']} records | {r['n_pos']} held-out positives, "
           f"{r['n_neg']} negative controls")
     print()
-    print("PER-ORG lexical retrieval (commontrace/retrieval.py, ranked, no threshold)")
+    print("PER-ORG lexical retrieval (unimem/retrieval.py, ranked, no threshold)")
     for k, v in r["recall"].items():
         print(f"  recall@{k:<3}                  {v:>6.1%}")
     print(f"  present anywhere in ranking  {r['recall_anywhere']:>6.1%}")

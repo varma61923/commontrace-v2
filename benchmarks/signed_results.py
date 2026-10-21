@@ -11,7 +11,7 @@ import argparse
 import base64
 import json
 
-DOMAIN = b"CommonTrace public benchmark report v1\x00"
+DOMAIN = b"UniMem public benchmark report v1\x00"
 
 
 def canonical(report: dict) -> bytes:
@@ -28,7 +28,7 @@ def sign(report: dict, key) -> dict:
 
     body = canonical(report)
     return {
-        "format": "commontrace-public-results-v1",
+        "format": "unimem-public-results-v1",
         "report": report,
         "public_key": key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw).hex(),
         "signature": base64.b64encode(key.sign(body)).decode(),
@@ -39,7 +39,7 @@ def verify(envelope: dict, *, trusted_key: str) -> dict:
     from cryptography.exceptions import InvalidSignature
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-    if envelope.get("format") != "commontrace-public-results-v1" or envelope.get("public_key") != trusted_key:
+    if envelope.get("format") != "unimem-public-results-v1" or envelope.get("public_key") != trusted_key:
         raise ValueError("untrusted release signer")
     try:
         public = Ed25519PublicKey.from_public_bytes(bytes.fromhex(trusted_key))

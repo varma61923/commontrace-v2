@@ -11,8 +11,8 @@ import statistics
 import tempfile
 import time
 
-from commontrace.conversation import Options, Store, recall
-from commontrace.conversation.search import forget_store
+from unimem.conversation import Options, Store, recall
+from unimem.conversation.search import forget_store
 
 TASKS = (
     ("single-hop", "Which city did Mira visit in March?", ("visit",)),
@@ -65,7 +65,7 @@ def history():
 
 def run(budget=300):
     rows = []
-    with tempfile.TemporaryDirectory(prefix="commontrace-task-suite-") as root, Store(root, "user") as store:
+    with tempfile.TemporaryDirectory(prefix="unimem-task-suite-") as root, Store(root, "user") as store:
         for session, date, messages in history():
             store.add(session, [{"id": identity, "role": role, "speaker": "Mira" if role == "user" else "Assistant",
                                  "text": text} for identity, role, text in messages], session_at=date)

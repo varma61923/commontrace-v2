@@ -4,7 +4,7 @@ import stat
 
 import pytest
 
-from commontrace.conversation import Store, embed, vector_index
+from unimem.conversation import Store, embed, vector_index
 
 
 class Encoder:

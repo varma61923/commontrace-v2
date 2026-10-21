@@ -1,13 +1,13 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: commontrace-hub
+  name: unimem-hub
   labels:
-    app: commontrace-hub
+    app: unimem-hub
 spec:
   type: ClusterIP
   selector:
-    app: commontrace-hub
+    app: unimem-hub
   ports:
     - name: http
       port: 8420

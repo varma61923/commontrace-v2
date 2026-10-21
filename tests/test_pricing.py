@@ -4,7 +4,7 @@ import random
 
 import pytest
 
-from commontrace import functions, holdout_io, pricing, proof
+from unimem import functions, holdout_io, pricing, proof
 
 KEY = b"0123456789abcdef-billing-test-key"
 KIT = functions.from_dict({
@@ -231,7 +231,7 @@ def test_the_invoice_renders_with_how_to_check_each_value_line(tmp_path):
     pkg = _package(root, tmp_path, "p1")
     text = pricing.render(pricing.invoice(pricing._blank_book(), SCHEDULE, org="a", period="Q1", agent_months=3,
                                           packages=[pkg], key=KEY))
-    assert "ledger root" in text and "commontrace proof verify" in text and "TOTAL" in text
+    assert "ledger root" in text and "unimem proof verify" in text and "TOTAL" in text
 
 
 def test_over_a_year_nothing_unproven_is_ever_billed_and_what_is_billed_equals_the_share_of_the_latest_proof(tmp_path):
@@ -271,7 +271,7 @@ def test_over_a_year_nothing_unproven_is_ever_billed_and_what_is_billed_equals_t
 
 
 def test_the_template_has_every_term_empty_and_a_template_is_not_a_valid_schedule(tmp_path, capsys):
-    from commontrace.cli import main
+    from unimem.cli import main
     assert main(["bill", "template"]) == 0
     out = capsys.readouterr().out
     terms = json.loads(out)
@@ -283,7 +283,7 @@ def test_the_template_has_every_term_empty_and_a_template_is_not_a_valid_schedul
 
 
 def test_invoice_previews_by_default_and_records_only_with_commit(tmp_path, capsys):
-    from commontrace.cli import main
+    from unimem.cli import main
     root = _store(tmp_path)
     _grow(root, 0, 3000)
     pkg = _package(root, tmp_path, "p1")
@@ -304,7 +304,7 @@ def test_invoice_previews_by_default_and_records_only_with_commit(tmp_path, caps
 
 
 def test_a_missing_or_incomplete_schedule_stops_the_command(tmp_path, capsys):
-    from commontrace.cli import main
+    from unimem.cli import main
     path = tmp_path / "s.json"
     path.write_text(json.dumps({"currency": "USD"}))
     assert main(["bill", "invoice", "--schedule", str(path), "--org", "a", "--period", "p", "--agent-months", "1"]) == 2

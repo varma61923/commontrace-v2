@@ -6,8 +6,8 @@ import os
 
 import pytest
 
-from commontrace import holdout_io
-from commontrace.measure import CausalMemory
+from unimem import holdout_io
+from unimem.measure import CausalMemory
 
 
 class FakeStore:
@@ -37,7 +37,7 @@ class TestPydanticAI:
         from pydantic_ai import Agent
         from pydantic_ai.models.test import TestModel
 
-        from commontrace.integrations import pydantic_ai as ct
+        from unimem.integrations import pydantic_ai as ct
 
         holdout_io.configure(str(tmp_path), rate=0.5)
         store = FakeStore()
@@ -54,7 +54,7 @@ class TestPydanticAI:
         from pydantic_ai import Agent
         from pydantic_ai.models.test import TestModel
 
-        from commontrace.integrations import pydantic_ai as ct
+        from unimem.integrations import pydantic_ai as ct
 
         holdout_io.configure(str(tmp_path), rate=0.5)
         memory = CausalMemory(FakeStore().search, root=str(tmp_path))
@@ -66,7 +66,7 @@ class TestPydanticAI:
         from pydantic_ai import Agent
         from pydantic_ai.models.test import TestModel
 
-        from commontrace.integrations import pydantic_ai as ct
+        from unimem.integrations import pydantic_ai as ct
 
         def boom(query, **kwargs):
             raise RuntimeError("store down")
@@ -96,7 +96,7 @@ class TestOpenAIAgents:
             ResponseOutputText,
         )
 
-        from commontrace.integrations import openai_agents as ct
+        from unimem.integrations import openai_agents as ct
 
         class Scripted(Model):
             turn = 0

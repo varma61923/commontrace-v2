@@ -8,13 +8,13 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from commontrace.client import MemoryClient
-from commontrace.memory_journal import Journal
-from commontrace.memory_record import MemoryRecord
+from unimem.client import MemoryClient
+from unimem.memory_journal import Journal
+from unimem.memory_record import MemoryRecord
 
 
 def _install_fake_agent_framework(monkeypatch, request):
-    module_name = "commontrace.integrations.microsoft_agent_framework"
+    module_name = "unimem.integrations.microsoft_agent_framework"
     previous = sys.modules.pop(module_name, None)
 
     class ContextProvider:
@@ -59,7 +59,7 @@ def _run_key(scope, session_id):
 
 
 def test_import_is_safe_without_optional_agent_framework(monkeypatch):
-    module_name = "commontrace.integrations.microsoft_agent_framework"
+    module_name = "unimem.integrations.microsoft_agent_framework"
     previous = sys.modules.pop(module_name, None)
     original_import = builtins.__import__
 
@@ -71,9 +71,9 @@ def test_import_is_safe_without_optional_agent_framework(monkeypatch):
     try:
         monkeypatch.setattr(builtins, "__import__", reject_agent_framework)
         module = importlib.import_module(module_name)
-        assert callable(module.CommonTraceContextProvider)
+        assert callable(module.UniMemContextProvider)
         with pytest.raises(ImportError, match="agent-framework-core"):
-            module.CommonTraceContextProvider(object())
+            module.UniMemContextProvider(object())
     finally:
         sys.modules.pop(module_name, None)
         if previous is not None:
@@ -83,7 +83,7 @@ def test_import_is_safe_without_optional_agent_framework(monkeypatch):
 def test_context_provider_uses_scoped_one_call_lifecycle_and_isolates_users(
     monkeypatch, request, tmp_path
 ):
-    from commontrace.hook_kit import HookKit
+    from unimem.hook_kit import HookKit
 
     original_handle = HookKit.handle
 
@@ -118,7 +118,7 @@ def test_context_provider_uses_scoped_one_call_lifecycle_and_isolates_users(
             return result
 
         monkeypatch.setattr(MemoryClient, "turn", tracked_turn)
-        provider = module.CommonTraceContextProvider(memory)
+        provider = module.UniMemContextProvider(memory)
         alice_state, bob_state = {}, {}
         query = "How should I verify the blue release gate?"
         alice = FakeSessionContext(session_id="alice-run", user_id="alice", query=query)
@@ -163,7 +163,7 @@ def test_context_provider_uses_scoped_one_call_lifecycle_and_isolates_users(
 def test_memory_outages_fail_open_before_and_after_run(monkeypatch, request, tmp_path):
     async def _test():
         module = _install_fake_agent_framework(monkeypatch, request)
-        provider = module.CommonTraceContextProvider(
+        provider = module.UniMemContextProvider(
             MemoryClient(str(tmp_path), agent_id="af-agent", context={"user": "alice"})
         )
         response = SimpleNamespace(messages=[FakeMessage("assistant", "The response remains unchanged.")])
@@ -188,7 +188,7 @@ def test_memory_outages_fail_open_before_and_after_run(monkeypatch, request, tmp
         await provider.before_run(agent=None, session=SimpleNamespace(session_id="run-1"), context=context, state=state)
         context.response = response
 
-        from commontrace.framework_middleware import Middleware
+        from unimem.framework_middleware import Middleware
 
         def fail_capture(self, outcome):
             raise RuntimeError("memory unavailable")
@@ -204,7 +204,7 @@ def test_memory_outages_fail_open_before_and_after_run(monkeypatch, request, tmp
 def test_missing_user_identity_does_not_run_unscoped_memory(monkeypatch, request, tmp_path):
     async def _test():
         module = _install_fake_agent_framework(monkeypatch, request)
-        provider = module.CommonTraceContextProvider(MemoryClient(str(tmp_path), agent_id="af-agent"))
+        provider = module.UniMemContextProvider(MemoryClient(str(tmp_path), agent_id="af-agent"))
         context = FakeSessionContext(session_id="run-1", user_id="", query="Do not use unscoped memory")
         context.options.clear()
 
@@ -217,7 +217,7 @@ def test_missing_user_identity_does_not_run_unscoped_memory(monkeypatch, request
 def test_loop_nudges_reuse_context_without_overwriting_user_turn(monkeypatch, request, tmp_path):
     async def _test():
         module = _install_fake_agent_framework(monkeypatch, request)
-        provider = module.CommonTraceContextProvider(
+        provider = module.UniMemContextProvider(
             MemoryClient(str(tmp_path), agent_id="af-agent", context={"user": "alice"})
         )
         calls = []

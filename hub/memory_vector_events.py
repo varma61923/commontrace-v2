@@ -12,7 +12,7 @@ from collections.abc import Iterable
 from sqlalchemy import delete, update
 from sqlalchemy.dialects.postgresql import insert
 
-from commontrace.memory_record import MemoryRecord
+from unimem.memory_record import MemoryRecord
 from hub.models import MemoryChangeClock, MemoryChangeEvent, MemoryEmbeddingCache
 
 

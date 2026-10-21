@@ -15,7 +15,7 @@ from jwt.algorithms import RSAAlgorithm
 from hub import sso
 
 ISSUER = "https://idp.example.test/"
-AUDIENCE = "commontrace-hub"
+AUDIENCE = "unimem-hub"
 
 
 def _keypair():

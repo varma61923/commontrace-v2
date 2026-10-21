@@ -21,7 +21,7 @@ from hub.sso import IdentityProvider
 pytestmark = pytest.mark.asyncio
 
 ISSUER = "https://idp.example.test/"
-AUDIENCE = "commontrace-hub"
+AUDIENCE = "unimem-hub"
 
 
 def _keypair():

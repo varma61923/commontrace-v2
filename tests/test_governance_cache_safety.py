@@ -6,8 +6,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from commontrace import conformal_gate, incident, retention, safety, spatial
-from commontrace import frontier_protocol as fp
+from unimem import conformal_gate, incident, retention, safety, spatial
+from unimem import frontier_protocol as fp
 
 
 def test_governance_cache_reads_are_consistent_across_threads(tmp_path):

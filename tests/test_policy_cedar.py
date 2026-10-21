@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import pytest
 
-pytest.importorskip("cedarpy", reason="install commontrace[policy-cedar] for native Cedar checks")
+pytest.importorskip("cedarpy", reason="install unimem[policy-cedar] for native Cedar checks")
 
-from commontrace import policy_cedar, policy_proof  # noqa: E402
+from unimem import policy_cedar, policy_proof  # noqa: E402
 from tests.test_policy_proof import example  # noqa: E402
 
 

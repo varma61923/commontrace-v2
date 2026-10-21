@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from benchmarks import conversation_bench as bench
-from commontrace import llm
+from unimem import llm
 
 
 def test_a_transient_failure_is_retried_and_every_row_is_graded():

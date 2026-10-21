@@ -1,4 +1,4 @@
-"""100-sample agreement test comparing CommonTrace judges against official evaluation protocols.
+"""100-sample agreement test comparing UniMem judges against official evaluation protocols.
 
 Verifies acceptance criterion:
 Demonstrate >= 98% parse/grade agreement across a 100-answer evaluation sample

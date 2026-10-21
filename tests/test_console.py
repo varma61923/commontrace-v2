@@ -3,7 +3,7 @@ import re
 
 import pytest
 
-from commontrace import gateway, holdout_io
+from unimem import gateway, holdout_io
 
 UI_DIR = os.path.join(os.path.dirname(gateway.__file__), "ui")
 FILES = ("index.html", "app.js", "app.css", "tokens.css", "favicon.svg")
@@ -133,8 +133,8 @@ def test_in_a_real_browser_hostile_ids_are_text_and_the_token_leaves_the_address
 
 
 def _workbench_store(tmp_path):
-    from commontrace import frontmatter, paths, templates
-    from commontrace.cli import main
+    from unimem import frontmatter, paths, templates
+    from unimem.cli import main
     main(["init", "--agent-type", "support", "--dest", str(tmp_path)])
     holdout_io.configure(str(tmp_path), rate=0.5, salt="console-wb")
     for slug, rule in (("lesson_ready", "Link the single refund policy page."),
@@ -157,7 +157,7 @@ def test_in_a_real_browser_a_draft_is_edited_approved_and_a_failing_one_cannot_b
         pytest.skip("no Chromium available")
     import threading
 
-    from commontrace import frontmatter, paths
+    from unimem import frontmatter, paths
 
     _workbench_store(tmp_path)
     g = gateway.Gateway(str(tmp_path), token="t" * 40, allow_approval=True)

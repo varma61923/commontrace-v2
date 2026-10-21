@@ -9,8 +9,8 @@ import time
 
 import pytest
 
-from commontrace import warm
-from commontrace.commands import _shellout
+from unimem import warm
+from unimem.commands import _shellout
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="the warm worker is Unix-only")
 
@@ -22,7 +22,7 @@ FAKE_SCRIPT = textwrap.dedent('''\
     import os
     import sys
 
-    _ROOT = os.environ.get("COMMONTRACE_ROOT") or "."
+    _ROOT = os.environ.get("UNIMEM_ROOT") or "."
     INDEX_PATH = os.path.join(_ROOT, "memory", "attention", "index.npz")
     LESSONS_DIR = os.path.join(_ROOT, "memory", "lessons")
     TELEMETRY_PATH = os.path.join(_ROOT, "memory", "alpha_telemetry.jsonl")
@@ -83,10 +83,10 @@ def env(monkeypatch):
     run = tempfile.mkdtemp(prefix="ctw")
     os.chmod(run, 0o700)
     monkeypatch.setenv("XDG_RUNTIME_DIR", run)
-    monkeypatch.setenv("COMMONTRACE_WARM", "1")
-    monkeypatch.setenv("COMMONTRACE_WARM_IDLE", "20")
+    monkeypatch.setenv("UNIMEM_WARM", "1")
+    monkeypatch.setenv("UNIMEM_WARM_IDLE", "20")
     yield run
-    directory = os.path.join(run, "commontrace")
+    directory = os.path.join(run, "unimem")
     for name in os.listdir(directory) if os.path.isdir(directory) else ():
         if name.endswith(".sock"):
             _stop_worker(os.path.join(directory, name))
@@ -117,7 +117,7 @@ FAKE_BUILDER = textwrap.dedent('''\
     import os
     import sys
 
-    _ROOT = os.environ.get("COMMONTRACE_ROOT") or "."
+    _ROOT = os.environ.get("UNIMEM_ROOT") or "."
     LESSONS_DIR = os.path.join(_ROOT, "memory", "lessons")
     INDEX_PATH = os.path.join(_ROOT, "memory", "attention", "index.npz")
     LOADS = []
@@ -176,7 +176,7 @@ def _store(tmp_path, name, index_text="v1"):
 def _both(root, argv, capfd, monkeypatch):
     results = []
     for setting in ("0", "1"):
-        monkeypatch.setenv("COMMONTRACE_WARM", setting)
+        monkeypatch.setenv("UNIMEM_WARM", setting)
         rc, out = _shellout.run_script(root, QUERY, argv, "hint", capture=True)
         results.append((rc, out, capfd.readouterr().err))
     return results
@@ -194,14 +194,14 @@ class TestTheWorkerAnswersExactlyAsTheSubprocessWould:
         root = _store(tmp_path, "store")
         cold, hot = _both(root, argv, capfd, monkeypatch)
         assert hot == cold
-        assert os.listdir(os.path.join(env, "commontrace")), "the worker path was not taken"
+        assert os.listdir(os.path.join(env, "unimem")), "the worker path was not taken"
 
     def test_streaming_mode_writes_the_same_output(self, tmp_path, env, script, capfd, monkeypatch):
         root = _store(tmp_path, "store")
-        monkeypatch.setenv("COMMONTRACE_WARM", "0")
+        monkeypatch.setenv("UNIMEM_WARM", "0")
         assert _shellout.run_script(root, QUERY, ["--", "q"], "hint") == 0
         cold = capfd.readouterr()
-        monkeypatch.setenv("COMMONTRACE_WARM", "1")
+        monkeypatch.setenv("UNIMEM_WARM", "1")
         assert _shellout.run_script(root, QUERY, ["--", "q"], "hint") == 0
         hot = capfd.readouterr()
         assert (hot.out, hot.err) == (cold.out, cold.err)
@@ -222,14 +222,14 @@ class TestTheIndexBuilderIsServedToo:
         results = []
         for setting in ("0", "1"):
             root = _store(tmp_path, "store" + setting)
-            monkeypatch.setenv("COMMONTRACE_WARM", setting)
+            monkeypatch.setenv("UNIMEM_WARM", setting)
             rc, out = _shellout.run_script(root, BUILD, argv, "hint", capture=True)
             results.append((rc, out.replace(root, "<root>"), capfd.readouterr().err))
             if rc == 0:
                 index = os.path.join(root, "memory", "attention", "index.npz")
                 assert open(index).read() == "built" + ("-forced" if argv else "")
         assert results[0] == results[1]
-        assert os.listdir(os.path.join(env, "commontrace")), "the worker path was not taken"
+        assert os.listdir(os.path.join(env, "unimem")), "the worker path was not taken"
 
     def test_it_reuses_the_model_the_query_path_loaded(self, tmp_path, script):
         root = _store(tmp_path, "store")
@@ -302,13 +302,13 @@ class TestItIsActuallyWarm:
 class TestOnlyThisUserCanReachIt:
     def test_directory_and_socket_are_private(self, tmp_path, env, script, capfd):
         _shellout.run_script(_store(tmp_path, "store"), QUERY, ["--", "q"], "hint", capture=True)
-        directory = os.path.join(env, "commontrace")
+        directory = os.path.join(env, "unimem")
         assert stat.S_IMODE(os.stat(directory).st_mode) == 0o700
         [sock] = [n for n in os.listdir(directory) if n.endswith(".sock")]
         assert stat.S_IMODE(os.stat(os.path.join(directory, sock)).st_mode) == 0o600
 
     def test_a_directory_others_can_enter_is_refused(self, tmp_path, env, script, capfd, monkeypatch):
-        directory = os.path.join(env, "commontrace")
+        directory = os.path.join(env, "unimem")
         os.mkdir(directory, 0o700)
         os.chmod(directory, 0o755)
         assert warm.runtime_dir() is None
@@ -336,10 +336,10 @@ class TestOnlyThisUserCanReachIt:
 
 class TestFailureMeansTheSubprocessNotAnError:
     def test_disabled_never_starts_a_worker(self, tmp_path, env, script, capfd, monkeypatch):
-        monkeypatch.setenv("COMMONTRACE_WARM", "0")
+        monkeypatch.setenv("UNIMEM_WARM", "0")
         rc, _ = _shellout.run_script(_store(tmp_path, "store"), QUERY, ["--", "q"], "hint", capture=True)
         assert rc == 0
-        assert not os.path.exists(os.path.join(env, "commontrace"))
+        assert not os.path.exists(os.path.join(env, "unimem"))
 
     def test_only_the_query_script_and_its_builder_are_served(self, env):
         assert warm.enabled(QUERY) and warm.enabled(BUILD)
@@ -365,7 +365,7 @@ class TestFailureMeansTheSubprocessNotAnError:
 
 class TestItGoesAway:
     def test_after_the_idle_window(self, tmp_path, env, script, capfd, monkeypatch):
-        monkeypatch.setenv("COMMONTRACE_WARM_IDLE", "1")
+        monkeypatch.setenv("UNIMEM_WARM_IDLE", "1")
         _shellout.run_script(_store(tmp_path, "store"), QUERY, ["--", "q"], "hint", capture=True)
         sock = warm.socket_path(script)
         assert os.path.exists(sock)
@@ -400,11 +400,11 @@ class TestDoctorReportsIt:
         _shellout.run_script(_store(tmp_path, "store"), QUERY, ["--", "q"], "hint", capture=True)
         healthy, detail = warm.status(script)
         assert healthy and detail.startswith("running (")
-        monkeypatch.setenv("COMMONTRACE_WARM", "0")
-        assert warm.status(script)[1].startswith("off (COMMONTRACE_WARM=0)")
+        monkeypatch.setenv("UNIMEM_WARM", "0")
+        assert warm.status(script)[1].startswith("off (UNIMEM_WARM=0)")
 
     def test_an_unsafe_directory_is_a_warning(self, env, script):
-        directory = os.path.join(env, "commontrace")
+        directory = os.path.join(env, "unimem")
         os.mkdir(directory)
         os.chmod(directory, 0o777)
         healthy, detail = warm.status(script)
@@ -418,7 +418,7 @@ class _FakeCrossEncoder:
 
 class TestTheWorkerScoresExactlyAsTheRerankerWould:
     def test_scores_match_in_process_scoring(self, script, monkeypatch):
-        from commontrace import rerank_arm
+        from unimem import rerank_arm
 
         monkeypatch.setattr(rerank_arm, "_load", lambda *_a: _FakeCrossEncoder())
         loaded = warm._Script(script)
@@ -455,9 +455,9 @@ class TestTheWorkerScoresExactlyAsTheRerankerWould:
         assert spawned == []
 
     def test_off_means_in_process(self, monkeypatch):
-        from commontrace import rerank_arm
+        from unimem import rerank_arm
 
-        monkeypatch.setenv("COMMONTRACE_WARM", "0")
+        monkeypatch.setenv("UNIMEM_WARM", "0")
         assert warm.rerank_scores("cross-encoder", [("a", "b")]) is None
         monkeypatch.setattr(rerank_arm, "_load", lambda *_a: _FakeCrossEncoder())
         monkeypatch.setattr(rerank_arm, "_USE_WORKER", True)
@@ -467,13 +467,13 @@ class TestTheWorkerScoresExactlyAsTheRerankerWould:
     def test_a_reply_of_the_wrong_length_is_not_trusted(self, monkeypatch):
         monkeypatch.setattr(warm, "_call", lambda script, request, root, env, valid: (
             {"protocol": warm.PROTOCOL, "scores": [1.0]} if valid({"scores": [1.0]}) else None))
-        monkeypatch.setenv("COMMONTRACE_WARM", "1")
+        monkeypatch.setenv("UNIMEM_WARM", "1")
         assert warm.rerank_scores("cross-encoder", [("a", "b"), ("c", "d")]) is None
 
 
 def _real_models_cached():
-    from commontrace import rerank_arm
-    from commontrace.commands import doctor_cmd
+    from unimem import rerank_arm
+    from unimem.commands import doctor_cmd
 
     return (
         _shellout.has_attention_deps()
@@ -483,7 +483,7 @@ def _real_models_cached():
 
 @pytest.mark.skipif(not _real_models_cached(), reason="needs the attention extra and a cached cross-encoder")
 def test_the_real_model_scores_identically_through_the_worker(env, monkeypatch):
-    from commontrace import rerank_arm
+    from unimem import rerank_arm
 
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     pairs = [("retry the payment after a timeout", "Send an idempotency key on every payment request."),
@@ -496,8 +496,8 @@ def test_the_real_model_scores_identically_through_the_worker(env, monkeypatch):
 
 
 def _lexical_store(tmp_path, name="cli-store"):
-    from commontrace import frontmatter, paths
-    from commontrace.cli import main
+    from unimem import frontmatter, paths
+    from unimem.cli import main
 
     root = str(tmp_path / name)
     main(["init", "--agent-type", "code", "--dest", root])
@@ -512,7 +512,7 @@ def _lexical_store(tmp_path, name="cli-store"):
 
 class TestAWorkerRunsTheQueryCommand:
     def test_same_output_as_running_it_here(self, tmp_path, script, capsys):
-        from commontrace.cli import main
+        from unimem.cli import main
 
         root = _lexical_store(tmp_path)
         capsys.readouterr()
@@ -528,14 +528,14 @@ class TestAWorkerRunsTheQueryCommand:
         elsewhere = tmp_path / "elsewhere"
         elsewhere.mkdir()
         before_env, before_cwd = dict(os.environ), os.getcwd()
-        env = dict(os.environ, COMMONTRACE_ROOT=root, CT_WARM_PROBE="1")
+        env = dict(os.environ, UNIMEM_ROOT=root, CT_WARM_PROBE="1")
         reply = warm._Script(script).cli(["query", "payment retry", "--lexical"], str(elsewhere), env)
         assert reply["rc"] == 0 and "idem" in reply["stdout"]
         assert dict(os.environ) == before_env and os.getcwd() == before_cwd
 
     def test_argparse_errors_and_exit_status_come_back(self, tmp_path, script):
         reply = warm._Script(script).cli(["query", "--bogus"], str(tmp_path), dict(os.environ))
-        assert reply["rc"] == 2 and reply["stderr"].startswith("usage: commontrace query")
+        assert reply["rc"] == 2 and reply["stderr"].startswith("usage: unimem query")
 
     def test_inside_a_worker_nothing_connects_to_a_socket(self, tmp_path, script, monkeypatch):
         loaded = warm._Script(script)
@@ -563,13 +563,13 @@ class TestAWorkerRunsTheQueryCommand:
         assert _ask_pid(sock)
 
     def test_the_client_only_asks_when_it_should(self, monkeypatch):
-        from commontrace import cli
+        from unimem import cli
 
         asked = []
         monkeypatch.setattr(warm, "run_cli", lambda argv: asked.append(argv))
-        monkeypatch.setenv("COMMONTRACE_WARM", "0")
+        monkeypatch.setenv("UNIMEM_WARM", "0")
         assert cli._from_worker(["query", "x"]) is None
-        monkeypatch.setenv("COMMONTRACE_WARM", "1")
+        monkeypatch.setenv("UNIMEM_WARM", "1")
         assert cli._from_worker(["init"]) is None
         monkeypatch.setattr(_shellout, "has_attention_deps", lambda: False)
         assert cli._from_worker(["query", "x"]) is None
@@ -583,12 +583,12 @@ def test_the_real_query_command_prints_the_same_through_the_worker(tmp_path, env
 
     root = _lexical_store(tmp_path, "real")
     run_env = dict(os.environ, HF_HUB_OFFLINE="1")
-    subprocess.run([sys.executable, "-m", "commontrace", "index", "--dest", root],
-                   env=dict(run_env, COMMONTRACE_WARM="0"), capture_output=True, check=True)
+    subprocess.run([sys.executable, "-m", "unimem", "index", "--dest", root],
+                   env=dict(run_env, UNIMEM_WARM="0"), capture_output=True, check=True)
     results = []
     for setting in ("0", "1", "1"):
-        r = subprocess.run([sys.executable, "-m", "commontrace", "query", "retrying a payment", "--dest", root],
-                           env=dict(run_env, COMMONTRACE_WARM=setting), capture_output=True, text=True)
+        r = subprocess.run([sys.executable, "-m", "unimem", "query", "retrying a payment", "--dest", root],
+                           env=dict(run_env, UNIMEM_WARM=setting), capture_output=True, text=True)
         results.append((r.returncode, r.stdout, r.stderr))
     assert results[0] == results[1] == results[2]
     assert "idem" in results[0][1]

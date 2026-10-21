@@ -12,8 +12,8 @@ def _allowlisted_modules() -> set[str]:
     allowed = set()
     for line in DOCKERIGNORE.read_text(encoding="utf-8").splitlines():
         line = line.strip()
-        if line.startswith("!commontrace/") and line.endswith(".py"):
-            relative = pathlib.PurePosixPath(line.removeprefix("!commontrace/")).with_suffix("")
+        if line.startswith("!unimem/") and line.endswith(".py"):
+            relative = pathlib.PurePosixPath(line.removeprefix("!unimem/")).with_suffix("")
             parts = relative.parts
             if parts[-1] == "__init__" and len(parts) > 1:
                 parts = parts[:-1]
@@ -22,7 +22,7 @@ def _allowlisted_modules() -> set[str]:
 
 
 def _module_path(name: str) -> pathlib.Path | None:
-    path = REPO_ROOT / "commontrace" / pathlib.Path(*name.split("."))
+    path = REPO_ROOT / "unimem" / pathlib.Path(*name.split("."))
     if path.with_suffix(".py").is_file():
         return path.with_suffix(".py")
     if (path / "__init__.py").is_file():
@@ -40,9 +40,9 @@ def _client_imports_in(path: pathlib.Path) -> set[str]:
     package = path.parent.relative_to(REPO_ROOT).parts
 
     def add(name):
-        if not name.startswith("commontrace."):
+        if not name.startswith("unimem."):
             return
-        name = name.removeprefix("commontrace.")
+        name = name.removeprefix("unimem.")
         if not _is_submodule(name):
             return
         found.add(name)
@@ -95,7 +95,7 @@ def _imported_modules() -> dict[str, str]:
 
 
 class TestImageCarriesEveryImportedClientModule:
-    def test_every_imported_commontrace_module_ships_in_the_image(self):
+    def test_every_imported_unimem_module_ships_in_the_image(self):
         allowed = _allowlisted_modules()
         missing = {
             module: source
@@ -103,11 +103,11 @@ class TestImageCarriesEveryImportedClientModule:
             if module not in allowed
         }
         assert not missing, (
-            "hub/ imports commontrace modules that .dockerignore keeps out of the "
+            "hub/ imports unimem modules that .dockerignore keeps out of the "
             "server image, so the container will start and immediately die with an "
             "ImportError:\n"
-            + "\n".join(f"  commontrace.{m}  ({why})" for m, why in sorted(missing.items()))
-            + "\n\nAdd `!commontrace/<module>.py` to .dockerignore, and check the "
+            + "\n".join(f"  unimem.{m}  ({why})" for m, why in sorted(missing.items()))
+            + "\n\nAdd `!unimem/<module>.py` to .dockerignore, and check the "
             "module is import-safe with hub/requirements.txt. Package children "
             "also require their parent __init__.py."
         )
@@ -121,7 +121,7 @@ class TestImageCarriesEveryImportedClientModule:
         imported = set(_imported_modules())
         extra = _allowlisted_modules() - imported - {"__init__"}
         assert not extra, (
-            "`.dockerignore` ships commontrace modules that no hub/ file imports "
+            "`.dockerignore` ships unimem modules that no hub/ file imports "
             f"any more: {sorted(extra)}. Drop the negation, or note why the image "
             "needs it."
         )
@@ -153,7 +153,7 @@ class TestImportedModulesAreStdlibOnly:
         distribution_imports = {"pyyaml": "yaml", "pyjwt": "jwt", "argon2_cffi": "argon2"}
         hub_requirements |= {name for distribution, name in distribution_imports.items()
                              if distribution in hub_requirements}
-        available = set(sys.stdlib_module_names) | hub_requirements | {"commontrace"}
+        available = set(sys.stdlib_module_names) | hub_requirements | {"unimem"}
 
         for module in sorted(_allowlisted_modules()):
             path = _module_path(module)
@@ -166,7 +166,7 @@ class TestImportedModulesAreStdlibOnly:
                     names = [node.module.split(".")[0]]
                 for name in names:
                     assert name in available, (
-                        f"commontrace/{module}.py ships in the server image and imports "
+                        f"unimem/{module}.py ships in the server image and imports "
                         f"{name!r}, which is neither stdlib nor in hub/requirements.txt. "
                         "The container would start and then fail on this import."
                     )
@@ -190,17 +190,17 @@ def test_import_closure_includes_package_initializers_children_and_relative_impo
     import sys
 
     module = sys.modules[__name__]
-    package = tmp_path / "commontrace" / "nested"
+    package = tmp_path / "unimem" / "nested"
     package.mkdir(parents=True)
-    (tmp_path / "commontrace" / "__init__.py").write_text("")
+    (tmp_path / "unimem" / "__init__.py").write_text("")
     (package / "__init__.py").write_text("from .impl import Value\n")
     (package / "impl.py").write_text("from . import sibling\nValue = 1\n")
     (package / "sibling.py").write_text("")
     hub = tmp_path / "hub"
     hub.mkdir()
-    (hub / "app.py").write_text("from commontrace.nested import impl\n")
+    (hub / "app.py").write_text("from unimem.nested import impl\n")
     ignore = tmp_path / ".dockerignore"
-    ignore.write_text("commontrace/**\n!commontrace/nested/__init__.py\n!commontrace/nested/impl.py\n")
+    ignore.write_text("unimem/**\n!unimem/nested/__init__.py\n!unimem/nested/impl.py\n")
     monkeypatch.setattr(module, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(module, "HUB_DIR", hub)
     monkeypatch.setattr(module, "DOCKERIGNORE", ignore)
@@ -222,7 +222,7 @@ def test_shipped_core_imports_and_canonical_runtime_work_without_checkout_fallba
         destination = tmp_path / source.relative_to(REPO_ROOT)
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, destination)
-    for relative in ("commontrace/configuration.schema.json", "commontrace/ui/tokens.css"):
+    for relative in ("unimem/configuration.schema.json", "unimem/ui/tokens.css"):
         destination = tmp_path / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(REPO_ROOT / relative, destination)
@@ -235,12 +235,12 @@ import importlib, json, pathlib, sys
 root = pathlib.Path.cwd()
 sys.path.extend(json.loads(sys.argv[1]))
 for module in json.loads(sys.argv[2]):
-    importlib.import_module('commontrace.' + module if module != '__init__' else 'commontrace')
-from commontrace.memory_record import atomic_fact_from_record, atomic_fact_record
-from commontrace.hierarchical import AtomicFact
-from commontrace.conversation import embed
-from commontrace.vector_store import SQLiteVectorIndex
-from commontrace.vector_snapshots import SnapshotBackend
+    importlib.import_module('unimem.' + module if module != '__init__' else 'unimem')
+from unimem.memory_record import atomic_fact_from_record, atomic_fact_record
+from unimem.hierarchical import AtomicFact
+from unimem.conversation import embed
+from unimem.vector_store import SQLiteVectorIndex
+from unimem.vector_snapshots import SnapshotBackend
 record = atomic_fact_record(AtomicFact(
     id='fact', statement='A bounded package smoke fact', category='general', scopes=[],
     confidence=0.8, confirmations=1, valid_from='2026-01-01T00:00:00Z', valid_until=None,
@@ -248,7 +248,7 @@ record = atomic_fact_record(AtomicFact(
 assert atomic_fact_from_record(record).statement == 'A bounded package smoke fact'
 assert embed.model_identity('bge-small')
 for name, module in list(sys.modules.items()):
-    if name == 'commontrace' or name.startswith('commontrace.'):
+    if name == 'unimem' or name.startswith('unimem.'):
         path = getattr(module, '__file__', None)
         assert path and pathlib.Path(path).resolve().is_relative_to(root), (name, path)
 print('isolated imports and canonical fact round-trip passed')
@@ -267,17 +267,17 @@ def test_image_telemetry_runs_with_no_optional_packages(tmp_path):
     import subprocess
     import sys
 
-    package = tmp_path / "commontrace"
+    package = tmp_path / "unimem"
     package.mkdir()
     for name in ("__init__.py", "telemetry.py", "memory_guard.py", "paths.py",
                  "configuration.py", "configuration.schema.json", "offline.py", "exceptions.py"):
-        shutil.copyfile(REPO_ROOT / "commontrace" / name, package / name)
-    code = ("from commontrace import telemetry; import logging; "
+        shutil.copyfile(REPO_ROOT / "unimem" / name, package / name)
+    code = ("from unimem import telemetry; import logging; "
             "telemetry.configure_logging('json', 'INFO', log_file='private.jsonl'); "
-            "logging.getLogger('commontrace').info('Bearer fake-credential'); "
+            "logging.getLogger('unimem').info('Bearer fake-credential'); "
             "assert not telemetry.status()['otel_installed']")
     result = subprocess.run([sys.executable, "-S", "-c", code], cwd=tmp_path,
-                            env={**os.environ, "PYTHONPATH": str(tmp_path), "COMMONTRACE_OTEL": "1"},
+                            env={**os.environ, "PYTHONPATH": str(tmp_path), "UNIMEM_OTEL": "1"},
                             capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr
     row = json.loads((tmp_path / "private.jsonl").read_text())
@@ -292,19 +292,19 @@ def test_packaged_theme_loads_without_installed_client_or_dependencies(tmp_path)
     import subprocess
     import sys
 
-    package = tmp_path / "commontrace"
+    package = tmp_path / "unimem"
     package.mkdir()
     for name in ("__init__.py", "ui_style.py"):
-        shutil.copyfile(REPO_ROOT / "commontrace" / name, package / name)
+        shutil.copyfile(REPO_ROOT / "unimem" / name, package / name)
     (package / "ui").mkdir()
-    shutil.copyfile(REPO_ROOT / "commontrace" / "ui" / "tokens.css", package / "ui" / "tokens.css")
+    shutil.copyfile(REPO_ROOT / "unimem" / "ui" / "tokens.css", package / "ui" / "tokens.css")
     result = subprocess.run(
-        [sys.executable, "-S", "-c", "from commontrace.ui_style import THEME_CSS; assert '--accent:' in THEME_CSS"],
+        [sys.executable, "-S", "-c", "from unimem.ui_style import THEME_CSS; assert '--accent:' in THEME_CSS"],
         cwd=tmp_path, env={**os.environ, "PYTHONPATH": str(tmp_path)}, capture_output=True, text=True,
         check=False,
     )
     assert result.returncode == 0, result.stderr
-    assert "!commontrace/ui/tokens.css" in DOCKERIGNORE.read_text()
+    assert "!unimem/ui/tokens.css" in DOCKERIGNORE.read_text()
 
 
 def test_every_base_image_is_pinned_by_digest():

@@ -14,8 +14,8 @@ from typing import Protocol
 
 from sqlalchemy import select, text
 
-from commontrace.vector_snapshots import SnapshotConflict
-from commontrace.vector_store import MAX_DIMENSION, VectorHit, VectorRecord, _keys, _label, _limit, _vector
+from unimem.vector_snapshots import SnapshotConflict
+from unimem.vector_store import MAX_DIMENSION, VectorHit, VectorRecord, _keys, _label, _limit, _vector
 from hub.db import session_scope
 from hub.models import MemoryChangeClock, MemoryChangeEvent, MemoryEmbeddingCache, MemoryProjectionState
 
@@ -68,7 +68,7 @@ class HostedProjection:
     async def _lock(self, session):
         await session.execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:owner, 61923))"),
-            {"owner": "commontrace-memory:" + self.org_id},
+            {"owner": "unimem-memory:" + self.org_id},
         )
 
     async def _state(self, session):

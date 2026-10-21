@@ -6,7 +6,7 @@ from datetime import datetime
 
 import pytest
 
-from commontrace import (
+from unimem import (
     agent_hooks,
     agent_registry,
     causal_policy,
@@ -23,10 +23,10 @@ from commontrace import (
     wrap_anthropic,
     wrap_openai,
 )
-from commontrace.client import MemoryClient
-from commontrace.gateway import Gateway
-from commontrace.llm_runtime import Budget, BudgetExceeded, LLMRuntime
-from commontrace.search_recipes import REGISTRY
+from unimem.client import MemoryClient
+from unimem.gateway import Gateway
+from unimem.llm_runtime import Budget, BudgetExceeded, LLMRuntime
+from unimem.search_recipes import REGISTRY
 
 
 @pytest.fixture(autouse=True)
@@ -135,8 +135,8 @@ def test_installer_failure_keeps_signup_recoverable_and_rotation_revokes_old_key
     assert agent_registry.authenticate(root, first["token"]) is None
     assert agent_registry.authenticate(root, second["token"])["id"] == "alice"
     manifest = json.loads((tmp_path / "distribution" / "agents" / "alice" / "plugin.json").read_text())
-    assert manifest["skills"][0]["path"] == "skills/commontrace-sdk/SKILL.md"
-    assert manifest["hooks"]["session_start"]["module"] == "commontrace.agent_hooks"
+    assert manifest["skills"][0]["path"] == "skills/unimem-sdk/SKILL.md"
+    assert manifest["hooks"]["session_start"]["module"] == "unimem.agent_hooks"
 
 
 def test_hooks_capture_explicit_outcomes_and_are_idempotent(tmp_path):
@@ -262,7 +262,7 @@ def test_local_gliner_ingestion_links_literal_source_and_dense_adapter_reaches_s
             return [{"text": "Meridian", "label": "organization", "score": .9},
                     {"text": "Invented", "label": "organization", "score": .9}]
     fact = memory.add("Meridian uses approval", entity_model=NER())["facts"][0]
-    from commontrace import graph
+    from unimem import graph
     assert any(r["neighbor_id"] == fact["id"] for r in graph.get_neighbors(str(tmp_path), "organization:meridian"))
     assert "organization:invented" not in graph.load_nodes(str(tmp_path))
     class Embedder:
@@ -301,7 +301,7 @@ def test_offline_anticipation_requires_review_and_rechecks_source_liveness(tmp_p
 
 
 def test_prescribed_property_schemas_validate_actual_graph_writes(tmp_path):
-    from commontrace import graph, ontology, ontology_learning
+    from unimem import graph, ontology, ontology_learning
 
     ontology_learning.prescribe(str(tmp_path), {"$defs": {"Device": {"type": "object",
         "properties": {"serial": {"type": "integer"}}, "required": ["serial"], "additionalProperties": False}}})
@@ -391,7 +391,7 @@ def test_gateway_outcome_accepts_every_valid_returned_occasion(tmp_path):
 
 @pytest.mark.parametrize("change", ["outcome", "expires", "procedure"])
 def test_signed_trace_metadata_tampering_cannot_feed_skills_or_recall(tmp_path, change):
-    from commontrace import frontmatter
+    from unimem import frontmatter
 
     root = str(tmp_path)
     filename = trace_io.write_new(root, title="release", context="release context", solution="reviewed", tags=[],

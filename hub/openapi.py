@@ -24,7 +24,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Mount, Route
 
-from commontrace import __version__
+from unimem import __version__
 from hub import alerts, crud, events, plans, rbac, retention, scopes
 
 OPENAPI_VERSION = "3.1.0"
@@ -273,7 +273,7 @@ def _schemas() -> dict:
         "algorithm": _string("Signature algorithm (`ed25519`, or absent for HMAC).", enum=["ed25519", "hmac-sha256"]),
         "signature": _string("Base64 Ed25519 signature, or HMAC hex."),
     }, ("record", "principal", "organization", "authority", "digest", "signature"), additional=True,
-        description="A signed receipt (commontrace/origin.py `sign`).")
+        description="A signed receipt (unimem/origin.py `sign`).")
     listing_summary = _object({
         "id": _string("Listing id: the signed listing's digest."),
         "name": _string(),
@@ -443,7 +443,7 @@ def _schemas() -> dict:
         "SignedReceipt": signed,
         "SignedListing": {
             "allOf": [signed],
-            "description": "A publisher-signed lesson listing (commontrace/market_listing.py). `record` holds "
+            "description": "A publisher-signed lesson listing (unimem/market_listing.py). `record` holds "
                            "`kind` (`lesson-listing`), `schema_version` (1), `lesson` {frontmatter, body}, "
                            "`lesson_sha256`, `licence` {id, terms, price?, outcome_share?}, `certificate` (a "
                            "referee-signed replicated-lift certificate) and `listed_at`.",
@@ -473,8 +473,8 @@ def _schemas() -> dict:
                                "gen_ai.request.messages / traceloop.entity.input / input.value (context); "
                                "gen_ai.completion / gen_ai.output.messages / gen_ai.response.messages / "
                                "traceloop.entity.output / output.value (solution); gen_ai.system and "
-                               "gen_ai.request.model (tags); commontrace.occasion_id / session.id / "
-                               "gen_ai.conversation.id with commontrace.occasion.succeeded (occasion outcome).",
+                               "gen_ai.request.model (tags); unimem.occasion_id / session.id / "
+                               "gen_ai.conversation.id with unimem.occasion.succeeded (occasion outcome).",
                 "oneOf": [
                     _array(_object({"key": _string(), "value": _free_object("OTLP AnyValue.")}, ("key",),
                                    additional=True)),
@@ -643,7 +643,7 @@ _TAGS = [
         "The MCP streamable-HTTP endpoint (path HUB_STREAMABLE_HTTP_PATH, default /mcp). Tools are "
         "discovered with `tools/list`; their arguments are described by the server itself.",
     ),
-    ("REST", "The /api/v1 REST API (HUB_REST_API_ENABLED) the CommonTrace client plugin speaks. X-API-Key."),
+    ("REST", "The /api/v1 REST API (HUB_REST_API_ENABLED) the UniMem client plugin speaks. X-API-Key."),
     (
         "Marketplace",
         "The lesson marketplace under /api/v1/market (HUB_REST_API_ENABLED). Uploads are verified "
@@ -1274,7 +1274,7 @@ def _operations() -> dict[tuple[str, str], dict]:
         ),
         ("GET", "/app/proof/assignments.csv"): _op(
             "consoleAssignmentsCsv", "Console", "Download holdout assignments as CSV", security=CONSOLE,
-            responses={"200": {"description": "Attachment `commontrace-assignments.csv`.",
+            responses={"200": {"description": "Attachment `unimem-assignments.csv`.",
                                "content": {"text/csv": {"schema": {"type": "string"}}}},
                        "303": _response_ref("SignInRedirect")},
         ),
@@ -1688,7 +1688,7 @@ def reference_app():
     from hub.server import build_app
 
     saved = (auth._DEPLOYMENT_REGION, auth._AUTH_CACHE_TTL, auth._AUTH_CACHE_REQUIRES_LISTENER)
-    server_logger = logging.getLogger("commontrace.hub")
+    server_logger = logging.getLogger("unimem.hub")
     quiet = _DropRecord("rate limiting is in-process")
     server_logger.addFilter(quiet)
     try:
@@ -1732,7 +1732,7 @@ def document(app=None) -> dict:
         if path in {"/mcp", "/api/v1/traces", "/api/v1/traces/search", "/v1/memory/record-put",
                     "/v1/memory/record-search", "/v1/memory/record-forget",
                     "/api/v1/memory/records/{operation}"}:
-            from commontrace import capabilities
+            from unimem import capabilities
 
             operation["parameters"] = list(operation.get("parameters", ())) + capabilities.header_parameters()
         responses = dict(operation["responses"])
@@ -1746,9 +1746,9 @@ def document(app=None) -> dict:
     return {
         "openapi": OPENAPI_VERSION,
         "info": {
-            "title": "CommonTrace Hub",
+            "title": "UniMem Hub",
             "version": __version__,
-            "summary": "Every HTTP route the CommonTrace Hub serves.",
+            "summary": "Every HTTP route the UniMem Hub serves.",
             "description": (
                 "Generated from the Hub's live route table by hub/openapi.py. Optional surfaces are "
                 "registered only when their setting is on (see each tag); a disabled surface answers 404. "

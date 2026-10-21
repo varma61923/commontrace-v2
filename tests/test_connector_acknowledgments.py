@@ -5,10 +5,10 @@ import os
 
 import pytest
 
-from commontrace import hierarchical, provenance
-from commontrace.connectors.base import decode_state_token
-from commontrace.connectors.local_dir import LocalDirConnector
-from commontrace.connectors.web_crawler import WebCrawlerConnector
+from unimem import hierarchical, provenance
+from unimem.connectors.base import decode_state_token
+from unimem.connectors.local_dir import LocalDirConnector
+from unimem.connectors.web_crawler import WebCrawlerConnector
 
 
 def document(path, text="Payments are retried three times before the operator receives an alert."):
@@ -134,7 +134,7 @@ def test_crawler_retries_write_failure_and_isolates_scopes(tmp_path, monkeypatch
 
 
 def test_local_read_failure_preserves_existing_facts_and_checkpoint(tmp_path, monkeypatch):
-    from commontrace.connectors import local_dir
+    from unimem.connectors import local_dir
 
     source = tmp_path / "source"
     source.mkdir()
@@ -157,9 +157,9 @@ def test_local_read_failure_preserves_existing_facts_and_checkpoint(tmp_path, mo
 @pytest.mark.parametrize("initial_scan_failure", [False, True])
 def test_legacy_scoped_sources_retire_without_touching_other_owners(
         tmp_path, monkeypatch, delete_before_upgrade, initial_scan_failure):
-    from commontrace.connectors import local_dir
-    from commontrace.connectors.base import chunk_markdown_text, record_chunks, save_connector_state
-    from commontrace.ingest import IngestionResult
+    from unimem.connectors import local_dir
+    from unimem.connectors.base import chunk_markdown_text, record_chunks, save_connector_state
+    from unimem.ingest import IngestionResult
 
     source = tmp_path / "source"
     source.mkdir()
@@ -194,8 +194,8 @@ def test_legacy_scoped_sources_retire_without_touching_other_owners(
 
 
 def test_document_pipeline_checkpoints_are_per_destination(tmp_path):
-    from commontrace.conversation import Store
-    from commontrace.ingest.pipeline import create_document_pipeline
+    from unimem.conversation import Store
+    from unimem.ingest.pipeline import create_document_pipeline
 
     path = tmp_path / "operations.md"
     document(path)
@@ -233,7 +233,7 @@ def test_same_size_change_with_preserved_mtime_is_not_skipped(tmp_path):
 
 
 def test_source_change_during_read_keeps_prior_generation_pending(tmp_path, monkeypatch):
-    from commontrace.connectors import local_dir
+    from unimem.connectors import local_dir
 
     source = tmp_path / "source"
     source.mkdir()

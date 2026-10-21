@@ -17,11 +17,11 @@ def render(envelope: dict, public_key: str) -> str:
         rows.append("<tr>" + "".join("<td>" + html.escape(str(value)) + "</td>" for value in values) + "</tr>")
     return (
         """<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
-<title>CommonTrace measured results</title>
+<title>UniMem measured results</title>
 <style>body{font:16px system-ui;max-width:1100px;margin:4rem auto;padding:1rem;
 background:#10151e;color:#e9edf3}table{border-collapse:collapse;width:100%}td,th{padding:1rem;text-align:left;
 border-bottom:1px solid #354056}a{color:#99caff}caption{text-align:left;margin:1rem 0}</style>
-<main><h1>CommonTrace measured results</h1><p>Evidence before claims. Fixture scores are labelled; external quality and
+<main><h1>UniMem measured results</h1><p>Evidence before claims. Fixture scores are labelled; external quality and
 coding uplift remain unverified until their required evaluations run.</p>
 <table><caption>Current measured release gates</caption>
 <thead><tr><th>Gate</th><th>Status</th><th>Measurement</th><th>Scope</th></tr></thead>

@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from commontrace.embeddings import EmbeddingError, Spec
-from commontrace.vector_store import MAX_DIMENSION
+from unimem.embeddings import EmbeddingError, Spec
+from unimem.vector_store import MAX_DIMENSION
 from hub.memory_embedding import LocalEmbedder, ProjectionFactory
 from hub.memory_projection import ProjectionIdentity
 

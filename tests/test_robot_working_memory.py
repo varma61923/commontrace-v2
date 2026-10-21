@@ -4,9 +4,9 @@ import time
 
 import pytest
 
-from commontrace import frontier_protocol as fp
-from commontrace import hierarchical
-from commontrace.robotics.working_memory import WorkingMemory, percentile_latency
+from unimem import frontier_protocol as fp
+from unimem import hierarchical
+from unimem.robotics.working_memory import WorkingMemory, percentile_latency
 
 
 def test_safety_keyframes_survive_utility_eviction_pressure():
@@ -66,7 +66,7 @@ def test_safety_keyframes_cannot_be_demoted_by_replacing_the_same_identity():
 
 
 def test_replacing_a_keyframe_is_allowed_when_the_slot_limit_is_full(monkeypatch):
-    from commontrace.robotics import working_memory
+    from unimem.robotics import working_memory
 
     monkeypatch.setattr(working_memory, "MAX_KEYFRAMES", 2)
     memory = WorkingMemory()

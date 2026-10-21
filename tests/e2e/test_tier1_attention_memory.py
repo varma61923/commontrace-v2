@@ -11,7 +11,7 @@ from tests.e2e.conftest import CLIResult  # noqa: E402
 
 
 def test_compute_semantic_duplicates_chunked_interface() -> None:
-    from commontrace.reference.measure_performance import compute_semantic_duplicates
+    from unimem.reference.measure_performance import compute_semantic_duplicates
 
     n = 20
     dim = 64
@@ -31,7 +31,7 @@ def test_compute_semantic_duplicates_chunked_interface() -> None:
 
 
 def test_empty_embeddings_graceful() -> None:
-    from commontrace.reference.measure_performance import compute_semantic_duplicates
+    from unimem.reference.measure_performance import compute_semantic_duplicates
 
     embs = np.zeros((0, 64), dtype=np.float32)
     count, pairs = compute_semantic_duplicates(embs, [], threshold=0.85)
@@ -40,7 +40,7 @@ def test_empty_embeddings_graceful() -> None:
 
 
 def test_single_lesson_graceful() -> None:
-    from commontrace.reference.measure_performance import compute_semantic_duplicates
+    from unimem.reference.measure_performance import compute_semantic_duplicates
 
     embs = np.ones((1, 64), dtype=np.float32)
     embs /= np.linalg.norm(embs, axis=1, keepdims=True)
@@ -50,7 +50,7 @@ def test_single_lesson_graceful() -> None:
 
 
 def test_detects_identical_and_rejects_orthogonal_pairs() -> None:
-    from commontrace.reference.measure_performance import compute_semantic_duplicates
+    from unimem.reference.measure_performance import compute_semantic_duplicates
 
     embs = np.array([
         [1.0, 0.0, 0.0],
@@ -67,7 +67,7 @@ def test_detects_identical_and_rejects_orthogonal_pairs() -> None:
 
 
 def test_pairs_sorted_descending_by_score() -> None:
-    from commontrace.reference.measure_performance import compute_semantic_duplicates
+    from unimem.reference.measure_performance import compute_semantic_duplicates
 
     embs = np.array([
         [1.0, 0.0],
@@ -83,7 +83,7 @@ def test_pairs_sorted_descending_by_score() -> None:
 
 
 def test_bounded_memory_float32_preservation() -> None:
-    from commontrace.reference.measure_performance import compute_semantic_duplicates
+    from unimem.reference.measure_performance import compute_semantic_duplicates
 
     embs64 = np.array([[1.0, 0.0], [0.99, 0.01]], dtype=np.float64)
     embs64 /= np.linalg.norm(embs64, axis=1, keepdims=True)
@@ -120,7 +120,7 @@ def test_build_index_computes_sha256_hashes(
     monkeypatch: pytest.MonkeyPatch,
     lesson_factory: Callable[..., Path],
 ) -> None:
-    from commontrace.reference import build_index
+    from unimem.reference import build_index
 
     monkeypatch.setattr(build_index, "SentenceTransformer", DummyEmbeddingModel)
 
@@ -149,7 +149,7 @@ def test_unchanged_lessons_cached_in_index(
     monkeypatch: pytest.MonkeyPatch,
     lesson_factory: Callable[..., Path],
 ) -> None:
-    from commontrace.reference import build_index
+    from unimem.reference import build_index
 
     monkeypatch.setattr(build_index, "SentenceTransformer", DummyEmbeddingModel)
 
@@ -175,7 +175,7 @@ def test_modified_lesson_triggers_selective_reencoding(
     monkeypatch: pytest.MonkeyPatch,
     lesson_factory: Callable[..., Path],
 ) -> None:
-    from commontrace.reference import build_index
+    from unimem.reference import build_index
 
     monkeypatch.setattr(build_index, "SentenceTransformer", DummyEmbeddingModel)
 
@@ -202,7 +202,7 @@ def test_new_lesson_added_incrementally(
     monkeypatch: pytest.MonkeyPatch,
     lesson_factory: Callable[..., Path],
 ) -> None:
-    from commontrace.reference import build_index
+    from unimem.reference import build_index
 
     monkeypatch.setattr(build_index, "SentenceTransformer", DummyEmbeddingModel)
 
@@ -229,7 +229,7 @@ def test_force_rebuild_bypasses_cache(
     monkeypatch: pytest.MonkeyPatch,
     lesson_factory: Callable[..., Path],
 ) -> None:
-    from commontrace.reference import build_index
+    from unimem.reference import build_index
 
     monkeypatch.setattr(build_index, "SentenceTransformer", DummyEmbeddingModel)
 
@@ -250,7 +250,7 @@ def test_force_rebuild_bypasses_cache(
 
 
 def test_empty_lessons_build_index(tmp_path: Path) -> None:
-    from commontrace.reference import build_index
+    from unimem.reference import build_index
 
     store = tmp_path / "store"
     lessons_dir = store / "memory" / "lessons"
@@ -270,7 +270,7 @@ def test_npz_stores_importances_and_statuses(
     monkeypatch: pytest.MonkeyPatch,
     lesson_factory: Callable[..., Path],
 ) -> None:
-    from commontrace.reference import build_index
+    from unimem.reference import build_index
 
     monkeypatch.setattr(build_index, "SentenceTransformer", DummyEmbeddingModel)
 
@@ -320,7 +320,7 @@ def test_query_importance_floor_filtering(
     isolated_store: Path,
     lesson_factory: Callable[..., Path],
 ) -> None:
-    from commontrace.reference import query as query_module
+    from unimem.reference import query as query_module
 
     npz_path = isolated_store / "memory" / "attention" / "index.npz"
     npz_path.parent.mkdir(parents=True, exist_ok=True)
@@ -354,7 +354,7 @@ def test_fast_metadata_loading_in_query(
     isolated_store: Path,
     lesson_factory: Callable[..., Path],
 ) -> None:
-    from commontrace.reference import query as query_module
+    from unimem.reference import query as query_module
 
     npz_path = isolated_store / "memory" / "attention" / "index.npz"
     npz_path.parent.mkdir(parents=True, exist_ok=True)
@@ -403,7 +403,7 @@ def test_query_fallback_when_metadata_absent(
 
 
 def test_compute_lexical_duplicates_basic() -> None:
-    from commontrace.reference.measure_performance import compute_lexical_duplicates
+    from unimem.reference.measure_performance import compute_lexical_duplicates
 
     lessons = {
         "lesson_db_pool_1": {
@@ -429,7 +429,7 @@ def test_compute_lexical_duplicates_basic() -> None:
 
 
 def test_inverted_index_prunes_disjoint_candidates() -> None:
-    from commontrace.reference.measure_performance import compute_lexical_duplicates
+    from unimem.reference.measure_performance import compute_lexical_duplicates
 
     lessons = {
         "lesson_alpha": {"description": "quantum computing qubits entanglement", "applies_when": "physics"},
@@ -442,7 +442,7 @@ def test_inverted_index_prunes_disjoint_candidates() -> None:
 
 
 def test_stopword_filtering_prevents_false_matches() -> None:
-    from commontrace.reference.measure_performance import compute_lexical_duplicates
+    from unimem.reference.measure_performance import compute_lexical_duplicates
 
     lessons = {
         "lesson_x": {"description": "the apple is on the table", "applies_when": "when to eat"},
@@ -454,7 +454,7 @@ def test_stopword_filtering_prevents_false_matches() -> None:
 
 
 def test_unicode_and_accent_normalization() -> None:
-    from commontrace.reference.measure_performance import compute_lexical_duplicates
+    from unimem.reference.measure_performance import compute_lexical_duplicates
 
     lessons = {
         "lesson_de_1": {"description": "Prüfung der Fehlerbehandlung für Übertragung", "applies_when": "Netzwerk"},
@@ -466,7 +466,7 @@ def test_unicode_and_accent_normalization() -> None:
 
 
 def test_empty_corpus_handling() -> None:
-    from commontrace.reference.measure_performance import compute_lexical_duplicates
+    from unimem.reference.measure_performance import compute_lexical_duplicates
 
     res_empty = compute_lexical_duplicates({}, threshold=0.5)
     assert res_empty["pairs"] == []
@@ -478,7 +478,7 @@ def test_empty_corpus_handling() -> None:
 
 
 def test_prunes_large_candidate_space() -> None:
-    from commontrace.reference.measure_performance import compute_lexical_duplicates
+    from unimem.reference.measure_performance import compute_lexical_duplicates
 
     lessons = {}
     for i in range(50):

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from commontrace import hierarchical, recall
+from unimem import hierarchical, recall
 
 
 def _pool(related: dict[str, float], *, baseline: float, noise: float, n: int, seed: int = 7):
@@ -57,7 +57,7 @@ def test_k_still_bounds_the_result():
 
 
 def test_a_fact_that_shares_only_function_words_with_the_question_is_not_injected(tmp_path, monkeypatch):
-    monkeypatch.setenv("COMMONTRACE_FACT_EMBEDDER", "none")  # lexical arm only
+    monkeypatch.setenv("UNIMEM_FACT_EMBEDDER", "none")  # lexical arm only
     root = str(tmp_path)
     for statement in ("The billing service is owned by Alice Chen",
                       "Release 4.2 shipped with the new retry policy",
@@ -74,9 +74,9 @@ def test_fact_cli_exposes_record_time_queries(tmp_path, capsys, monkeypatch):
     """`--known-at` answers "what did the store believe then?": a fact added later is not known earlier."""
     import argparse
 
-    from commontrace.commands import fact_cmd
+    from unimem.commands import fact_cmd
 
-    monkeypatch.setenv("COMMONTRACE_FACT_EMBEDDER", "none")
+    monkeypatch.setenv("UNIMEM_FACT_EMBEDDER", "none")
     root = str(tmp_path)
     hierarchical.add_fact(root, "The staging cluster runs on Nomad")
     base = {"dest": root, "scope": "", "category": "", "as_of": "", "status": "active", "limit": 5, "scorer": "overlap-v1"}

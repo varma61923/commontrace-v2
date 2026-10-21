@@ -17,9 +17,9 @@ import threading
 import time
 from contextlib import contextmanager
 
-from commontrace.conversation import Store
-from commontrace.conversation.pool import READ_POOL
-from commontrace.gateway import Gateway, make_http_server
+from unimem.conversation import Store
+from unimem.conversation.pool import READ_POOL
+from unimem.gateway import Gateway, make_http_server
 
 
 class FreshStores:
@@ -66,10 +66,10 @@ def measure(root, queries, fresh):
 
 
 def run(turns=2000, requests=40):
-    old_setting = os.environ.get("COMMONTRACE_CONVERSATION_EMBEDDER")
-    os.environ["COMMONTRACE_CONVERSATION_EMBEDDER"] = "none"
+    old_setting = os.environ.get("UNIMEM_CONVERSATION_EMBEDDER")
+    os.environ["UNIMEM_CONVERSATION_EMBEDDER"] = "none"
     try:
-        with tempfile.TemporaryDirectory(prefix="commontrace-http-recall-") as root:
+        with tempfile.TemporaryDirectory(prefix="unimem-http-recall-") as root:
             with Store(root, "operations") as store:
                 for start in range(0, turns, 50):
                     store.add(f"shift-{start // 50}", [{"role": "user", "text":
@@ -92,9 +92,9 @@ def run(turns=2000, requests=40):
                     "scope": "simulated operational notes; excludes model inference and remote network latency"}
     finally:
         if old_setting is None:
-            os.environ.pop("COMMONTRACE_CONVERSATION_EMBEDDER", None)
+            os.environ.pop("UNIMEM_CONVERSATION_EMBEDDER", None)
         else:
-            os.environ["COMMONTRACE_CONVERSATION_EMBEDDER"] = old_setting
+            os.environ["UNIMEM_CONVERSATION_EMBEDDER"] = old_setting
 
 
 def main(argv=None):

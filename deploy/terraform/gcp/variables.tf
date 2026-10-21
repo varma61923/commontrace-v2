@@ -8,7 +8,7 @@ variable "region" {
 
 variable "name" {
   type    = string
-  default = "commontrace-hub"
+  default = "unimem-hub"
 }
 
 variable "network_self_link" {

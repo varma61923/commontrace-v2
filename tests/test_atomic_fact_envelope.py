@@ -8,10 +8,10 @@ from pathlib import Path
 
 import pytest
 
-from commontrace.fact_evidence import FactEvidence
-from commontrace.hierarchical import AtomicFact
-from commontrace.memory_record import MemoryRecord, atomic_fact_from_record, atomic_fact_record
-from commontrace.record_visibility import visible
+from unimem.fact_evidence import FactEvidence
+from unimem.hierarchical import AtomicFact
+from unimem.memory_record import MemoryRecord, atomic_fact_from_record, atomic_fact_record
+from unimem.record_visibility import visible
 
 
 def full_fact(**changes):
@@ -37,7 +37,7 @@ def test_exact_every_field_roundtrip_and_independent_copies():
     original = fact.to_dict()
     record = atomic_fact_record(fact, 3, tenant="team")
     assert record.payload == {**original, "text": original["statement"]}
-    assert record.provenance == {"atomic_fact_format": "commontrace.atomic-fact.v1",
+    assert record.provenance == {"atomic_fact_format": "unimem.atomic-fact.v1",
                                  "source_traces": original["source_traces"]}
     assert record.scope == {"tenant": "team", "user": "ada", "agent": "coder", "session": "chat",
                             "repo": "project", "labels": ["custom:lane", "personal"]}
@@ -106,7 +106,7 @@ def test_expiry_is_effective_visibility_end_not_permission_to_erase(valid_until,
 
 
 def test_expired_fact_is_hidden_but_audit_history_survives_reaping(tmp_path):
-    from commontrace.memory_journal import Journal
+    from unimem.memory_journal import Journal
 
     journal = Journal(str(tmp_path))
     fact = full_fact(valid_from="2000-01-01T00:00:00Z", valid_until=None,
@@ -124,7 +124,7 @@ def test_expired_fact_is_hidden_but_audit_history_survives_reaping(tmp_path):
     ("valid_from", "2027-01-01T00:00:00Z"), ("valid_until", None),
     ("retracted_at", "2027-01-01T00:00:00Z"), ("evidence", []),
     ("scope", {"tenant": "team", "user": "mallory"}),
-    ("provenance", {"atomic_fact_format": "commontrace.atomic-fact.v2"}),
+    ("provenance", {"atomic_fact_format": "unimem.atomic-fact.v2"}),
 ])
 def test_inconsistent_envelope_mirrors_rejected(field, value):
     record = atomic_fact_record(full_fact(status="deleted"), 1)

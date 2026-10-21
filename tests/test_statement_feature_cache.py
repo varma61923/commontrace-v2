@@ -7,8 +7,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from commontrace import fact_conflicts, fact_store
-from commontrace import hierarchical as h
+from unimem import fact_conflicts, fact_store
+from unimem import hierarchical as h
 
 
 def features(text):

@@ -18,8 +18,8 @@ import sys
 import tempfile
 import time
 
-from commontrace import fact_store
-from commontrace import hierarchical as h
+from unimem import fact_store
+from unimem import hierarchical as h
 
 
 def statement(index: int) -> str:
@@ -99,10 +99,10 @@ def main() -> int:
     }
     result['source_files_sha256'] = {
         name: hashlib.sha256(open(name, 'rb').read()).hexdigest()
-        for name in ('commontrace/hierarchical.py', 'commontrace/configuration.py', 'commontrace/fact_store.py',
-                     'commontrace/entity_store.py', 'commontrace/sqlite_pool.py',
-                     'commontrace/memory_record.py', 'commontrace/fact_index.py',
-                     'commontrace/fact_conflicts.py', 'benchmarks/next_generation_storage.py')
+        for name in ('unimem/hierarchical.py', 'unimem/configuration.py', 'unimem/fact_store.py',
+                     'unimem/entity_store.py', 'unimem/sqlite_pool.py',
+                     'unimem/memory_record.py', 'unimem/fact_index.py',
+                     'unimem/fact_conflicts.py', 'benchmarks/next_generation_storage.py')
     }
     result['source_snapshot'] = 'file hashes identify the measured worktree; commit alone may precede these changes'
     def persist():
@@ -112,7 +112,7 @@ def main() -> int:
     failure = None
     size, offset = 0, 0
     try:
-        with tempfile.TemporaryDirectory(prefix="commontrace-p0-", dir=args.work_dir) as directory, \
+        with tempfile.TemporaryDirectory(prefix="unimem-p0-", dir=args.work_dir) as directory, \
                 contextlib.ExitStack() as resources:
             sqlite_root = os.path.join(directory, "sqlite")
             fact_store.migrate(sqlite_root)

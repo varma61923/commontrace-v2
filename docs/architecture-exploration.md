@@ -30,13 +30,13 @@ reported as skipped; they are not part of this code map.
 ```bash
 GRAPHIFY_BACKEND=none graphify extract . --code-only --max-workers 2 --out ../unimem-architecture
 
-graphify explain commontrace_memory_authority_bind --all \
+graphify explain unimem_memory_authority_bind --all \
   --graph ../unimem-architecture/graphify-out/graph.json
 
-graphify affected commontrace_memory_authority_permits_record --relation calls --depth 1 \
+graphify affected unimem_memory_authority_permits_record --relation calls --depth 1 \
   --graph ../unimem-architecture/graphify-out/graph.json
 
-graphify query 'canonical memory transactions' --seed commontrace_hierarchical_mutate_facts --budget 1800 \
+graphify query 'canonical memory transactions' --seed unimem_hierarchical_mutate_facts --budget 1800 \
   --graph ../unimem-architecture/graphify-out/graph.json
 ```
 

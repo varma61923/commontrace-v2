@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from commontrace import graph
+from unimem import graph
 from e2e_tests.harness.cli_runner import run_cli
 
 

@@ -2,7 +2,7 @@ import sqlite3
 
 import pytest
 
-from commontrace.sql_guard import (
+from unimem.sql_guard import (
     SqlGuardError,
     ensure_limit,
     execute_guarded_sql,
@@ -74,7 +74,7 @@ def test_mcp_sql_guarded_query(tmp_path):
     pytest.importorskip("mcp")
     import asyncio
 
-    from commontrace import mcp_server
+    from unimem import mcp_server
 
     root_path = tmp_path / "store"
     root_path.mkdir()

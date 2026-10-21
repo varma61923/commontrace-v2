@@ -1,7 +1,7 @@
 import pytest
 
-from commontrace import lineage
-from commontrace.robotics import shield
+from unimem import lineage
+from unimem.robotics import shield
 
 
 def test_bounded_stl_robustness_and_memory_linked_hold(tmp_path):
@@ -15,7 +15,7 @@ def test_bounded_stl_robustness_and_memory_linked_hold(tmp_path):
     assert good["verdict"] == "safe" and good["robustness"] == pytest.approx(0.1)
     verdict_lineage = lineage.records(root)[good["lineage_id"]]
     assert verdict_lineage["inputs"][0]["id"] == "memory-1"
-    from commontrace import recovery, safety
+    from unimem import recovery, safety
 
     context = {"site": "site-a", "robot": "robot-a", "embodiment": "arm-v1", "environment": "real"}
     registered = recovery.register(root, "clearance_violation", "Stop and move to the safe pose", context=context)

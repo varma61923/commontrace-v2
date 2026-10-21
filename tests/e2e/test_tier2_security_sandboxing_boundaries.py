@@ -11,7 +11,7 @@ from tests.e2e.conftest import CLIResult
 
 
 def test_boundary_dot_and_current_directory(tmp_path: Path) -> None:
-    from commontrace.paths import enforce_boundary
+    from unimem.paths import enforce_boundary
 
     base = tmp_path / "sandbox"
     base.mkdir(parents=True, exist_ok=True)
@@ -21,7 +21,7 @@ def test_boundary_dot_and_current_directory(tmp_path: Path) -> None:
 
 
 def test_boundary_redundant_inner_navigation(tmp_path: Path) -> None:
-    from commontrace.paths import enforce_boundary
+    from unimem.paths import enforce_boundary
 
     base = tmp_path / "sandbox"
     subdir = base / "memory" / "lessons"
@@ -35,7 +35,7 @@ def test_boundary_redundant_inner_navigation(tmp_path: Path) -> None:
 
 
 def test_boundary_symlink_inside_pointing_outside(tmp_path: Path) -> None:
-    from commontrace.paths import PathTraversalError, enforce_boundary
+    from unimem.paths import PathTraversalError, enforce_boundary
 
     base = tmp_path / "sandbox"
     base.mkdir()
@@ -54,7 +54,7 @@ def test_boundary_symlink_inside_pointing_outside(tmp_path: Path) -> None:
 
 
 def test_boundary_root_path_escape(tmp_path: Path) -> None:
-    from commontrace.paths import PathTraversalError, enforce_boundary
+    from unimem.paths import PathTraversalError, enforce_boundary
 
     base = tmp_path / "sandbox"
     base.mkdir()
@@ -67,7 +67,7 @@ def test_boundary_root_path_escape(tmp_path: Path) -> None:
 
 
 def test_boundary_nonexistent_nested_target(tmp_path: Path) -> None:
-    from commontrace.paths import enforce_boundary
+    from unimem.paths import enforce_boundary
 
     base = tmp_path / "sandbox"
     base.mkdir()
@@ -148,7 +148,7 @@ def test_boundary_validate_permission_denied_file(
 
 
 def test_boundary_safe_prepare_dangling_symlink_broken(tmp_path: Path) -> None:
-    from commontrace.paths import safe_prepare_output_path
+    from unimem.paths import safe_prepare_output_path
 
     target_dir = tmp_path / "output_dir"
     target_dir.mkdir()
@@ -168,7 +168,7 @@ def test_boundary_safe_prepare_dangling_symlink_broken(tmp_path: Path) -> None:
 
 
 def test_boundary_safe_prepare_symlink_to_target_unlinked(tmp_path: Path) -> None:
-    from commontrace.paths import safe_prepare_output_path
+    from unimem.paths import safe_prepare_output_path
 
     decoy = tmp_path / "important_target.txt"
     decoy.write_text("PRESERVE_ME", encoding="utf-8")
@@ -185,7 +185,7 @@ def test_boundary_safe_prepare_symlink_to_target_unlinked(tmp_path: Path) -> Non
 
 
 def test_boundary_safe_prepare_allow_unlink_leaf_false_rejects(tmp_path: Path) -> None:
-    from commontrace.paths import PathTraversalError, safe_prepare_output_path
+    from unimem.paths import PathTraversalError, safe_prepare_output_path
 
     decoy = tmp_path / "target.txt"
     decoy.write_text("data", encoding="utf-8")
@@ -200,7 +200,7 @@ def test_boundary_safe_prepare_allow_unlink_leaf_false_rejects(tmp_path: Path) -
 
 
 def test_boundary_safe_prepare_creates_deep_nested_parents(tmp_path: Path) -> None:
-    from commontrace.paths import safe_prepare_output_path
+    from unimem.paths import safe_prepare_output_path
 
     deep_dest = tmp_path / "a" / "b" / "c" / "d" / "e" / "output.json"
     assert not deep_dest.parent.exists()
@@ -232,7 +232,7 @@ def test_boundary_export_refuses_symlink_destination(
 
 
 def test_boundary_shell_metacharacters_in_arguments(tmp_path: Path) -> None:
-    from commontrace.commands import _shellout
+    from unimem.commands import _shellout
 
     marker_file = tmp_path / "hacked_metachar_marker.txt"
     injection_arg = f"; touch {marker_file} ;"
@@ -248,7 +248,7 @@ def test_boundary_shell_metacharacters_in_arguments(tmp_path: Path) -> None:
 
 
 def test_boundary_command_substitution_not_expanded(tmp_path: Path) -> None:
-    from commontrace.commands import _shellout
+    from unimem.commands import _shellout
 
     marker_file = tmp_path / "hacked_subst_marker.txt"
     cmd_sub_arg = f"$(touch {marker_file})"
@@ -264,7 +264,7 @@ def test_boundary_command_substitution_not_expanded(tmp_path: Path) -> None:
 
 
 def test_boundary_missing_script_handled_cleanly(tmp_path: Path) -> None:
-    from commontrace.commands import _shellout
+    from unimem.commands import _shellout
 
     code = _shellout.run_script(
         root=str(tmp_path),
@@ -277,7 +277,7 @@ def test_boundary_missing_script_handled_cleanly(tmp_path: Path) -> None:
 
 
 def test_boundary_pipe_characters_treated_as_literal(tmp_path: Path) -> None:
-    from commontrace.commands import _shellout
+    from unimem.commands import _shellout
 
     pipe_arg = "foo | cat | grep something"
     code, out = _shellout.run_script(
@@ -291,7 +291,7 @@ def test_boundary_pipe_characters_treated_as_literal(tmp_path: Path) -> None:
 
 
 def test_boundary_env_preserves_pythonsafepath(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from commontrace.commands import _shellout
+    from unimem.commands import _shellout
 
     captured_env: dict[str, str] = {}
 

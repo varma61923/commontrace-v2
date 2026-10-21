@@ -9,15 +9,15 @@ from pathlib import Path
 
 import pytest
 
-from commontrace import frontmatter, lesson_io, paths
-from commontrace import lesson_admission as admission
+from unimem import frontmatter, lesson_io, paths
+from unimem import lesson_admission as admission
 
 
 @pytest.fixture
 def lesson(tmp_path: Path, monkeypatch):
-    for name in ("COMMONTRACE_APPROVAL_KEY", "COMMONTRACE_APPROVAL_KEY_FILE", "COMMONTRACE_APPROVAL_KEY_PREVIOUS",
-                 "COMMONTRACE_APPROVAL_KEY_PREVIOUS_FILE", "COMMONTRACE_APPROVAL_KEY_ID",
-                 "COMMONTRACE_APPROVAL_KEY_PREVIOUS_ID"):
+    for name in ("UNIMEM_APPROVAL_KEY", "UNIMEM_APPROVAL_KEY_FILE", "UNIMEM_APPROVAL_KEY_PREVIOUS",
+                 "UNIMEM_APPROVAL_KEY_PREVIOUS_FILE", "UNIMEM_APPROVAL_KEY_ID",
+                 "UNIMEM_APPROVAL_KEY_PREVIOUS_ID"):
         monkeypatch.delenv(name, raising=False)
     root = str(tmp_path)
     path = Path(paths.lessons_dir(root), "lesson_safe.md")
@@ -193,20 +193,20 @@ def test_initial_approvals_share_a_complete_private_key_under_concurrency(lesson
 
 def test_deployment_key_rotation_and_unavailable_secret_fail_closed(lesson, monkeypatch, tmp_path):
     old = "old-deployment-key-" + "x" * 32
-    monkeypatch.setenv("COMMONTRACE_APPROVAL_KEY", old)
+    monkeypatch.setenv("UNIMEM_APPROVAL_KEY", old)
     root, path, fm, body = bind(lesson)
-    monkeypatch.setenv("COMMONTRACE_APPROVAL_KEY", "new-deployment-key-" + "y" * 32)
+    monkeypatch.setenv("UNIMEM_APPROVAL_KEY", "new-deployment-key-" + "y" * 32)
     assert not admission.eligible(root, path, fm, body)
-    monkeypatch.setenv("COMMONTRACE_APPROVAL_KEY_PREVIOUS", old)
-    monkeypatch.setenv("COMMONTRACE_APPROVAL_KEY_PREVIOUS_ID", "deployment")
-    monkeypatch.setenv("COMMONTRACE_APPROVAL_KEY_ID", "rotated")
+    monkeypatch.setenv("UNIMEM_APPROVAL_KEY_PREVIOUS", old)
+    monkeypatch.setenv("UNIMEM_APPROVAL_KEY_PREVIOUS_ID", "deployment")
+    monkeypatch.setenv("UNIMEM_APPROVAL_KEY_ID", "rotated")
     assert admission.eligible(root, path, fm, body)
-    monkeypatch.setenv("COMMONTRACE_APPROVAL_KEY_FILE", str(tmp_path / "missing-secret"))
+    monkeypatch.setenv("UNIMEM_APPROVAL_KEY_FILE", str(tmp_path / "missing-secret"))
     assert not admission.eligible(root, path, fm, body)
 
 
 def test_cli_approval_and_durable_revoke(lesson):
-    from commontrace.cli import main
+    from unimem.cli import main
 
     root, path, fm, body = lesson
     fm["status"] = "review"
@@ -222,7 +222,7 @@ def test_cli_approval_and_durable_revoke(lesson):
 def test_trust_cache_stamp_changes_when_mounted_approval_key_rotates(lesson, monkeypatch, tmp_path):
     mounted = tmp_path / "approval-secret"
     mounted.write_text("first-deployment-key-" + "x" * 32)
-    monkeypatch.setenv("COMMONTRACE_APPROVAL_KEY_FILE", str(mounted))
+    monkeypatch.setenv("UNIMEM_APPROVAL_KEY_FILE", str(mounted))
     root, path, fm, body = bind(lesson)
     original = admission.state_stamp(root)
     mounted.write_text("second-deployment-key-" + "y" * 32)
@@ -275,8 +275,8 @@ def test_actual_mcp_approval_retrieval_body_tampering_and_revocation(lesson):
     import asyncio
     import json
 
-    from commontrace import mcp_server, templates
-    from commontrace.cli import main
+    from unimem import mcp_server, templates
+    from unimem.cli import main
 
     root, path, _, _ = lesson
     assert main(["init", "--dest", root, "--agent-type", "code"]) == 0
@@ -318,7 +318,7 @@ def test_actual_mcp_approval_retrieval_body_tampering_and_revocation(lesson):
 
 
 def test_agent_loop_rechecks_approval_and_never_injects_unreviewed_cached_description(lesson):
-    from commontrace.agent_loop import _relevant_lessons
+    from unimem.agent_loop import _relevant_lessons
 
     root, path, fm, body = bind(lesson)
     task = "Bound connection concurrency when connections exhaust the pool"
@@ -337,7 +337,7 @@ def test_agent_loop_rechecks_approval_and_never_injects_unreviewed_cached_descri
 def test_hub_export_abstains_before_transport_for_ineligible_approval(lesson, monkeypatch, invalid):
     import asyncio
 
-    from commontrace import hub_client
+    from unimem import hub_client
 
     root, path, fm, body = lesson if invalid == "unsigned-strict" else bind(lesson)
     if invalid == "edited":
@@ -357,7 +357,7 @@ def test_hub_export_abstains_before_transport_for_ineligible_approval(lesson, mo
 def test_hub_export_verifies_original_bytes_before_redaction_and_preserves_receipt(lesson, monkeypatch):
     import asyncio
 
-    from commontrace import hub_client, memory_guard
+    from unimem import hub_client, memory_guard
 
     root, path, fm, body = lesson
     secret_line = "password=originalPrivateValue123"

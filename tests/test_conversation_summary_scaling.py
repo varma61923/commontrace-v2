@@ -4,10 +4,10 @@ import re
 
 import pytest
 
-from commontrace.conversation import Store
-from commontrace.conversation import summary as summary_module
-from commontrace.conversation.store import ConversationError
-from commontrace.conversation.summary import (
+from unimem.conversation import Store
+from unimem.conversation import summary as summary_module
+from unimem.conversation.store import ConversationError
+from unimem.conversation.summary import (
     MAX_TRANSCRIPT_CHARS,
     MODEL_PAGE,
     PROMPT,

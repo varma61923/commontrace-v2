@@ -3,7 +3,7 @@
 Existing SDK adapters remain available for Mem0, Zep/Graphiti, Letta, AgentCore
 and Claude memory stores. `VendorReadAdapter` additionally normalizes pinned HTTP
 read responses for Mem0, Zep, Graphiti, Letta, AgentCore, Vertex Memory Bank,
-Foundry and Anthropic memory-tool backends. Install `commontrace[memory-vertex]`
+Foundry and Anthropic memory-tool backends. Install `unimem[memory-vertex]`
 (or the corresponding provider extra) for its lazy default HTTP transport.
 
 Supply the regional/deployment retrieval endpoint, authenticated fixed scope and

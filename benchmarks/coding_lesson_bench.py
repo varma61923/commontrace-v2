@@ -20,7 +20,7 @@ import tempfile
 import time
 from dataclasses import asdict
 
-from commontrace import experiment
+from unimem import experiment
 
 _UPLIFT_ALPHA = 0.05
 _UPLIFT_THRESHOLD = 0.05
@@ -183,7 +183,7 @@ def _stratified_uplift(
         effect["planned_occasions"] = planned_slots[task_id]
         effect["target_n_per_arm"] = target_n
         effect["unresolved_randomized_occasions"] = counts["unresolved"]
-        effect["interval_method"] = "CommonTrace anytime-valid interval with preplanned round-robin horizon"
+        effect["interval_method"] = "UniMem anytime-valid interval with preplanned round-robin horizon"
         if task_id in raw_intervals:
             interval_low, interval_high = raw_intervals[task_id]
             effect["ci_low"] = math.floor(interval_low * 10000 + 1e-10) / 10000
@@ -279,7 +279,7 @@ def _stratified_uplift(
         "alpha": _UPLIFT_ALPHA,
         "per_task_alpha": _UPLIFT_ALPHA / len(tasks),
         "positive_weight_strata": len(target_tasks),
-        "interval_method": "weighted sum of CommonTrace anytime-valid intervals with preplanned round-robin horizons and Bonferroni familywise correction",
+        "interval_method": "weighted sum of UniMem anytime-valid intervals with preplanned round-robin horizons and Bonferroni familywise correction",
         "min_resolved_per_arm": experiment.DEFAULT_MIN_ARM,
         "unresolved_randomized_occasions": target_unresolved,
         "per_task": per_task,
@@ -290,10 +290,10 @@ class _HarmfulRetirementTracker:
     """Run the production randomized-assignment and lesson-retirement path per task."""
 
     def __init__(self, tasks: list[dict], occasions: int, seed: int) -> None:
-        from commontrace import holdout_io
-        from commontrace.measure import content_revision
-        from commontrace.memory_journal import Journal
-        from commontrace.memory_record import MemoryRecord
+        from unimem import holdout_io
+        from unimem.measure import content_revision
+        from unimem.memory_journal import Journal
+        from unimem.memory_record import MemoryRecord
 
         self._holdout_io = holdout_io
         self._entries: dict[str, dict] = {}
@@ -312,7 +312,7 @@ class _HarmfulRetirementTracker:
             raise
 
     def _initialize(self, tasks, seed, base, remainder, content_revision, Journal, MemoryRecord) -> None:
-        from commontrace import holdout_io
+        from unimem import holdout_io
 
         for task_index, task in enumerate(tasks):
             if task.get("lesson_harmful") is not True:
@@ -402,7 +402,7 @@ class _HarmfulRetirementTracker:
             return
         # Reconcile the real integrity-checked, sequential causal log after each
         # resolved occasion. The summary below reads the journal transition itself.
-        from commontrace.session_learning import reconcile
+        from unimem.session_learning import reconcile
 
         reconcile(entry["root"])
 
@@ -480,7 +480,7 @@ class _HarmfulRetirementTracker:
         }
 
     def close(self) -> None:
-        from commontrace import memory_journal
+        from unimem import memory_journal
 
         for root in self._roots:
             memory_journal.close_connections(root)

@@ -6,8 +6,8 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from commontrace import pilot
-from commontrace.cli import main
+from unimem import pilot
+from unimem.cli import main
 
 
 def _effect(verdict, slug="lesson_x"):
@@ -94,7 +94,7 @@ class TestDetermineResultCorrelationalFallback:
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
-    monkeypatch.delenv("COMMONTRACE_ROOT", raising=False)
+    monkeypatch.delenv("UNIMEM_ROOT", raising=False)
     monkeypatch.chdir(tmp_path)
     return tmp_path
 

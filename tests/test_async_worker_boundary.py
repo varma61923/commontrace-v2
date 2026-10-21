@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from commontrace.async_workers import BoundedWorkers, WorkerCapacityError
+from unimem.async_workers import BoundedWorkers, WorkerCapacityError
 
 
 @pytest.mark.parametrize("kwargs", [{"workers": 0}, {"workers": True}, {"max_pending": 0}, {"max_pending": 1.5}])
@@ -110,7 +110,7 @@ def test_preloaded_worker_pool_recovers_after_fork() -> None:
 
 def test_mcp_slow_retrieval_leaves_other_tools_responsive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     pytest.importorskip("mcp")
-    from commontrace import lesson_cache, mcp_server
+    from unimem import lesson_cache, mcp_server
 
     entered, release = threading.Event(), threading.Event()
     original = lesson_cache.load_active_with_terms
@@ -138,7 +138,7 @@ def test_mcp_slow_retrieval_leaves_other_tools_responsive(tmp_path: Path, monkey
 
 def test_mcp_compare_and_set_rejects_one_of_two_stale_writers(tmp_path: Path) -> None:
     pytest.importorskip("mcp")
-    from commontrace import mcp_server, memory_blocks
+    from unimem import mcp_server, memory_blocks
 
     revision = memory_blocks.set_block(str(tmp_path), "project", "initial project facts").revision
     server = mcp_server.build_server(str(tmp_path))

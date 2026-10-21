@@ -347,9 +347,9 @@ def test_tier3_sync_command_diagnostics_without_hub(
     cli_runner: Callable[..., CLIResult],
     isolated_store: Path,
 ) -> None:
-    res = cli_runner(["sync", "--dest", str(isolated_store)], env={"COMMONTRACE_HUB_URL": "", "COMMONTRACE_HUB_API_KEY": ""})
+    res = cli_runner(["sync", "--dest", str(isolated_store)], env={"UNIMEM_HUB_URL": "", "UNIMEM_HUB_API_KEY": ""})
     assert res.exit_code == 0
-    assert "bridges the local store to the CommonTrace Hub" in res.stdout
+    assert "bridges the local store to the UniMem Hub" in res.stdout
     assert "No Hub is configured" in res.stdout
 
 
@@ -436,7 +436,7 @@ def test_tier3_pilot_evaluation_end_to_end(
         "--dest", str(store),
     ])
     assert res_pilot.exit_code == 0
-    assert "CommonTrace Pilot Report" in res_pilot.stdout or "Taxonomy" in res_pilot.stdout or "Resolution" in res_pilot.stdout
+    assert "UniMem Pilot Report" in res_pilot.stdout or "Taxonomy" in res_pilot.stdout or "Resolution" in res_pilot.stdout
 
     res_json = cli_runner([
         "pilot",

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 
-from commontrace.commands import account_cmd
+from unimem.commands import account_cmd
 
 
 def _args(**over):

@@ -10,7 +10,7 @@ import pytest_asyncio
 from sqlalchemy import text
 from starlette.applications import Starlette
 
-from commontrace import lesson_io, marketplace, paths, templates
+from unimem import lesson_io, marketplace, paths, templates
 from hub import auth, rest
 from hub.abuse import make_rate_limiter
 from hub.alembic.versions.b8e3f1a2c7d4_lesson_marketplace import _OWN_ROWS, _READ, _UNSCOPED

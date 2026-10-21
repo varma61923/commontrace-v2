@@ -5,18 +5,18 @@ import os
 import pytest
 
 pytest.importorskip(
-    "opentelemetry.sdk", reason="needs the OpenTelemetry SDK: pip install 'commontrace[otel]'"
+    "opentelemetry.sdk", reason="needs the OpenTelemetry SDK: pip install 'unimem[otel]'"
 )
 
 from opentelemetry.sdk.trace import TracerProvider  # noqa: E402
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor  # noqa: E402
 from opentelemetry.trace import Status, StatusCode  # noqa: E402
 
-from commontrace import frontmatter, otel_exporter, paths  # noqa: E402
+from unimem import frontmatter, otel_exporter, paths  # noqa: E402
 
 
 def _provider_with_exporter(dest, **kwargs):
-    exporter = otel_exporter.CommonTraceSpanExporter(dest=str(dest), **kwargs)
+    exporter = otel_exporter.UniMemSpanExporter(dest=str(dest), **kwargs)
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
     return provider
@@ -172,22 +172,22 @@ def test_importing_the_module_never_requires_the_sdk():
         del sys.modules[name]
     sys.modules["opentelemetry"] = None  # type: ignore[assignment]
     try:
-        with pytest.raises(ImportError, match=r"commontrace\[otel\]"):
-            otel_exporter.CommonTraceSpanExporter(agent_type="support")
+        with pytest.raises(ImportError, match=r"unimem\[otel\]"):
+            otel_exporter.UniMemSpanExporter(agent_type="support")
     finally:
         del sys.modules["opentelemetry"]
         sys.modules.update(real_modules)
 
 
 def test_a_span_with_an_occasion_and_an_explicit_outcome_closes_it_locally(tmp_path):
-    from commontrace import holdout_io, otel_exporter
+    from unimem import holdout_io, otel_exporter
 
     root = str(tmp_path)
     row = {"name": "done", "status": {"code": "UNSET"}, "spanId": "s1",
-           "attributes": {"session.id": "ep-9", "commontrace.occasion.succeeded": False}}
+           "attributes": {"session.id": "ep-9", "unimem.occasion.succeeded": False}}
     assert otel_exporter.record_occasion_from_row(root, row) is True
     assert holdout_io.read_outcomes(root) == {"ep-9": False}
-    flipped = dict(row, attributes={"session.id": "ep-9", "commontrace.occasion.succeeded": True})
+    flipped = dict(row, attributes={"session.id": "ep-9", "unimem.occasion.succeeded": True})
     assert otel_exporter.record_occasion_from_row(root, flipped) is False
     assert holdout_io.read_outcomes(root) == {"ep-9": False}
     status_only = {"name": "x", "status": {"code": "OK"}, "attributes": {"session.id": "ep-10"}}

@@ -6,8 +6,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from commontrace import llm
-from commontrace.circuit_breaker import CircuitBreaker, CircuitOpenError
+from unimem import llm
+from unimem.circuit_breaker import CircuitBreaker, CircuitOpenError
 
 
 def test_open_cooldown_recovery_and_permanent_failure():
@@ -84,8 +84,8 @@ def test_only_one_half_open_probe_is_admitted_and_cancellation_releases_it():
 def test_complete_uses_scoped_circuits_and_does_not_count_permanent_errors(monkeypatch):
     llm._CIRCUITS.clear()
 
-    monkeypatch.delenv("COMMONTRACE_LLM_CACHE", raising=False)
-    monkeypatch.delenv("COMMONTRACE_LLM_CIRCUIT_BREAKER", raising=False)
+    monkeypatch.delenv("UNIMEM_LLM_CACHE", raising=False)
+    monkeypatch.delenv("UNIMEM_LLM_CIRCUIT_BREAKER", raising=False)
     calls = []
 
     def unavailable(cfg, prompt):
@@ -102,7 +102,7 @@ def test_complete_uses_scoped_circuits_and_does_not_count_permanent_errors(monke
     assert calls == ["one"] * 5
     with pytest.raises(urllib.error.URLError):
         llm.complete("q", other)
-    monkeypatch.setenv("COMMONTRACE_LLM_CIRCUIT_BREAKER", "0")
+    monkeypatch.setenv("UNIMEM_LLM_CIRCUIT_BREAKER", "0")
     with pytest.raises(urllib.error.URLError):
         llm.complete("q", one)
     llm._CIRCUITS.clear()
@@ -129,7 +129,7 @@ def test_classifier_failure_releases_half_open_probe():
 
 
 def test_local_cooldown_does_not_close_half_open_circuit(monkeypatch):
-    from commontrace.overload import Overloaded
+    from unimem.overload import Overloaded
 
     clock = [100.0]
     breaker = CircuitBreaker(threshold=1, recovery_seconds=10, clock=lambda: clock[0])
@@ -141,7 +141,7 @@ def test_local_cooldown_does_not_close_half_open_circuit(monkeypatch):
         breaker.call(unavailable, transient=lambda _error: True)
     clock[0] += 10
     monkeypatch.setattr(llm._CIRCUITS, "get_or_load", lambda _key, _loader: breaker)
-    monkeypatch.delenv("COMMONTRACE_LLM_CIRCUIT_BREAKER", raising=False)
+    monkeypatch.delenv("UNIMEM_LLM_CIRCUIT_BREAKER", raising=False)
 
     class Cooldown:
         def admit(self):

@@ -15,7 +15,7 @@ from hub.models import Organization, WebhookDelivery, WebhookEndpoint
 
 NOW = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
 KEY = "test-deployment-signing-key"
-URL = "https://example.invalid/hooks/commontrace"
+URL = "https://example.invalid/hooks/unimem"
 
 
 async def _fake_public_resolve(hostname: str) -> list:
@@ -431,7 +431,7 @@ class TestDelivery:
         url, body, headers = transport.calls[0]
         assert url == URL
         assert events.verify_signature(
-            endpoint["secret"], headers["X-CommonTrace-Signature"], body,
+            endpoint["secret"], headers["X-UniMem-Signature"], body,
             now=int(NOW.timestamp()),
         )
 

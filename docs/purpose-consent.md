@@ -8,10 +8,10 @@ to existing ownership, admission, capability and finite-policy checks.
 Enroll existing admitted memories with an undelegated operator terminal:
 
 ```sh
-commontrace person purposes --dest ./store
-commontrace person consent '{"subject":"customer-42","identities":["fact-id"],"purposes":["https://w3id.org/dpv#ImproveHealthcare"],"controller":"Care provider","expires_at":"2027-01-01T00:00:00Z","collection_method":"Reviewed affirmative consent","context":["project:care"]}' --dest ./store
-commontrace person explain '{"subject":"customer-42","context":["project:care"]}' --dest ./store
-commontrace person reap --dest ./store
+unimem person purposes --dest ./store
+unimem person consent '{"subject":"customer-42","identities":["fact-id"],"purposes":["https://w3id.org/dpv#ImproveHealthcare"],"controller":"Care provider","expires_at":"2027-01-01T00:00:00Z","collection_method":"Reviewed affirmative consent","context":["project:care"]}' --dest ./store
+unimem person explain '{"subject":"customer-42","context":["project:care"]}' --dest ./store
+unimem person reap --dest ./store
 ```
 
 Use actual source IDs and an appropriate future expiry. `record:<id>` and

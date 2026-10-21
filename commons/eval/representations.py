@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from commontrace.overlap import (  # noqa: E402
+from unimem.overlap import (  # noqa: E402
     _MERSENNE_61,
     _STOPWORDS,
     _permutations,

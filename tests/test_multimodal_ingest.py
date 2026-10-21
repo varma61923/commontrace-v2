@@ -2,7 +2,7 @@ import struct
 import zipfile
 import zlib
 
-from commontrace.ingest.multimodal import INGEST_FNS, ingest_multimodal
+from unimem.ingest.multimodal import INGEST_FNS, ingest_multimodal
 
 SECRET = "sk-ant-1234567890abcdef"
 

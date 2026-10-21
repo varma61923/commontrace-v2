@@ -6,8 +6,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from commontrace import capabilities as cap
-from commontrace import frontier_protocol as fp
+from unimem import capabilities as cap
+from unimem import frontier_protocol as fp
 
 NOW = datetime(2026, 10, 17, tzinfo=timezone.utc)
 ROOT_KEY, A_KEY, B_KEY, C_KEY = b"r" * 32, b"a" * 32, b"b" * 32, b"c" * 32

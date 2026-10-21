@@ -5,11 +5,11 @@ promotion certificate. Configuration, source registration, update registration
 and ledger access require an undelegated operator. A new store remains disabled.
 
 ```sh
-commontrace sentinel configure '{"alpha":0.05,"baseline_failure":0.1}' --dest ./store
-commontrace sentinel register '{"source":"fact-example","origin":"support","segments":["support","coding"]}' --dest ./store
-commontrace sentinel status '{"source":"fact-example"}' --dest ./store
-commontrace sentinel quarantine '{"source":"fact-example","incident_id":"review-001"}' --dest ./store
-commontrace sentinel ledger ledger-request.json --dest ./store
+unimem sentinel configure '{"alpha":0.05,"baseline_failure":0.1}' --dest ./store
+unimem sentinel register '{"source":"fact-example","origin":"support","segments":["support","coding"]}' --dest ./store
+unimem sentinel status '{"source":"fact-example"}' --dest ./store
+unimem sentinel quarantine '{"source":"fact-example","incident_id":"review-001"}' --dest ./store
+unimem sentinel ledger ledger-request.json --dest ./store
 ```
 
 `register` pins the admitted source bytes, salt, existing assignment prefix and

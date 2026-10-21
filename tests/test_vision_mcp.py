@@ -8,8 +8,8 @@ import urllib.error
 
 import pytest
 
-from commontrace import llm, mcp_tools, vision
-from commontrace.circuit_breaker import CircuitBreaker
+from unimem import llm, mcp_tools, vision
+from unimem.circuit_breaker import CircuitBreaker
 
 
 @pytest.fixture(autouse=True)
@@ -47,17 +47,17 @@ class TestVisionDisabledByDefault:
             raise AssertionError("no model call while vision is disabled")
 
         monkeypatch.setattr(llm, "_post_json", must_not_post)
-        monkeypatch.delenv("COMMONTRACE_VISION_ENABLED", raising=False)
+        monkeypatch.delenv("UNIMEM_VISION_ENABLED", raising=False)
         out = vision.describe_image(str(path))
         assert isinstance(out, str) and "image/png" in out
 
     def test_garbage_bytes_never_raise(self, tmp_path, monkeypatch):
         path = tmp_path / "junk.bin"
         path.write_bytes(bytes(range(256)) * 4)
-        monkeypatch.delenv("COMMONTRACE_VISION_ENABLED", raising=False)
+        monkeypatch.delenv("UNIMEM_VISION_ENABLED", raising=False)
         assert isinstance(vision.describe_image(str(path)), str)
-        monkeypatch.setenv("COMMONTRACE_VISION_ENABLED", "1")
-        monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "k")
+        monkeypatch.setenv("UNIMEM_VISION_ENABLED", "1")
+        monkeypatch.setenv("UNIMEM_LLM_API_KEY", "k")
 
         def unavailable(*_args):
             raise TimeoutError("mock provider unavailable")
@@ -72,7 +72,7 @@ class TestVisionDisabledByDefault:
     def test_explicit_flag_beats_a_truthy_env(self, tmp_path, monkeypatch):
         path = tmp_path / "a.png"
         path.write_bytes(b"\x89PNG\r\n\x1a\n")
-        monkeypatch.setenv("COMMONTRACE_VISION_ENABLED", "1")
+        monkeypatch.setenv("UNIMEM_VISION_ENABLED", "1")
 
         def must_not_post(*args, **kwargs):
             raise AssertionError("explicit enabled=False must win over the env")
@@ -97,24 +97,24 @@ class TestVisionDisabledByDefault:
 
 class TestOllamaAlias:
     def test_ollama_defaults_to_localhost_without_a_key(self, monkeypatch):
-        monkeypatch.setenv("COMMONTRACE_LLM_PROVIDER", "ollama")
-        monkeypatch.delenv("COMMONTRACE_LLM_API_KEY", raising=False)
-        monkeypatch.delenv("COMMONTRACE_LLM_BASE_URL", raising=False)
+        monkeypatch.setenv("UNIMEM_LLM_PROVIDER", "ollama")
+        monkeypatch.delenv("UNIMEM_LLM_API_KEY", raising=False)
+        monkeypatch.delenv("UNIMEM_LLM_BASE_URL", raising=False)
         config = llm.load_config()
         assert config.provider == "openai-compatible"
         assert config.base_url == "http://localhost:11434/v1"
 
     def test_explicit_base_url_still_wins(self, monkeypatch):
-        monkeypatch.setenv("COMMONTRACE_LLM_PROVIDER", "ollama")
-        monkeypatch.delenv("COMMONTRACE_LLM_API_KEY", raising=False)
-        monkeypatch.setenv("COMMONTRACE_LLM_BASE_URL", "http://gpu-box:11434/v1")
+        monkeypatch.setenv("UNIMEM_LLM_PROVIDER", "ollama")
+        monkeypatch.delenv("UNIMEM_LLM_API_KEY", raising=False)
+        monkeypatch.setenv("UNIMEM_LLM_BASE_URL", "http://gpu-box:11434/v1")
         assert llm.load_config().base_url == "http://gpu-box:11434/v1"
 
     def test_openai_compatible_still_requires_a_base_url(self, monkeypatch):
-        monkeypatch.setenv("COMMONTRACE_LLM_PROVIDER", "openai-compatible")
-        monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "k")
-        monkeypatch.delenv("COMMONTRACE_LLM_BASE_URL", raising=False)
-        with pytest.raises(llm.LLMUnavailable, match="COMMONTRACE_LLM_BASE_URL"):
+        monkeypatch.setenv("UNIMEM_LLM_PROVIDER", "openai-compatible")
+        monkeypatch.setenv("UNIMEM_LLM_API_KEY", "k")
+        monkeypatch.delenv("UNIMEM_LLM_BASE_URL", raising=False)
+        with pytest.raises(llm.LLMUnavailable, match="UNIMEM_LLM_BASE_URL"):
             llm.load_config()
 
 
@@ -171,12 +171,12 @@ class TestImagePayloadShapes:
 
 class TestVisionProviderRecovery:
     def test_provider_retry_after_from_vision_applies_to_text(self, monkeypatch):
-        from commontrace.overload import Overloaded, OverloadPolicy
+        from unimem.overload import Overloaded, OverloadPolicy
 
         policy = OverloadPolicy(clock=lambda: 100.0)
         monkeypatch.setattr(llm._OVERLOADS, "get_or_load", lambda _key, _loader: policy)
-        monkeypatch.setenv("COMMONTRACE_LLM_CIRCUIT_BREAKER", "1")
-        monkeypatch.setenv("COMMONTRACE_LLM_CACHE", "0")
+        monkeypatch.setenv("UNIMEM_LLM_CIRCUIT_BREAKER", "1")
+        monkeypatch.setenv("UNIMEM_LLM_CACHE", "0")
         calls = []
 
         def limited(*args):
@@ -193,9 +193,9 @@ class TestVisionProviderRecovery:
         assert len(calls) == 1
 
     def test_cached_text_survives_vision_outage_without_caching_images(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("COMMONTRACE_LLM_CACHE", "1")
-        monkeypatch.setenv("COMMONTRACE_LLM_CACHE_PATH", str(tmp_path / "llm.db"))
-        monkeypatch.setenv("COMMONTRACE_LLM_CIRCUIT_BREAKER", "1")
+        monkeypatch.setenv("UNIMEM_LLM_CACHE", "1")
+        monkeypatch.setenv("UNIMEM_LLM_CACHE_PATH", str(tmp_path / "llm.db"))
+        monkeypatch.setenv("UNIMEM_LLM_CIRCUIT_BREAKER", "1")
         config = _vision_config()
         monkeypatch.setattr(llm, "_call_anthropic", lambda *_args: ("cached text", {}))
         assert llm.complete("same prompt", config)[0] == "cached text"
@@ -208,13 +208,13 @@ class TestVisionProviderRecovery:
             with pytest.raises(TimeoutError):
                 llm.complete_with_image(config, "same prompt", b"b", "image/png")
         text, usage = llm.complete("same prompt", config)
-        assert text == "cached text" and usage["_commontrace_cache_hit"] is True
+        assert text == "cached text" and usage["_unimem_cache_hit"] is True
         with pytest.raises(llm.LLMUnavailable, match="retry in"):
             llm.complete_with_image(config, "same prompt", b"b", "image/png")
 
     def test_vision_outage_protects_text_and_isolates_provider_context(self, monkeypatch):
-        monkeypatch.setenv("COMMONTRACE_LLM_CIRCUIT_BREAKER", "1")
-        monkeypatch.setenv("COMMONTRACE_LLM_CACHE", "0")
+        monkeypatch.setenv("UNIMEM_LLM_CIRCUIT_BREAKER", "1")
+        monkeypatch.setenv("UNIMEM_LLM_CACHE", "0")
         calls = []
 
         def unavailable(*args):
@@ -236,7 +236,7 @@ class TestVisionProviderRecovery:
             with pytest.raises(urllib.error.URLError):
                 llm.complete_with_image(other, "p", b"b", "image/png")
         assert len(calls) == 9
-        monkeypatch.setenv("COMMONTRACE_LLM_CIRCUIT_BREAKER", "0")
+        monkeypatch.setenv("UNIMEM_LLM_CIRCUIT_BREAKER", "0")
         with pytest.raises(urllib.error.URLError):
             llm.complete_with_image(config, "p", b"b", "image/png")
         assert len(calls) == 10
@@ -245,7 +245,7 @@ class TestVisionProviderRecovery:
         clock = [100.0]
         breaker = CircuitBreaker(threshold=1, recovery_seconds=10, clock=lambda: clock[0])
         monkeypatch.setattr(llm._CIRCUITS, "get_or_load", lambda _key, _loader: breaker)
-        monkeypatch.setenv("COMMONTRACE_LLM_CIRCUIT_BREAKER", "1")
+        monkeypatch.setenv("UNIMEM_LLM_CIRCUIT_BREAKER", "1")
 
         def unavailable(*_args):
             raise TimeoutError("offline")
@@ -271,7 +271,7 @@ class TestVisionProviderRecovery:
     def test_outage_and_open_circuit_fall_back_to_metadata(self, tmp_path, monkeypatch):
         path = tmp_path / "photo.png"
         path.write_bytes(b"\x89PNG\r\n\x1a\n")
-        monkeypatch.setenv("COMMONTRACE_LLM_CIRCUIT_BREAKER", "1")
+        monkeypatch.setenv("UNIMEM_LLM_CIRCUIT_BREAKER", "1")
         calls = []
 
         def unavailable(*args):
@@ -321,7 +321,7 @@ class TestGraphVizMcpTool:
 
     def test_tool_is_callable_and_writes_the_page(self, tmp_path, monkeypatch):
         pytest.importorskip("mcp", reason="needs the MCP SDK")
-        from commontrace import graph_viz, mcp_server
+        from unimem import graph_viz, mcp_server
 
         monkeypatch.setattr(
             graph_viz, "render_html",
@@ -339,7 +339,7 @@ class TestGraphVizMcpTool:
     def test_render_failure_is_an_answer_not_a_crash(self, tmp_path, monkeypatch):
         pytest.importorskip("mcp", reason="needs the MCP SDK")
 
-        from commontrace import graph_viz, mcp_server
+        from unimem import graph_viz, mcp_server
 
         def boom(root, as_of=None):
             raise RuntimeError("no graph today")
@@ -378,17 +378,17 @@ class TestImageTypeSniffing:
         (b"MM\x00*" + b"\0" * 8, "image/tiff"),
     ])
     def test_an_extensionless_image_is_identified_by_its_bytes(self, blob, mime):
-        from commontrace import vision
+        from unimem import vision
 
         assert vision._mime_for("upload", blob) == mime
 
     @pytest.mark.parametrize("blob", [b"", b"GIF", b"RIFF\0\0\0\0WAVE", b"not an image at all"])
     def test_unknown_bytes_are_octet_stream_not_a_guess(self, blob):
-        from commontrace import vision
+        from unimem import vision
 
         assert vision._mime_for("upload", blob) == "application/octet-stream"
 
     def test_an_image_extension_still_wins(self):
-        from commontrace import vision
+        from unimem import vision
 
         assert vision._mime_for("photo.jpg", b"\x89PNG\r\n\x1a\n") == "image/jpeg"

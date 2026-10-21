@@ -1,12 +1,12 @@
 import pytest
 
-from commontrace.hook_kit import AGENTS, EVENTS, HookKit, render_context
-from commontrace.memory_journal import Journal
-from commontrace.memory_record import MemoryRecord
+from unimem.hook_kit import AGENTS, EVENTS, HookKit, render_context
+from unimem.memory_journal import Journal
+from unimem.memory_record import MemoryRecord
 
 
 def test_offline_prior_is_bounded_and_cannot_replace_online_validation():
-    from commontrace.hook_kit import bootstrap_priority
+    from unimem.hook_kit import bootstrap_priority
 
     data = {"text": "Test parser boundaries.", "offline_prior": {"alpha": 10001, "beta": 1}}
     assert 1 < bootstrap_priority(MemoryRecord("candidate", "lesson", 1, data, status="shadow")) < 1.01
@@ -66,7 +66,7 @@ class Embedder:
 
 def test_agreement_once_failure_and_inheritance(tmp_path):
     root = str(tmp_path)
-    from commontrace import holdout_io
+    from unimem import holdout_io
 
     holdout_io.configure(root, rate=0)
     journal = Journal(root)
@@ -133,7 +133,7 @@ def test_stale_canonical_projection_is_never_injected(tmp_path):
     import hashlib
     import json
 
-    from commontrace import frontmatter
+    from unimem import frontmatter
 
     path = tmp_path / "lesson.md"
     path.write_text("---\nstatus: active\n---\nAlways validate input.")
@@ -159,7 +159,7 @@ def test_stale_canonical_projection_is_never_injected(tmp_path):
 
 
 def test_budget_and_timeout_do_not_create_false_exposure_assignments(tmp_path):
-    from commontrace import holdout_io
+    from unimem import holdout_io
 
     kit = HookKit(str(tmp_path), "agent", embedder=Embedder())
     kit.journal.put(MemoryRecord("tip", "lesson", 1, {"text": "run pytest"}, scope={"agent": "agent"}))
@@ -168,7 +168,7 @@ def test_budget_and_timeout_do_not_create_false_exposure_assignments(tmp_path):
 
 
 def test_broker_offer_only_becomes_exposure_after_delivery_ack(tmp_path):
-    from commontrace import holdout_io
+    from unimem import holdout_io
 
     holdout_io.configure(str(tmp_path), rate=0.01)
     kit = HookKit(str(tmp_path), "agent", embedder=Embedder())
@@ -186,7 +186,7 @@ def test_broker_offer_only_becomes_exposure_after_delivery_ack(tmp_path):
 
 def test_shadow_study_is_scoped_bounded_and_logs_one_decision(tmp_path):
     root = str(tmp_path)
-    from commontrace import holdout_io
+    from unimem import holdout_io
 
     holdout_io.configure(root, rate=0.5, salt="shadow-study-fixture")
     kit = HookKit(root, "a", embedder=Embedder())
@@ -201,7 +201,7 @@ def test_shadow_study_is_scoped_bounded_and_logs_one_decision(tmp_path):
     kit.journal.authorize_evaluation("study", actor="operator", occasions=1, expires="2099-01-01T00:00:00+00:00")
     kit.handle("UserPromptSubmit", {"session_id": "controlled", "prompt": "pytest parser"}, deadline_ms=1000)
     assert kit.journal.evaluations({"agent": "a"}) == {}
-    from commontrace.holdout_io import read_log
+    from unimem.holdout_io import read_log
 
     rows, corrupt = read_log(root)
     assert not corrupt
@@ -214,7 +214,7 @@ def test_shadow_study_is_scoped_bounded_and_logs_one_decision(tmp_path):
 
 
 def test_buffer_template_and_native_subagent_inheritance(tmp_path):
-    from commontrace import holdout_io
+    from unimem import holdout_io
 
     holdout_io.configure(str(tmp_path), rate=0)
     kit = HookKit(str(tmp_path), "a", embedder=Embedder())

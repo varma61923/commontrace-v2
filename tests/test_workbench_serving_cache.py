@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from commontrace import frontmatter, gateway, paths, workbench
+from unimem import frontmatter, gateway, paths, workbench
 
 
 @pytest.fixture(autouse=True)

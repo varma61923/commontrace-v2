@@ -24,8 +24,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal, Sequence
 
-from commontrace.conversation import Options, Recall, Store, recall
-from commontrace.conversation.store import Turn
+from unimem.conversation import Options, Recall, Store, recall
+from unimem.conversation.store import Turn
 
 
 @dataclass(frozen=True)
@@ -116,13 +116,13 @@ def execute_workflow(name: str) -> WorkflowOutcome:
     labels. The checks therefore concern eligibility, support counts, and
     propagation of withdrawal/correction, never probability of correctness.
     """
-    from commontrace import frontmatter, hierarchical, observations, paths
-    from commontrace import recall as multichannel
-    from commontrace.fact_evidence import EvidenceResolver, bind_evidence
+    from unimem import frontmatter, hierarchical, observations, paths
+    from unimem import recall as multichannel
+    from unimem.fact_evidence import EvidenceResolver, bind_evidence
 
     checks: dict[str, bool] = {}
     try:
-        with tempfile.TemporaryDirectory(prefix="commontrace-workflow-") as root:
+        with tempfile.TemporaryDirectory(prefix="unimem-workflow-") as root:
             if name == "missing-detail-multichannel":
                 with Store(root, "personal") as store:
                     store.add("home", [{"speaker": "Nia", "text": "I live in Porto."}], session_at="2025-04-01")
@@ -151,7 +151,7 @@ def execute_workflow(name: str) -> WorkflowOutcome:
                     return "Require thermal inspection before lantern launch." in result.context
 
                 checks["candidate_not_injected"] = not visible()
-                command = [sys.executable, "-m", "commontrace.cli", "lesson"]
+                command = [sys.executable, "-m", "unimem.cli", "lesson"]
                 approved = subprocess.run([*command, "approve", "lesson_lantern", "--dest", root],
                                           capture_output=True, text=True, check=False)
                 checks["cli_approval_succeeds"] = approved.returncode == 0
@@ -306,7 +306,7 @@ def execute(case: Case) -> Outcome:
     """Persist/reopen, warm a reader, mutate externally, then evaluate its recall."""
     start = time.perf_counter()
     try:
-        with tempfile.TemporaryDirectory(prefix="commontrace-contract-") as root:
+        with tempfile.TemporaryDirectory(prefix="unimem-contract-") as root:
             for space in sorted({source.space for source in case.sources} | {case.space}):
                 with Store(root, space) as writer:
                     for source in case.sources:

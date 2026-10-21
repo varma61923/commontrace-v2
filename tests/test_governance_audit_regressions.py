@@ -11,8 +11,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from commontrace import _jsonl, causal_policy, conformal_gate, holdout_io, promotion, safety
-from commontrace import frontier_protocol as fp
+from unimem import _jsonl, causal_policy, conformal_gate, holdout_io, promotion, safety
+from unimem import frontier_protocol as fp
 
 
 def test_rotation_rejects_excess_rows_without_replacing_the_original(tmp_path, monkeypatch):
@@ -148,8 +148,8 @@ def test_promotion_evidence_is_bound_to_the_registered_design(tmp_path):
 @pytest.mark.parametrize("extra", [{"unexpected": True}, {"probe": {"queries": [], "forbidden": ["secret"]}},
                                    {"probe": {"queries": ["query"], "forbidden": ["secret"], "threshold": -1}}])
 def test_invalid_erasure_cli_request_has_no_side_effects(tmp_path, monkeypatch, extra):
-    from commontrace import certified_erasure
-    from commontrace.commands import frontier_cmd
+    from unimem import certified_erasure
+    from unimem.commands import frontier_cmd
 
     def forbidden(*args, **kwargs):
         pytest.fail("invalid request reached the destructive boundary")
@@ -167,7 +167,7 @@ def test_invalid_erasure_cli_request_has_no_side_effects(tmp_path, monkeypatch, 
                                                             ("reason", False, True)])
 def test_erasure_preflight_preserves_content_and_subject_keys(tmp_path, reason, foreign_vault, scalar_ids):
     pytest.importorskip("cryptography")
-    from commontrace import certified_erasure, hierarchical
+    from unimem import certified_erasure, hierarchical
 
     root = str(tmp_path / "store")
     vault = certified_erasure.SubjectVault(str(tmp_path / "other") if foreign_vault else root,
@@ -181,7 +181,7 @@ def test_erasure_preflight_preserves_content_and_subject_keys(tmp_path, reason, 
 
 
 def test_delegation_cannot_inherit_enclosing_operator_administration(tmp_path):
-    from commontrace import (
+    from unimem import (
         assurance,
         capabilities,
         certified_erasure,
@@ -229,7 +229,7 @@ def test_delegation_cannot_inherit_enclosing_operator_administration(tmp_path):
 
 @pytest.mark.parametrize("invalid", ["", "x", "A" * 64, " " * 64, None, ["0" * 64]])
 def test_merkle_degenerate_proofs_still_require_canonical_hashes(invalid):
-    from commontrace import transparency_log as log
+    from unimem import transparency_log as log
 
     assert not log.verify_inclusion(invalid, 0, 1, [], invalid)
     assert not log.verify_consistency(1, 1, invalid, invalid, [])
@@ -237,7 +237,7 @@ def test_merkle_degenerate_proofs_still_require_canonical_hashes(invalid):
 
 
 def test_empty_merkle_tree_and_proof_container_are_validated():
-    from commontrace import transparency_log as log
+    from unimem import transparency_log as log
 
     valid = log.leaf_hash({})
     assert not log.verify_consistency(0, 0, log.EMPTY, valid, [])
@@ -247,7 +247,7 @@ def test_empty_merkle_tree_and_proof_container_are_validated():
 
 
 def test_hub_merkle_proofs_work_beyond_local_journal_row_bound():
-    from commontrace import transparency_log as log
+    from unimem import transparency_log as log
 
     hashes = [log.leaf_hash({})] * (fp.MAX_ROWS + 1)
     root = log.tree_hash(hashes)
@@ -262,9 +262,9 @@ def test_hub_merkle_proofs_work_beyond_local_journal_row_bound():
 def test_framework_turn_allows_bounded_cold_capture_without_editor_hook_deadline(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
-    from commontrace import framework_middleware, hook_kit
-    from commontrace.memory_journal import Journal
-    from commontrace.memory_record import MemoryRecord
+    from unimem import framework_middleware, hook_kit
+    from unimem.memory_journal import Journal
+    from unimem.memory_record import MemoryRecord
 
     root = str(tmp_path)
     scope = {"agent": "crew", "user": "alice"}
@@ -289,7 +289,7 @@ def test_framework_turn_allows_bounded_cold_capture_without_editor_hook_deadline
 
 
 def test_spatial_beliefs_admit_one_snapshot_and_match_per_object_queries(tmp_path, monkeypatch):
-    from commontrace import spatial
+    from unimem import spatial
 
     root = str(tmp_path)
     context = {"tenant": "tenant", "site": "site", "robot": "robot"}
@@ -314,7 +314,7 @@ def test_spatial_beliefs_admit_one_snapshot_and_match_per_object_queries(tmp_pat
 
 @pytest.mark.parametrize("tiny", [1e-300, math.nextafter(0, 1)])
 def test_working_memory_normalizes_tiny_vectors_without_underflow(tiny):
-    from commontrace.robotics.working_memory import WorkingMemory
+    from unimem.robotics.working_memory import WorkingMemory
 
     memory = WorkingMemory(capacity_tokens=10)
     memory.add("tiny", [tiny, tiny], tokens=1, episode_id="episode")
@@ -324,7 +324,7 @@ def test_working_memory_normalizes_tiny_vectors_without_underflow(tiny):
 
 
 def test_robot_signature_ingestion_bounds_ignored_records(tmp_path):
-    from commontrace.robotics import signatures
+    from unimem.robotics import signatures
 
     with pytest.raises(ValueError, match="sample count"):
         signatures.ingest(str(tmp_path), ({} for _ in range(100_001)), skill="skill", embodiment="robot", site="site")
@@ -332,7 +332,7 @@ def test_robot_signature_ingestion_bounds_ignored_records(tmp_path):
 
 
 def test_concurrent_room_configuration_cannot_relax_no_memory(tmp_path):
-    from commontrace import household
+    from unimem import household
 
     root = str(tmp_path)
 

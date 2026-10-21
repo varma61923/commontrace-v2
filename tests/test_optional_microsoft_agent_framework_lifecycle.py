@@ -12,10 +12,10 @@ import json
 
 import pytest
 
-from commontrace.client import MemoryClient
-from commontrace.integrations.microsoft_agent_framework import CommonTraceContextProvider
-from commontrace.memory_journal import Journal
-from commontrace.memory_record import MemoryRecord
+from unimem.client import MemoryClient
+from unimem.integrations.microsoft_agent_framework import UniMemContextProvider
+from unimem.memory_journal import Journal
+from unimem.memory_record import MemoryRecord
 
 af = pytest.importorskip("agent_framework", reason="optional agent-framework-core SDK")
 
@@ -52,7 +52,7 @@ def _provider(root):
         "alice-release", "directive", 1, {"text": "Always verify the blue release gate."},
         scope={"agent": "af-agent", "tenant": "acme", "user": "alice"},
     ))
-    return CommonTraceContextProvider(memory)
+    return UniMemContextProvider(memory)
 
 
 def test_real_agent_concurrent_sessions_inject_and_capture_scoped_turns(monkeypatch, tmp_path):
@@ -194,7 +194,7 @@ def test_real_agent_rejects_missing_identity_before_memory_or_model(monkeypatch,
         agent = af.Agent(client, context_providers=[provider])
 
         def unscoped_request(*args, **kwargs):
-            pytest.fail("missing identity must not reach CommonTrace")
+            pytest.fail("missing identity must not reach UniMem")
 
         monkeypatch.setattr(MemoryClient, "turn", unscoped_request)
         with pytest.raises(ValueError, match="requires user_id"):

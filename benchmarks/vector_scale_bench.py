@@ -33,7 +33,7 @@ import time
 
 import numpy as np
 
-from commontrace import vector_store
+from unimem import vector_store
 
 TENANT, NAMESPACE, MODEL = "scale-bench", "synthetic", "gaussian-mixture"
 
@@ -64,7 +64,7 @@ async def run(dsn: str, *, n: int, dim: int, queries: int, top_k: int, clusters:
         digest = hashlib.sha256(str(dim).encode()).hexdigest()[:16]
         connection = await asyncpg.connect(dsn)
         try:
-            if await connection.fetchval("SELECT to_regclass($1)", f"commontrace_vectors_hnsw_{digest}"):
+            if await connection.fetchval("SELECT to_regclass($1)", f"unimem_vectors_hnsw_{digest}"):
                 raise RuntimeError(f"an HNSW index for dimension {dim} already exists; loading would insert into "
                                    "it row by row instead of building it in bulk. Use a fresh database.")
         finally:
@@ -86,12 +86,12 @@ async def run(dsn: str, *, n: int, dim: int, queries: int, top_k: int, clusters:
             started = time.perf_counter()
             # The DDL PostgresVectorIndex.open(approximate=True) declares, built in bulk after loading.
             await connection.execute(
-                f"CREATE INDEX IF NOT EXISTS commontrace_vectors_hnsw_{digest} ON commontrace_vectors USING hnsw "
+                f"CREATE INDEX IF NOT EXISTS unimem_vectors_hnsw_{digest} ON unimem_vectors USING hnsw "
                 f"((embedding::vector({dim})) vector_cosine_ops) WITH (m={m}, ef_construction={ef_construction}) "
                 f"WHERE dimension={dim}")
             report["index_build_seconds"] = round(time.perf_counter() - started, 1)
             report["index_bytes"] = await connection.fetchval(
-                f"SELECT pg_relation_size('commontrace_vectors_hnsw_{digest}')")
+                f"SELECT pg_relation_size('unimem_vectors_hnsw_{digest}')")
         finally:
             await connection.close()
         noise = np.random.default_rng(seed + 1)
@@ -131,7 +131,7 @@ async def run(dsn: str, *, n: int, dim: int, queries: int, top_k: int, clusters:
         if not keep:
             connection = await asyncpg.connect(dsn)
             try:
-                await connection.execute("DELETE FROM commontrace_vectors WHERE tenant=$1", TENANT)
+                await connection.execute("DELETE FROM unimem_vectors WHERE tenant=$1", TENANT)
             finally:
                 await connection.close()
         await exact.close()
@@ -151,9 +151,9 @@ async def run_lance(*, n: int, dim: int, queries: int, top_k: int, clusters: int
             and 1 <= batch <= vector_store.MAX_BATCH and seed >= 0
             and math.isfinite(spread) and spread > 0):
         raise ValueError("invalid Lance scale workload")
-    from commontrace.vector_lance import ANN_REFINE_FACTOR, LanceVectorIndex
+    from unimem.vector_lance import ANN_REFINE_FACTOR, LanceVectorIndex
 
-    root = tempfile.mkdtemp(prefix="commontrace-lance-scale-", dir=work_dir)
+    root = tempfile.mkdtemp(prefix="unimem-lance-scale-", dir=work_dir)
     index = None
     report = {"benchmark": "vector-scale", "engine": "lance", "n": n, "dim": dim,
               "queries": queries, "top_k": top_k, "clusters": clusters, "spread": spread,
@@ -206,8 +206,8 @@ async def run_lance(*, n: int, dim: int, queries: int, top_k: int, clusters: int
         repository = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         report["source_files_sha256"] = {
             name: hashlib.sha256(open(os.path.join(repository, name), "rb").read()).hexdigest()
-            for name in ("benchmarks/vector_scale_bench.py", "commontrace/vector_lance.py",
-                         "commontrace/vector_store.py", "commontrace/async_workers.py")}
+            for name in ("benchmarks/vector_scale_bench.py", "unimem/vector_lance.py",
+                         "unimem/vector_store.py", "unimem/async_workers.py")}
         report["source_commit"] = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repository,
                                                           text=True).strip()
         report["note"] = "Synthetic paired vector queries; excludes embeddings, lexical/graph fusion and canonical admission."
@@ -235,7 +235,7 @@ def lance_component_gates(report: dict) -> dict[str, bool]:
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    p.add_argument("--dsn", default=os.environ.get("COMMONTRACE_SCALE_DSN", ""))
+    p.add_argument("--dsn", default=os.environ.get("UNIMEM_SCALE_DSN", ""))
     p.add_argument("--engine", choices=("postgres", "lance"), default="postgres")
     p.add_argument("--check-lance", action="store_true",
                    help="fail unless the 1M vector component meets p95 <50 ms and mean recall >=0.97")
@@ -258,7 +258,7 @@ def main(argv=None) -> int:
     if args.check_lance and args.engine != "lance":
         p.error("--check-lance requires --engine lance")
     if args.engine == "postgres" and not args.dsn:
-        p.error("--dsn (or COMMONTRACE_SCALE_DSN) is required")
+        p.error("--dsn (or UNIMEM_SCALE_DSN) is required")
     if args.engine == "lance":
         report = asyncio.run(run_lance(n=args.n, dim=args.dim, queries=args.queries, top_k=args.top_k,
                                       clusters=args.clusters, spread=args.spread, seed=args.seed,

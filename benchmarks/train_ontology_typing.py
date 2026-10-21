@@ -1,4 +1,4 @@
-"""Train the learned ontology typer shipped in ``commontrace/ontology_typing_model.json``.
+"""Train the learned ontology typer shipped in ``unimem/ontology_typing_model.json``.
 
 Rows come from labeled typing fixtures (``name``, ``context``, ``expected``; a null
 ``expected`` trains the ``none`` class). Training is deterministic for a given seed
@@ -16,7 +16,7 @@ import json
 import os
 import sys
 
-from commontrace import ontology_learned
+from unimem import ontology_learned
 
 
 def load_rows(paths: list[str]) -> tuple[list[tuple[str, str, str]], list[str]]:

@@ -1,4 +1,4 @@
-"""Optional executable local vendor profiles; never substitutes CommonTrace recall.
+"""Optional executable local vendor profiles; never substitutes UniMem recall.
 
 These raw-source profiles deliberately exclude managed APIs and LLM extraction.
 Gold evidence and answers never enter them. Canonical Store is only a source map.
@@ -17,10 +17,10 @@ import threading
 from importlib.util import find_spec
 
 from benchmarks.artifacts import model_artifact, package_source
-from commontrace.conversation.search import Recall, tokens
-from commontrace.conversation.timeparse import parse_moment
+from unimem.conversation.search import Recall, tokens
+from unimem.conversation.timeparse import parse_moment
 
-PROFILES = ("commontrace", "mem0-raw", "graphiti-episodic", "hindsight-raw")
+PROFILES = ("unimem", "mem0-raw", "graphiti-episodic", "hindsight-raw")
 
 # Hindsight's embedded client resolves its profile and pg0 directories through
 # Path.home(). Keep its temporary HOME in place for the entire adapter lifetime
@@ -322,11 +322,11 @@ class HindsightRaw:
                 for package in ("hindsight_api", "hindsight_client", "hindsight_embed", "hindsight")
             }
             self.client = HindsightEmbedded(
-                profile="commontrace-benchmark",
+                profile="unimem-benchmark",
                 llm_provider="none",
                 log_level="error",
             )
-            self.bank_id = "commontrace-benchmark"
+            self.bank_id = "unimem-benchmark"
             cutoff_turns = eligible_turns(store, now)
             for turn in cutoff_turns:
                 document_id = f"source-turn-{turn.id}"
@@ -405,10 +405,10 @@ class HindsightRaw:
 def vendor_profile(name, store, now):
     if name not in PROFILES:
         raise ValueError("unsupported memory adapter")
-    if name == "commontrace":
+    if name == "unimem":
         yield None
         return
-    with tempfile.TemporaryDirectory(prefix="commontrace-vendor-") as directory:
+    with tempfile.TemporaryDirectory(prefix="unimem-vendor-") as directory:
         adapter_type = {
             "mem0-raw": Mem0Raw,
             "graphiti-episodic": GraphitiEpisodic,

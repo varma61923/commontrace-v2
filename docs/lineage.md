@@ -5,7 +5,7 @@ attestations in `memory/lineage.jsonl`. Existing record hashes and lesson revisi
 are unchanged. Each input carries its content digest; missing lineage has unknown
 integrity. Summarizing, echoing or deriving from an external input cannot raise it.
 
-`commontrace lineage show ID --dest STORE` explains ancestors, descendants and
+`unimem lineage show ID --dest STORE` explains ancestors, descendants and
 review flags. `lineage taint ID --reason REASON` propagates a review requirement;
 `lineage invalidate ID` marks supersession. Fact supersession triggers this
 automatically. Retrieval facts include integrity and lineage digest metadata.

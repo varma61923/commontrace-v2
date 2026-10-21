@@ -5,7 +5,7 @@ import os
 
 import pytest
 
-from commontrace import evidence, experiment, harm, holdout_io, receipts, retrieval_io
+from unimem import evidence, experiment, harm, holdout_io, receipts, retrieval_io
 from tests.test_mcp_server import _write_lesson, call, cli
 
 TASK = "customer asks for a password reset email"
@@ -18,9 +18,9 @@ FILLER = [
     ("rotate-api-keys", "rotate api keys quarterly and revoke the old ones"),
 ]
 
-pytest.importorskip("mcp", reason="`commontrace serve` needs the MCP SDK: pip install 'commontrace[serve]'")
+pytest.importorskip("mcp", reason="`unimem serve` needs the MCP SDK: pip install 'unimem[serve]'")
 
-from commontrace import mcp_server  # noqa: E402  (needs the SDK)
+from unimem import mcp_server  # noqa: E402  (needs the SDK)
 
 
 @pytest.fixture(autouse=True)
@@ -163,7 +163,7 @@ def test_only_an_anytime_valid_verdict_is_acted_on(tmp_path):
         report=lambda i, injected: (i % 5) < (2 if BAD in injected else 3),
     )
     rows = evidence.analyse(root).rows
-    from commontrace.commands import experiment_cmd
+    from unimem.commands import experiment_cmd
 
     fixed = {e.lesson_slug: e.verdict for e in experiment.analyze(experiment_cmd._observations(rows))}
     assert fixed[BAD] == experiment.VERDICT_HURTS

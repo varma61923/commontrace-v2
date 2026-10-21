@@ -4,12 +4,12 @@ import json
 
 import pytest
 
-from commontrace import cli, graph, graph_sync, hierarchical, provenance
+from unimem import cli, graph, graph_sync, hierarchical, provenance
 
 
 @pytest.fixture(autouse=True)
 def _env(monkeypatch):
-    for name in ("COMMONTRACE_GRAPH_AUTO", "COMMONTRACE_FACT_CONFLICTS", "COMMONTRACE_FACT_EMBEDDER"):
+    for name in ("UNIMEM_GRAPH_AUTO", "UNIMEM_FACT_CONFLICTS", "UNIMEM_FACT_EMBEDDER"):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -47,7 +47,7 @@ def test_sync_is_incremental_and_idempotent(tmp_path):
 
 
 def test_a_retired_fact_closes_what_it_produced_at_the_time_it_ended(tmp_path, monkeypatch):
-    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "supersede")
+    monkeypatch.setenv("UNIMEM_FACT_CONFLICTS", "supersede")
     root = str(tmp_path)
     old, _ = hierarchical.add_fact(root, "The Payments Service depends on Redis.")
     graph_sync.sync(root)
@@ -68,12 +68,12 @@ def test_a_retired_fact_closes_what_it_produced_at_the_time_it_ended(tmp_path, m
 def test_auto_mode_switch_and_due_check(tmp_path, monkeypatch):
     root = str(tmp_path)
     hierarchical.add_fact(root, "Aisha is on call this week for the Billing API.")
-    monkeypatch.setenv("COMMONTRACE_GRAPH_AUTO", "off")
+    monkeypatch.setenv("UNIMEM_GRAPH_AUTO", "off")
     assert graph_sync.run_if_due(root) is None and graph.load_nodes(root) == {}
-    monkeypatch.setenv("COMMONTRACE_GRAPH_AUTO", "on")
+    monkeypatch.setenv("UNIMEM_GRAPH_AUTO", "on")
     assert graph_sync.run_if_due(root)["facts"] == 1
     assert graph_sync.run_if_due(root) is None  # nothing changed since
-    monkeypatch.setenv("COMMONTRACE_GRAPH_AUTO", "sometimes")
+    monkeypatch.setenv("UNIMEM_GRAPH_AUTO", "sometimes")
     assert "must be on or off" in graph_sync.run_if_due(root)["error"]  # reported, never raised
 
 
@@ -81,7 +81,7 @@ def test_sqlite_store_and_cli(tmp_path, capsys):
     root = str(tmp_path)
     assert cli.main(["init", "--dest", root]) == 0
     capsys.readouterr()
-    from commontrace import fact_store
+    from unimem import fact_store
 
     assert fact_store.enabled(root)  # new stores start on the indexed backend
     hierarchical.add_fact(root, "Kenji moved the Search API to us-east-1.")
@@ -93,20 +93,20 @@ def test_sqlite_store_and_cli(tmp_path, capsys):
 
 
 def test_init_can_keep_the_jsonl_backend(tmp_path, monkeypatch, capsys):
-    from commontrace import fact_store
+    from unimem import fact_store
 
     root = str(tmp_path / "a")
     assert cli.main(["init", "--fact-store", "jsonl", "--dest", root]) == 0
     assert not fact_store.enabled(root)
-    monkeypatch.setenv("COMMONTRACE_FACT_STORE", "jsonl")
+    monkeypatch.setenv("UNIMEM_FACT_STORE", "jsonl")
     assert cli.main(["init", "--dest", str(tmp_path / "b")]) == 0
     assert not fact_store.enabled(str(tmp_path / "b"))
-    monkeypatch.setenv("COMMONTRACE_FACT_STORE", "parquet")
+    monkeypatch.setenv("UNIMEM_FACT_STORE", "parquet")
     assert cli.main(["init", "--dest", str(tmp_path / "c")]) == 2
 
 
 def test_an_exclusive_relation_exposes_a_contradiction_words_cannot(tmp_path, monkeypatch):
-    from commontrace import fact_conflicts
+    from unimem import fact_conflicts
 
     root = str(tmp_path)
     old, _ = hierarchical.add_fact(root, "Alice Smith works at Acme Corp.", valid_from="2024-01-01T00:00:00Z")
@@ -121,7 +121,7 @@ def test_an_exclusive_relation_exposes_a_contradiction_words_cannot(tmp_path, mo
 
 
 def test_supersede_mode_resolves_an_exclusive_contradiction(tmp_path, monkeypatch):
-    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "supersede")
+    monkeypatch.setenv("UNIMEM_FACT_CONFLICTS", "supersede")
     root = str(tmp_path)
     old, _ = hierarchical.add_fact(root, "Alice Smith works at Acme Corp.", valid_from="2024-01-01T00:00:00Z")
     graph_sync.sync(root)

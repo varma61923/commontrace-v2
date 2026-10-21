@@ -3,9 +3,9 @@ import json
 
 import pytest
 
-from commontrace.hook_kit import HookKit
-from commontrace.memory_journal import Journal
-from commontrace.session_learning import learn, segment
+from unimem.hook_kit import HookKit
+from unimem.memory_journal import Journal
+from unimem.session_learning import learn, segment
 
 
 def captured(root):
@@ -44,7 +44,7 @@ def test_subagent_start_namespaces_session_and_inherits_parent_claims(tmp_path, 
 
 
 def test_subagent_stop_records_causal_holdout_outcome_for_claimed_memory(tmp_path):
-    from commontrace import holdout_io
+    from unimem import holdout_io
 
     root = str(tmp_path)
     agent, parent, child = "worker", "session-1", "subagent-1"
@@ -177,7 +177,7 @@ def test_curator_preselector_cannot_reintroduce_unbounded_captures(tmp_path):
 
 
 def test_curator_prior_slice_uses_task_relevance_before_top_k(tmp_path):
-    from commontrace.memory_record import MemoryRecord
+    from unimem.memory_record import MemoryRecord
 
     root = str(tmp_path)
     journal = captured(root)
@@ -252,7 +252,7 @@ def test_writer_oversize_proposal_never_dispatches_or_seals(tmp_path):
 
 
 def test_arena_budget_and_citations_match_supplied_evidence():
-    from commontrace.session_learning import arena
+    from unimem.session_learning import arena
 
     entries = [{"id": str(i), "sequence": i, "event": "PostToolUseFailure", "payload": {"text": "x" * 500}}
                for i in range(32)]
@@ -272,7 +272,7 @@ def test_arena_budget_and_citations_match_supplied_evidence():
 
 
 def test_required_prior_evidence_cannot_be_dropped_to_fit(tmp_path):
-    from commontrace.memory_record import MemoryRecord
+    from unimem.memory_record import MemoryRecord
 
     journal = captured(str(tmp_path))
     journal.put(MemoryRecord(
@@ -314,7 +314,7 @@ def test_invalid_token_counter_cannot_dispatch(count):
 
 
 def test_arena_indivisible_oversize_input_cannot_dispatch():
-    from commontrace.session_learning import arena
+    from unimem.session_learning import arena
 
     calls = []
     with pytest.raises(ValueError, match="budget"):
@@ -324,7 +324,7 @@ def test_arena_indivisible_oversize_input_cannot_dispatch():
 
 
 def test_default_durable_worker_parks_oversize_without_sealing(tmp_path, monkeypatch):
-    from commontrace import jobs, llm
+    from unimem import jobs, llm
 
     root = str(tmp_path)
     journal = Journal(root)
@@ -384,11 +384,11 @@ def test_case_wrapper_splits_ordinary_captures_instead_of_blocking(tmp_path):
 def test_lifecycle_changes_are_atomic_and_causal_log_drift_blocks(tmp_path, monkeypatch):
     from dataclasses import replace
 
-    from commontrace import integrity
-    from commontrace.commands import experiment_cmd
-    from commontrace.measure import content_revision
-    from commontrace.memory_record import MemoryRecord
-    from commontrace.session_learning import reconcile
+    from unimem import integrity
+    from unimem.commands import experiment_cmd
+    from unimem.measure import content_revision
+    from unimem.memory_record import MemoryRecord
+    from unimem.session_learning import reconcile
 
     journal = Journal(str(tmp_path))
     prior = journal.put(MemoryRecord("old", "lesson", 1, {"text": "prior"}))
@@ -479,10 +479,10 @@ def test_native_tool_case_does_not_infer_run_success(tmp_path):
 
 @pytest.mark.parametrize("beneficial", [True, False])
 def test_real_randomized_log_controls_promotion_and_retirement(tmp_path, beneficial):
-    from commontrace import holdout_io
-    from commontrace.measure import content_revision
-    from commontrace.memory_record import MemoryRecord
-    from commontrace.session_learning import reconcile
+    from unimem import holdout_io
+    from unimem.measure import content_revision
+    from unimem.memory_record import MemoryRecord
+    from unimem.session_learning import reconcile
 
     root = str(tmp_path)
     config = holdout_io.configure(root, rate=0.5, salt="controlled-fixture")
@@ -508,7 +508,7 @@ def test_real_randomized_log_controls_promotion_and_retirement(tmp_path, benefic
 
 
 def test_split_creates_distinct_quarantined_parts_with_pinned_target(tmp_path):
-    from commontrace.memory_record import MemoryRecord
+    from unimem.memory_record import MemoryRecord
 
     journal = captured(str(tmp_path))
     journal.put(
@@ -565,10 +565,10 @@ def test_invalid_split_never_seals_work(tmp_path):
 def test_split_waits_for_each_part_and_never_overwrites_changed_target(tmp_path, changed_target):
     from dataclasses import replace
 
-    from commontrace import holdout_io
-    from commontrace.measure import content_revision
-    from commontrace.memory_record import MemoryRecord
-    from commontrace.session_learning import reconcile
+    from unimem import holdout_io
+    from unimem.measure import content_revision
+    from unimem.memory_record import MemoryRecord
+    from unimem.session_learning import reconcile
 
     root = str(tmp_path)
     cfg = holdout_io.configure(root, rate=0.5, salt="split-fixture")

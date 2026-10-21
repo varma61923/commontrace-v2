@@ -4,9 +4,9 @@ import json
 
 import pytest
 
-pytest.importorskip("mcp", reason="`commontrace serve` needs the MCP SDK: pip install 'commontrace[serve]'")
+pytest.importorskip("mcp", reason="`unimem serve` needs the MCP SDK: pip install 'unimem[serve]'")
 
-from commontrace import evidence, experiment  # noqa: E402
+from unimem import evidence, experiment  # noqa: E402
 from tests.test_harm_policy import BAD, _store  # noqa: E402
 from tests.test_mcp_server import cli  # noqa: E402
 

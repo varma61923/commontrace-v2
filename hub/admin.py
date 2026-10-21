@@ -67,7 +67,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, Response
 
-from commontrace.ui_style import THEME_CSS
+from unimem.ui_style import THEME_CSS
 from hub import audit as audit_module
 from hub import auth, crud, events, manage, plans, rbac, retention, scopes
 from hub.abuse import RateLimiter, make_named_limiter, rate_limit_key
@@ -85,11 +85,11 @@ from hub.models import (
 )
 from hub.ui_kit import THEME_SCRIPT
 
-logger = logging.getLogger("commontrace.hub.admin")
+logger = logging.getLogger("unimem.hub.admin")
 
 ADMIN_PATH = "/admin"
 _ADMIN_ACTOR = "operator-console"
-_REALM = "CommonTrace Hub operator console"
+_REALM = "UniMem Hub operator console"
 
 _MAX_ROWS = 200
 _AUDIT_ROWS = 40
@@ -385,8 +385,8 @@ def _page(title: str, body: str, *, auto_refresh_seconds: int = 0) -> HTMLRespon
     return HTMLResponse(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-        f"<title>{h(title)} · CommonTrace Hub</title>{THEME_SCRIPT}<style>{_CSS}</style></head><body>"
-        "<header class=\"bar\"><div class=\"in\"><b>CommonTrace Hub</b>"
+        f"<title>{h(title)} · UniMem Hub</title>{THEME_SCRIPT}<style>{_CSS}</style></head><body>"
+        "<header class=\"bar\"><div class=\"in\"><b>UniMem Hub</b>"
         "<span class=\"ro\">operator console</span>"
         f"{badge}"
         f"<nav><a href=\"{ADMIN_PATH}\">Overview</a>"
@@ -1254,7 +1254,7 @@ def _render_kb(data: dict, admin_token: str, operator_org_id: str, flash: str = 
                              f'{_num(pending_total)} total awaiting review.</p>')
     else:
         pending_html = ('<p class="empty">No proposals waiting. Orgs propose entries with '
-                        '<code>commontrace commons submit</code>.</p>')
+                        '<code>unimem commons submit</code>.</p>')
 
     if queue:
         rows = []

@@ -3,7 +3,7 @@ import asyncio
 
 import pytest
 
-from commontrace.hub_client import HubSession, HubToolError
+from unimem.hub_client import HubSession, HubToolError
 
 
 class RecordingSession(HubSession):

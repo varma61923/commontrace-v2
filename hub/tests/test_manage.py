@@ -1092,7 +1092,7 @@ class TestRetentionCommandTable:
 
 
 class TestWebhookCLI:
-    URL = "https://example.invalid/hooks/commontrace"
+    URL = "https://example.invalid/hooks/unimem"
 
     @pytest_asyncio.fixture
     async def hooked(self, session_factory, monkeypatch, capsys):
@@ -1257,7 +1257,7 @@ class TestWebhookCommandTable:
 
 
 class TestEncryptionAtRestCLI:
-    URL = "https://example.invalid/hooks/commontrace"
+    URL = "https://example.invalid/hooks/unimem"
 
     async def test_generate_encryption_key_is_dispatchable_and_documented(self):
         assert "generate-encryption-key" in manage._COMMANDS
@@ -1569,7 +1569,7 @@ class TestPrivilegedRoleGrantAlert:
         from hub import events
         async with session_scope(session_factory) as session:
             ep, secret = await events.add_endpoint(
-                session, org_id, "https://example.invalid/hooks/commontrace",
+                session, org_id, "https://example.invalid/hooks/unimem",
                 signing_key="test-signing-key")
             await session.flush()
             return {"id": ep.id, "secret": secret}

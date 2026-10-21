@@ -5,15 +5,15 @@ import sys
 
 import pytest
 
-from commontrace import cli as cli_module
-from commontrace import frontmatter, paths, trace_io, validate
-from commontrace.cli import main
-from commontrace.commands import _shellout
+from unimem import cli as cli_module
+from unimem import frontmatter, paths, trace_io, validate
+from unimem.cli import main
+from unimem.commands import _shellout
 
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
-    monkeypatch.delenv("COMMONTRACE_ROOT", raising=False)
+    monkeypatch.delenv("UNIMEM_ROOT", raising=False)
     monkeypatch.chdir(tmp_path)
     return tmp_path
 
@@ -37,8 +37,8 @@ def test_cli_adds_a_deterministic_remediation_hint_to_generic_errors(monkeypatch
     assert "ValueError: invalid field" in error
     assert "Check field types, limits, timestamps and configuration." in error
 
-    from commontrace.exceptions import remediation_hint
-    from commontrace.remediation import hint
+    from unimem.exceptions import remediation_hint
+    from unimem.remediation import hint
 
     assert hint is remediation_hint
 
@@ -270,13 +270,13 @@ def test_validate_rejects_bool_for_number_typed_field(store):
 
 
 def test_install_claude_code_finds_skill_md_via_dest(store, monkeypatch):
-    monkeypatch.delenv("COMMONTRACE_ROOT", raising=False)
+    monkeypatch.delenv("UNIMEM_ROOT", raising=False)
     (store / "SKILL.md").write_text("# Real skill content for the dest project\n" * 50)
     other_cwd = store.parent / "elsewhere"
     other_cwd.mkdir()
     monkeypatch.chdir(other_cwd)
     assert main(["install", "--target", "claude-code", "--dest", str(store)]) == 0
-    out = store / ".claude" / "skills" / "commontrace" / "SKILL.md"
+    out = store / ".claude" / "skills" / "unimem" / "SKILL.md"
     assert out.is_file()
     assert "Real skill content" in out.read_text()
 
@@ -307,14 +307,14 @@ def test_capture_can_record_a_definite_negative_for_every_outcome_flag(store):
 
 def test_install_generic_target_writes_pointer_doc(store):
     assert main(["install", "--target", "generic", "--dest", str(store)]) == 0
-    assert (store / "COMMONTRACE.md").is_file()
+    assert (store / "UNIMEM.md").is_file()
 
 
 def test_install_claude_code_copies_real_skill_md_when_found(store, monkeypatch):
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    monkeypatch.setenv("COMMONTRACE_ROOT", repo_root)
+    monkeypatch.setenv("UNIMEM_ROOT", repo_root)
     assert main(["install", "--target", "claude-code", "--dest", str(store)]) == 0
-    out = store / ".claude" / "skills" / "commontrace" / "SKILL.md"
+    out = store / ".claude" / "skills" / "unimem" / "SKILL.md"
     assert out.is_file()
     assert out.stat().st_size > 1000
 
@@ -323,19 +323,19 @@ def test_install_generic_mcp_warns_about_credentials_in_gitignore(store, capsys)
     assert main(["install", "--target", "generic-mcp", "--dest", str(store)]) == 0
     out = capsys.readouterr().out
     assert ".gitignore" in out
-    example = store / "commontrace.hub.mcp.json.example"
+    example = store / "unimem.hub.mcp.json.example"
     assert example.is_file()
     assert ".gitignore" in example.read_text()
 
 
 def test_install_generic_mcp_writes_valid_json_with_correct_mcp_servers_shape(store):
     assert main(["install", "--target", "generic-mcp", "--dest", str(store)]) == 0
-    example = store / "commontrace.hub.mcp.json.example"
+    example = store / "unimem.hub.mcp.json.example"
     doc = json.loads(example.read_text())
     assert "mcpServers" in doc
-    assert "commontrace" in doc["mcpServers"]
+    assert "unimem" in doc["mcpServers"]
 
-    entry = doc["mcpServers"]["commontrace"]
+    entry = doc["mcpServers"]["unimem"]
     assert entry["type"] == "http"
     assert entry["url"].endswith("/mcp")
     assert entry["headers"]["Authorization"].startswith("Bearer ")
@@ -344,9 +344,9 @@ def test_install_generic_mcp_writes_valid_json_with_correct_mcp_servers_shape(st
 
 def test_install_cursor_writes_valid_json_mcp_example(store):
     assert main(["install", "--target", "cursor", "--dest", str(store)]) == 0
-    example = store / "commontrace.hub.mcp.json.example"
+    example = store / "unimem.hub.mcp.json.example"
     doc = json.loads(example.read_text())
-    assert "commontrace" in doc["mcpServers"]
+    assert "unimem" in doc["mcpServers"]
 
 
 def test_install_cursor_warns_about_credentials_in_gitignore(store, capsys):
@@ -361,7 +361,7 @@ def test_install_warns_before_overwriting_existing_generated_file(store, capsys)
     assert main(["install", "--target", "generic", "--dest", str(store)]) == 0
     out = capsys.readouterr().out
     assert "[WARN] overwriting existing file" in out
-    assert "COMMONTRACE.md" in out
+    assert "UNIMEM.md" in out
 
 
 def test_doctor_runs_without_crashing(store):
@@ -378,7 +378,7 @@ def test_a_missing_pyyaml_install_is_a_clean_error_not_a_traceback():
         "            raise ModuleNotFoundError(f\"No module named {name!r}\", name=name)\n"
         "        return None\n"
         "sys.meta_path.insert(0, _Blocker())\n"
-        "from commontrace.cli import main\n"
+        "from unimem.cli import main\n"
         "sys.exit(main(['doctor']))\n"
     )
     result = subprocess.run(
@@ -391,7 +391,7 @@ def test_a_missing_pyyaml_install_is_a_clean_error_not_a_traceback():
 
 
 def test_paths_env_var_override(tmp_path, monkeypatch):
-    monkeypatch.setenv("COMMONTRACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("UNIMEM_ROOT", str(tmp_path))
     assert paths.resolve_root() == str(tmp_path)
 
 
@@ -399,12 +399,12 @@ def test_subprocess_handoff_passes_the_resolved_root_not_the_inherited_env(tmp_p
     captured = {}
 
     def fake_run(cmd, env=None):
-        captured["root"] = env["COMMONTRACE_ROOT"]
+        captured["root"] = env["UNIMEM_ROOT"]
         return subprocess.CompletedProcess(cmd, 0)
 
     script = tmp_path / "script.py"
     script.write_text("", encoding="utf-8")
-    monkeypatch.setenv("COMMONTRACE_ROOT", "/some/other/store")
+    monkeypatch.setenv("UNIMEM_ROOT", "/some/other/store")
     monkeypatch.setattr(_shellout.subprocess, "run", fake_run)
     monkeypatch.setattr(_shellout, "find_reference_script", lambda root, rel: str(script))
 
@@ -434,17 +434,17 @@ def test_captured_subprocess_output_is_pinned_to_utf8(tmp_path, monkeypatch):
 
 
 def test_sync_without_hub_configured_prints_setup_instructions(store, capsys, monkeypatch):
-    monkeypatch.delenv("COMMONTRACE_HUB_URL", raising=False)
-    monkeypatch.delenv("COMMONTRACE_HUB_API_KEY", raising=False)
+    monkeypatch.delenv("UNIMEM_HUB_URL", raising=False)
+    monkeypatch.delenv("UNIMEM_HUB_API_KEY", raising=False)
     assert main(["sync", "--dest", str(store)]) == 0
     out = capsys.readouterr().out
     assert "No Hub is configured" in out
-    assert "COMMONTRACE_HUB_URL" in out
+    assert "UNIMEM_HUB_URL" in out
 
 
 def test_sync_warns_when_api_key_passed_on_the_command_line(store, capsys, monkeypatch):
-    monkeypatch.delenv("COMMONTRACE_HUB_URL", raising=False)
-    monkeypatch.delenv("COMMONTRACE_HUB_API_KEY", raising=False)
+    monkeypatch.delenv("UNIMEM_HUB_URL", raising=False)
+    monkeypatch.delenv("UNIMEM_HUB_API_KEY", raising=False)
     assert main(["sync", "--dest", str(store), "--hub-api-key", "ct_live_test"]) == 0
     err = capsys.readouterr().err
     assert "WARN" in err
@@ -494,7 +494,7 @@ def test_query_lexical_reports_no_matches_cleanly(store, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "empty" in out
-    assert "commontrace capture" in out
+    assert "unimem capture" in out
 
 
 def test_query_rejects_a_negative_top_k(store, capsys):
@@ -533,12 +533,12 @@ def test_query_lexical_excludes_review_status_lessons(store, capsys):
         f"an unapproved lesson was served as a result: {result_lines}"
     )
     assert "status=review" in out
-    assert "commontrace lesson approve lesson_pending_review" in out
+    assert "unimem lesson approve lesson_pending_review" in out
 
 
 def test_sync_partial_hub_config_still_prints_setup_instructions(store, capsys, monkeypatch):
-    monkeypatch.setenv("COMMONTRACE_HUB_URL", "http://localhost:8420/mcp")
-    monkeypatch.delenv("COMMONTRACE_HUB_API_KEY", raising=False)
+    monkeypatch.setenv("UNIMEM_HUB_URL", "http://localhost:8420/mcp")
+    monkeypatch.delenv("UNIMEM_HUB_API_KEY", raising=False)
     assert main(["sync", "--dest", str(store)]) == 0
     out = capsys.readouterr().out
     assert "No Hub is configured" in out
@@ -548,13 +548,13 @@ def test_packaged_schemas_are_identical_to_the_normative_ones():
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     for name in ("trace.schema.json", "lesson.schema.json"):
         normative = os.path.join(repo, "protocol", "schemas", name)
-        packaged = os.path.join(repo, "commontrace", "schemas", name)
+        packaged = os.path.join(repo, "unimem", "schemas", name)
         with open(normative, encoding="utf-8") as fh:
             a = fh.read()
         with open(packaged, encoding="utf-8") as fh:
             b = fh.read()
         assert a == b, (
-            f"{name} differs between protocol/schemas/ and commontrace/schemas/. "
+            f"{name} differs between protocol/schemas/ and unimem/schemas/. "
             "Edit the normative copy under protocol/ and copy it across."
         )
 
@@ -682,7 +682,7 @@ def test_every_subcommand_module_registers_exactly_its_own_name():
     import argparse
     import pathlib
 
-    from commontrace import cli
+    from unimem import cli
 
     on_disk = sorted(p.stem[:-4] for p in pathlib.Path(cli.__file__).parent.joinpath("commands").glob("*_cmd.py"))
     assert sorted(cli._COMMANDS) == sorted([*on_disk, *cli._COMMAND_GROUPS])
@@ -696,10 +696,10 @@ def test_every_subcommand_module_registers_exactly_its_own_name():
 def test_a_command_imports_only_what_it_uses():
     script = (
         "import sys\n"
-        "from commontrace import cli\n"
+        "from unimem import cli\n"
         "for name in ('capture', 'query', 'lesson'):\n"
         "    cli.build_parser(name)\n"
-        "print(','.join(m for m in ('numpy', 'asyncio', 'ssl', 'commontrace.commands.commons_cmd') if m in sys.modules))\n"
+        "print(','.join(m for m in ('numpy', 'asyncio', 'ssl', 'unimem.commands.commons_cmd') if m in sys.modules))\n"
     )
     result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stderr
@@ -707,7 +707,7 @@ def test_a_command_imports_only_what_it_uses():
 
 
 def test_a_mistyped_command_suggests_the_one_meant(capsys):
-    from commontrace import cli
+    from unimem import cli
 
     assert cli.main(["captur"]) == 2
     err = capsys.readouterr().err
@@ -717,7 +717,7 @@ def test_a_mistyped_command_suggests_the_one_meant(capsys):
 
 
 def test_no_command_at_all_prints_the_command_list(capsys):
-    from commontrace import cli
+    from unimem import cli
 
     assert cli.main([]) == 2
     err = capsys.readouterr().err

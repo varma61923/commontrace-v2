@@ -5,7 +5,7 @@ import os
 
 import pytest
 
-from commontrace import _jsonl
+from unimem import _jsonl
 
 
 def test_a_short_write_is_completed_not_truncated(tmp_path, monkeypatch):

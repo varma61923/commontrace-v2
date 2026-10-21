@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from commontrace import memory_blocks
+from unimem import memory_blocks
 from e2e_tests.harness.cli_runner import run_cli
 
 

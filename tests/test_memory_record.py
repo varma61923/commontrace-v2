@@ -7,7 +7,7 @@ import os
 
 import pytest
 
-from commontrace.memory_record import MemoryRecord
+from unimem.memory_record import MemoryRecord
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 with open(os.path.join(_ROOT, "protocol", "conformance", "memory-record-vectors.json"), encoding="utf-8") as source:
@@ -56,7 +56,7 @@ def test_memory_envelope_revalidates_mutable_payload_before_serialization():
 
 
 def test_memory_envelope_has_a_bounded_json_wire_size():
-    from commontrace.memory_record import MAX_RECORD_BYTES
+    from unimem.memory_record import MAX_RECORD_BYTES
 
     with pytest.raises(ValueError, match="one mebibyte"):
         MemoryRecord("large", "fact", 1, {"text": "x" * MAX_RECORD_BYTES})

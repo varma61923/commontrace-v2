@@ -19,9 +19,9 @@ Human proximity and planner interlocks remain independent safety requirements.
 
 Per-tenant canaries detect bounded base64/hex/Unicode encodings at egress and
 record an alert in the transparency log. They are not comprehensive DLP. Create
-one with `commontrace frontier canary-create` (`{"tenant"}`) and check outbound
+one with `unimem frontier canary-create` (`{"tenant"}`) and check outbound
 text with `frontier canary-check` (`{"tenant", "text"}`).
-`commontrace defense redteam --seed N` exercises synthetic MINJA, AgentPoison,
+`unimem defense redteam --seed N` exercises synthetic MINJA, AgentPoison,
 MemoryGraft, sleeper and FARMA categories in an isolated temporary shadow store,
 with measured deterministic write/retrieve/act rates (and, for FARMA, whether the
 same-origin corroboration attempt was refused) and a separately simulated

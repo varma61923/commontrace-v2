@@ -1,0 +1,231 @@
+"""Measure whether memory from ANY store causes better outcomes."""
+
+from __future__ import annotations
+
+import hashlib
+import threading
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field
+from typing import Any
+
+from unimem import evidence, harm, holdout_io, paths, retrieval_io
+
+DEFAULT_CHECK_EVERY = 25
+
+_ID_FIELDS = ("id", "key")
+_TEXT_FIELDS = ("memory", "text", "content", "value")
+
+
+def _field(item: Any, names: Iterable[str]) -> Any:
+    for name in names:
+        if isinstance(item, dict):
+            if name in item:
+                return item[name]
+        elif hasattr(item, name):
+            return getattr(item, name)
+    return None
+
+
+def default_key(item: Any) -> str:
+    value = _field(item, _ID_FIELDS)
+    if value is None or str(value).strip() == "":
+        raise TypeError(
+            f"cannot find a stable id on {type(item).__name__} (looked for "
+            f"{', '.join(_ID_FIELDS)}); pass key= to CausalMemory. Falling back "
+            "to str(item) is refused because it usually changes between processes."
+        )
+    return str(value)
+
+
+def default_text(item: Any) -> str | None:
+    value = _field(item, _TEXT_FIELDS)
+    if value is None:
+        return None
+    return value if isinstance(value, str) else repr(value)
+
+
+def content_revision(text: str | None) -> str | None:
+    if text is None:
+        return None
+    return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+class HarmWatch:
+    def __init__(self, root: str, on_harm: str | None = None,
+                 check_every: int = DEFAULT_CHECK_EVERY, graduate: bool = False) -> None:
+        if on_harm is not None and on_harm not in harm.POLICIES:
+            raise ValueError(f"on_harm must be one of {', '.join(harm.POLICIES)} (or None)")
+        if not isinstance(check_every, int) or isinstance(check_every, bool) or check_every < 1:
+            raise ValueError("check_every must be a whole number of at least 1")
+        self._root, self._on_harm, self._every = root, on_harm, check_every
+        self._graduate = graduate
+        self._calls = 0
+        self._harmful: dict[str, dict] = {}
+        self._helping: dict[str, dict] = {}
+        self._lock = threading.Lock()
+
+    def current(self) -> dict[str, dict]:
+        return self.snapshot()[0]
+
+    def snapshot(self) -> tuple[dict[str, dict], dict[str, dict]]:
+        """(withdrawn for harm, graduated for help), refreshed every `check_every` calls."""
+        with self._lock:
+            due = self._calls % self._every == 0
+            self._calls += 1
+            if due:
+                policy = self._on_harm or retrieval_io.read_harm_policy(self._root)
+                self._harmful = evidence.withdrawn(self._root, policy)
+                self._helping = evidence.graduated(self._root) if self._graduate else {}
+            return self._harmful, self._helping
+
+
+@dataclass(frozen=True)
+class Recall:
+    items: list
+    withdrawn: dict = field(default_factory=dict)
+    quarantined: dict = field(default_factory=dict)
+    graduated: dict = field(default_factory=dict)
+    assignments: list[dict] = field(default_factory=list)
+
+
+class CausalMemory:
+    """Wrap any retrieval callable so its memories can be measured causally."""
+
+    def __init__(
+        self,
+        retrieve: Callable[..., Iterable[Any]],
+        *,
+        root: str | None = None,
+        key: Callable[[Any], str] = default_key,
+        text: Callable[[Any], str | None] = default_text,
+        pinned: Iterable[str] = (),
+        scorer: str = "external",
+        on_harm: str | None = None,
+        check_every: int = DEFAULT_CHECK_EVERY,
+        harm_watch: HarmWatch | None = None,
+        durable: bool = True,
+        screen: bool = False,
+        graduate: bool = False,
+    ) -> None:
+        """`graduate=True`: a memory whose anytime-valid verdict is HELPS stops being
+        randomized and is always delivered (it is "graduated", like a pinned id).
+        Its estimate freezes at the evidence that proved it; every other memory's
+        randomization is independent of it, so their estimates are unaffected.
+        """
+        if not callable(retrieve):
+            raise TypeError("retrieve must be callable")
+        if harm_watch is not None and graduate and not harm_watch._graduate:
+            raise ValueError("graduate=True needs a HarmWatch created with graduate=True")
+        self._watch = harm_watch or HarmWatch(paths.resolve_root(root), on_harm, check_every, graduate)
+        self._durable = durable
+        self._retrieve = retrieve
+        self._root = paths.resolve_root(root)
+        self._key = key
+        self._text = text
+        self._pinned = frozenset(str(p) for p in pinned)
+        self._scorer = scorer
+        self._screen = screen
+
+    @property
+    def root(self) -> str:
+        return self._root
+
+    def recall(self, query: Any, *, occasion_id: str, **kwargs: Any) -> list[Any]:
+        return self.recall_detailed(query, occasion_id=occasion_id, **kwargs).items
+
+    def recall_detailed(self, query: Any, *, occasion_id: str, record: bool = True, context: str = "",
+                        **kwargs: Any) -> Recall:
+        """`recall`, plus which memories were withdrawn for measured harm.
+
+        `context` labels the kind of occasion (a task family, an agent type) so a
+        causal-gate schedule can inject each memory where it measurably helps.
+        """
+        if not isinstance(occasion_id, str) or not occasion_id.strip():
+            raise ValueError("occasion_id must be a non-empty string")
+        from unimem import policy_io
+
+        with policy_io.authorization("recall"):
+            items = list(self._retrieve(query, **kwargs))
+        from unimem import writer_holdout
+
+        items = [item for item in items if writer_holdout.read_allowed(self._root, str(self._key(item)))]
+
+        harmful, helping = self._watch.snapshot()
+        removed: dict[str, dict] = {}
+        if harmful:
+            kept = []
+            for item in items:
+                item_id = str(self._key(item))
+                if item_id in harmful and item_id not in self._pinned:
+                    removed[item_id] = harmful[item_id]
+                else:
+                    kept.append(item)
+            items = kept
+
+        quarantined: dict[str, str] = {}
+        if self._screen:
+            from unimem import injection_guard
+
+            kept = []
+            for item in items:
+                labels = injection_guard.injection_labels({"text": self._text(item)})
+                if labels:
+                    quarantined[str(self._key(item))] = "injection screen: " + ", ".join(labels)
+                else:
+                    kept.append(item)
+            items = kept
+
+        from unimem import conformal_gate, safety
+
+        calibration = conformal_gate.current(self._root)
+        relevance: dict[str, float] = {}
+        if calibration.get("enabled"):
+            kept = []
+            hazards = safety.protected(self._root)
+            for item in items:
+                item_id = str(self._key(item))
+                # Provider rankings use incomparable score scales. A fixed score
+                # calibrates the provider policy as a whole without inventing relevance.
+                if conformal_gate.admit(calibration, .5, context=holdout_io.context_label(context),
+                                        hazard=item_id in hazards, scorer=self._scorer):
+                    relevance[item_id] = .5
+                    kept.append(item)
+                else:
+                    quarantined[item_id] = "harm-budget gate abstained"
+            items = kept
+
+        ids: list[str] = []
+        revisions: dict[str, str | None] = {}
+        keyed: list[tuple[str, Any]] = []
+        for item in items:
+            item_id = str(self._key(item))
+            keyed.append((item_id, item))
+            if item_id in self._pinned or item_id in helping or item_id in revisions:
+                continue
+            ids.append(item_id)
+            revisions[item_id] = content_revision(self._text(item))
+
+        config = holdout_io.load_config(self._root)
+        withheld: set[str] = set()
+        assignments: list[dict] = []
+        if ids and config.running:
+            if record:
+                withheld = holdout_io.assign_and_log(self._root, ids, occasion_id=occasion_id,
+                    rate=config.rate, salt=config.salt, scorer=self._scorer,
+                    revisions=revisions, durable=self._durable, context=context, relevance=relevance or None)
+            else:
+                withheld, assignments = holdout_io.plan_assignments(self._root, ids, occasion_id=occasion_id,
+                    rate=config.rate, salt=config.salt, scorer=self._scorer,
+                    revisions=revisions, durable=self._durable, context=context, relevance=relevance or None)
+        return Recall(
+            items=[item for item_id, item in keyed if item_id not in withheld], withdrawn=removed,
+            assignments=assignments,
+            quarantined=quarantined,
+            graduated={item_id: helping[item_id] for item_id, _item in keyed
+                       if item_id in helping and item_id not in self._pinned},
+        )
+
+    def record_outcome(self, occasion_id: str, *, succeeded: bool,
+                       secondary_metrics: dict[str, float | bool] | None = None) -> bool:
+        return holdout_io.record_outcome(self._root, occasion_id, succeeded, self._durable,
+                                         secondary_metrics=secondary_metrics)

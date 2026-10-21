@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from commontrace import memfs, memory_git
+from unimem import memfs, memory_git
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
 
@@ -19,7 +19,7 @@ def store(tmp_path, monkeypatch):
     root = tmp_path / "store"
     (root / "memory" / "lessons").mkdir(parents=True)
     (root / "memory" / "facts.jsonl").write_text('{"id": "a"}\n', encoding="utf-8")
-    monkeypatch.setenv("COMMONTRACE_HANDOFF_KEY", KEY)
+    monkeypatch.setenv("UNIMEM_HANDOFF_KEY", KEY)
     memfs.init(str(root))
     return str(root)
 
@@ -149,17 +149,17 @@ def test_handoff_round_trip_audience_tamper_drift_and_expiry(store, monkeypatch)
         memfs.handoff(store, audience="agent-b")
     memfs.commit(store, "b")
     assert memfs.verify_handoff(store, token)["drift"] is True
-    monkeypatch.setenv("COMMONTRACE_HANDOFF_KEY", "z" * 40)
+    monkeypatch.setenv("UNIMEM_HANDOFF_KEY", "z" * 40)
     with pytest.raises(memfs.MemfsError, match="signature"):
         memfs.verify_handoff(store, token)
     monkeypatch.setattr(memfs.time, "time", lambda: 10**10)
-    monkeypatch.setenv("COMMONTRACE_HANDOFF_KEY", KEY)
+    monkeypatch.setenv("UNIMEM_HANDOFF_KEY", KEY)
     with pytest.raises(memfs.MemfsError, match="expired"):
         memfs.verify_handoff(store, token)
 
 
 def test_keygen_is_private_and_required(store, monkeypatch):
-    monkeypatch.delenv("COMMONTRACE_HANDOFF_KEY")
+    monkeypatch.delenv("UNIMEM_HANDOFF_KEY")
     with pytest.raises(memfs.MemfsError, match="no handoff key"):
         memfs.handoff(store, audience="b")
     path = memfs.keygen(store)
@@ -169,14 +169,14 @@ def test_keygen_is_private_and_required(store, monkeypatch):
     assert memfs.status(store)["changed"] == []  # the key file is ignored
     token = memfs.handoff(store, audience="b")
     assert memfs.verify_handoff(store, token)["aud"] == "b"
-    monkeypatch.setenv("COMMONTRACE_HANDOFF_KEY", "short")
+    monkeypatch.setenv("UNIMEM_HANDOFF_KEY", "short")
     with pytest.raises(memfs.MemfsError, match="at least 32"):
         memfs.handoff(store, audience="b")
 
 
 def test_cli_memory_commands(store):
     def ct(*args):
-        return subprocess.run([sys.executable, "-m", "commontrace.cli", "memory", *args, "--dest", store],  # nosec
+        return subprocess.run([sys.executable, "-m", "unimem.cli", "memory", *args, "--dest", store],  # nosec
                               capture_output=True, text=True, check=False)
     assert ct("status").stdout.startswith("head:")
     _append(store, "facts.jsonl", '{"id": "b"}\n')

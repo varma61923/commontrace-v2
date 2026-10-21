@@ -14,17 +14,17 @@ import pytest
 
 @pytest.mark.parametrize("engine", ["neo4j", "falkor"])
 def test_graph_native_snapshot_owner_and_stale_publication(engine):
-    if os.environ.get("COMMONTRACE_TEST_GRAPH_BACKENDS") != "1":
+    if os.environ.get("UNIMEM_TEST_GRAPH_BACKENDS") != "1":
         pytest.skip("requires disposable native Neo4j and FalkorDB services")
-    from commontrace.graph_backends import FalkorGraph, Neo4jGraph
+    from unimem.graph_backends import FalkorGraph, Neo4jGraph
 
     namespace = uuid.uuid4().hex
     def create():
         if engine == "falkor":
-            return FalkorGraph(port=int(os.environ.get("COMMONTRACE_TEST_FALKOR_PORT", "6379")),
-                               graph_name="commontrace_test", namespace=namespace)
-        return Neo4jGraph(os.environ.get("COMMONTRACE_TEST_NEO4J_URI", "bolt://127.0.0.1:7687"),
-                          username="neo4j", password="commontrace-native-test", namespace=namespace)
+            return FalkorGraph(port=int(os.environ.get("UNIMEM_TEST_FALKOR_PORT", "6379")),
+                               graph_name="unimem_test", namespace=namespace)
+        return Neo4jGraph(os.environ.get("UNIMEM_TEST_NEO4J_URI", "bolt://127.0.0.1:7687"),
+                          username="neo4j", password="unimem-native-test", namespace=namespace)
     first, stale = create(), create()
     try:
         first.begin_snapshot("source")
@@ -55,7 +55,7 @@ def test_graph_native_snapshot_owner_and_stale_publication(engine):
 
 def _bitemporal_store(tmp_path):
     """A local graph with an exclusive relation closed later in record time."""
-    from commontrace import graph
+    from unimem import graph
 
     (tmp_path / "memory").mkdir(exist_ok=True)
     root = str(tmp_path)
@@ -70,22 +70,22 @@ def _bitemporal_store(tmp_path):
 
 @pytest.mark.parametrize("engine", ["neo4j", "falkor"])
 def test_graph_native_typed_bitemporal_parity(engine, tmp_path):
-    if os.environ.get("COMMONTRACE_TEST_GRAPH_BACKENDS") != "1":
+    if os.environ.get("UNIMEM_TEST_GRAPH_BACKENDS") != "1":
         pytest.skip("requires disposable native Neo4j and FalkorDB services")
-    from commontrace import graph
-    from commontrace.graph_backends import FalkorGraph, Neo4jGraph, rebuild
+    from unimem import graph
+    from unimem.graph_backends import FalkorGraph, Neo4jGraph, rebuild
 
     root, known_before = _bitemporal_store(tmp_path)
     namespace = uuid.uuid4().hex
     if engine == "falkor":
-        backend = FalkorGraph(port=int(os.environ.get("COMMONTRACE_TEST_FALKOR_PORT", "6379")),
-                              graph_name="commontrace_test", namespace=namespace)
+        backend = FalkorGraph(port=int(os.environ.get("UNIMEM_TEST_FALKOR_PORT", "6379")),
+                              graph_name="unimem_test", namespace=namespace)
     else:
-        backend = Neo4jGraph(os.environ.get("COMMONTRACE_TEST_NEO4J_URI", "bolt://127.0.0.1:7687"),
-                             username="neo4j", password="commontrace-native-test", namespace=namespace)
+        backend = Neo4jGraph(os.environ.get("UNIMEM_TEST_NEO4J_URI", "bolt://127.0.0.1:7687"),
+                             username="neo4j", password="unimem-native-test", namespace=namespace)
     try:
         rebuild(root, backend)
-        rows = backend._query("MATCH (a:CommonTrace {namespace:$ns})-[e]->() WHERE e.relation='works_at' "
+        rows = backend._query("MATCH (a:UniMem {namespace:$ns})-[e]->() WHERE e.relation='works_at' "
                               "RETURN DISTINCT type(e)", {"ns": namespace})
         assert rows == [["WORKS_AT"]]
         for as_of, known_at in (("2021-06-01", None), ("2024-01-01", None), ("2024-01-01", known_before),
@@ -118,12 +118,12 @@ class _Recorder:
 
     def __call__(self, statement, params):
         self.calls.append((statement, dict(params)))
-        if statement.startswith("MERGE (s:CommonTraceIndex"):
+        if statement.startswith("MERGE (s:UniMemIndex"):
             return [[params["source"], ""]]
         if "SET s.current=$gen" in statement:
             return [[params["gen"]]]
         if statement == "CALL db.constraints()":
-            return [["UNIQUE", "CommonTraceIndex", ["namespace"], "NODE", "OPERATIONAL"]]
+            return [["UNIQUE", "UniMemIndex", ["namespace"], "NODE", "OPERATIONAL"]]
         return self.rows(statement, params)
 
     def edge_writes(self):
@@ -182,7 +182,7 @@ def _fake_falkor(monkeypatch, recorder):
 
 
 def test_relationship_type_sanitization():
-    from commontrace.graph_backends import GENERIC_TYPE, relation_key, relationship_type
+    from unimem.graph_backends import GENERIC_TYPE, relation_key, relationship_type
 
     assert relationship_type("works_at") == "WORKS_AT"
     assert relationship_type("1st_owner") == GENERIC_TYPE  # must start with a letter
@@ -194,8 +194,8 @@ def test_relationship_type_sanitization():
 
 
 def test_neo4j_mirror_writes_typed_bitemporal_edges(monkeypatch, tmp_path):
-    from commontrace import graph
-    from commontrace.graph_backends import Neo4jGraph, rebuild
+    from unimem import graph
+    from unimem.graph_backends import Neo4jGraph, rebuild
 
     root, _known = _bitemporal_store(tmp_path)
     recorder = _Recorder()
@@ -222,7 +222,7 @@ def test_neo4j_mirror_writes_typed_bitemporal_edges(monkeypatch, tmp_path):
 
 
 def test_untypable_relation_keeps_generic_type_and_property(monkeypatch):
-    from commontrace.graph_backends import Neo4jGraph
+    from unimem.graph_backends import Neo4jGraph
 
     recorder = _Recorder()
     _fake_neo4j(monkeypatch, recorder)
@@ -238,7 +238,7 @@ def test_untypable_relation_keeps_generic_type_and_property(monkeypatch):
 
 
 def test_typed_neighbors_query_is_parameterized_and_bitemporal(monkeypatch):
-    from commontrace.graph_backends import ACTIVE_EDGE, FalkorGraph
+    from unimem.graph_backends import ACTIVE_EDGE, FalkorGraph
 
     def rows(statement, params):
         return [["a", "b", "works_at", True, 0.5, "2020-01-01T00:00:00.000000+00:00", None],
@@ -251,7 +251,7 @@ def test_typed_neighbors_query_is_parameterized_and_bitemporal(monkeypatch):
                                   as_of="2024-01-01", known_at="2023-06-01T12:00:00Z")
     statement, params = recorder.calls[-1]
     assert ACTIVE_EDGE in statement and "($relations IS NULL OR e.relation IN $relations)" in statement
-    assert "(n:CommonTrace {namespace:$ns})-[e]->(m:CommonTrace {namespace:$ns})" in statement
+    assert "(n:UniMem {namespace:$ns})-[e]->(m:UniMem {namespace:$ns})" in statement
     assert params["relations"] == ["uses", "works_at"] and params["ids"] == ["a"]
     assert params["at"] == "2024-01-01T00:00:00.000000+00:00"
     assert params["known"] == "2023-06-01T12:00:00.000000+00:00"
@@ -264,7 +264,7 @@ def test_typed_neighbors_query_is_parameterized_and_bitemporal(monkeypatch):
 
 
 def test_visibility_defaults_follow_the_local_graph():
-    from commontrace.graph_backends import visibility
+    from unimem.graph_backends import visibility
 
     assert visibility(known_at="2024-05-01") == {"at": "2024-05-01T00:00:00.000000+00:00",
                                                  "known": "2024-05-01T00:00:00.000000+00:00"}
@@ -273,7 +273,7 @@ def test_visibility_defaults_follow_the_local_graph():
 
 
 def test_multi_hop_walks_one_bounded_query_per_hop(monkeypatch):
-    from commontrace.graph_backends import Neo4jGraph
+    from unimem.graph_backends import Neo4jGraph
 
     edges = [("a", "b", "works_at"), ("b", "c", "located_in"), ("c", "d", "contains"), ("d", "e", "uses")]
 
@@ -305,10 +305,10 @@ def test_multi_hop_walks_one_bounded_query_per_hop(monkeypatch):
 
 
 def test_lance_native_owner_generation_filter_and_prune(tmp_path):
-    if os.environ.get("COMMONTRACE_TEST_LANCE") != "1":
+    if os.environ.get("UNIMEM_TEST_LANCE") != "1":
         pytest.skip("requires the optional LanceDB engine")
-    from commontrace.vector_lance import LanceVectorIndex
-    from commontrace.vector_store import VectorRecord
+    from unimem.vector_lance import LanceVectorIndex
+    from unimem.vector_store import VectorRecord
 
     async def run():
         index = LanceVectorIndex(str(tmp_path), tenant="alice", namespace="facts", model="test", dimension=2)
@@ -332,12 +332,12 @@ def test_lance_native_owner_generation_filter_and_prune(tmp_path):
 
 
 def test_lance_ann_preserves_new_fragments_and_scoped_deletion(tmp_path):
-    if os.environ.get("COMMONTRACE_TEST_LANCE") != "1":
+    if os.environ.get("UNIMEM_TEST_LANCE") != "1":
         pytest.skip("requires the optional LanceDB engine")
     import random
 
-    from commontrace.vector_lance import LanceVectorIndex
-    from commontrace.vector_store import VectorRecord
+    from unimem.vector_lance import LanceVectorIndex
+    from unimem.vector_store import VectorRecord
 
     async def run():
         index = LanceVectorIndex(str(tmp_path), tenant="a", namespace="facts", model="test", dimension=8)
@@ -358,13 +358,13 @@ def test_lance_ann_preserves_new_fragments_and_scoped_deletion(tmp_path):
 
 
 def test_lance_ann_scores_use_original_cosine_distances(tmp_path):
-    if os.environ.get("COMMONTRACE_TEST_LANCE") != "1":
+    if os.environ.get("UNIMEM_TEST_LANCE") != "1":
         pytest.skip("requires the optional LanceDB engine")
     import math
     import random
 
-    from commontrace.vector_lance import LanceVectorIndex
-    from commontrace.vector_store import VectorRecord
+    from unimem.vector_lance import LanceVectorIndex
+    from unimem.vector_store import VectorRecord
 
     async def run():
         rng = random.Random(61923)

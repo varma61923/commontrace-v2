@@ -28,12 +28,12 @@ class TestTheProductionAppBoots:
         from hub import auth
 
         monkeypatch.setattr(auth, "_pepper_env", "")
-        with caplog.at_level("WARNING", logger="commontrace.hub"):
+        with caplog.at_level("WARNING", logger="unimem.hub"):
             build_app(config, session_factory)
         assert "HUB_API_KEY_PEPPER is not set" in caplog.text
         caplog.clear()
         monkeypatch.setattr(auth, "_pepper_env", "a-shared-pepper")
-        with caplog.at_level("WARNING", logger="commontrace.hub"):
+        with caplog.at_level("WARNING", logger="unimem.hub"):
             build_app(config, session_factory)
         assert "HUB_API_KEY_PEPPER" not in caplog.text
 

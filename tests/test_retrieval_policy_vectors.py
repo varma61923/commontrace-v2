@@ -6,7 +6,7 @@ import os
 
 import pytest
 
-from commontrace import fact_store, hierarchical, search_recipes
+from unimem import fact_store, hierarchical, search_recipes
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 with open(os.path.join(_ROOT, "protocol", "conformance", "retrieval-vectors.json"), encoding="utf-8") as source:

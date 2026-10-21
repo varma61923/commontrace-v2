@@ -2,8 +2,8 @@ import json
 
 import pytest
 
-from commontrace.memory_journal import Journal
-from commontrace.memory_record import MemoryRecord
+from unimem.memory_journal import Journal
+from unimem.memory_record import MemoryRecord
 
 
 @pytest.mark.parametrize("scope", [{}, {"agent": "new-owner"}])

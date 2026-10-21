@@ -4,8 +4,8 @@ import json
 
 import pytest
 
-from commontrace import frontier_protocol as fp
-from commontrace import hierarchical, lineage, memory_authority
+from unimem import frontier_protocol as fp
+from unimem import hierarchical, lineage, memory_authority
 
 
 def bind(root, identity, sources=(), authority="operator", principal="local", text="evidence"):
@@ -33,7 +33,7 @@ def test_legacy_is_unknown_and_missing_parent_cannot_upgrade(tmp_path):
 
 
 def test_corroboration_counts_independent_roots(tmp_path, monkeypatch):
-    from commontrace import causal_gate
+    from unimem import causal_gate
 
     root = str(tmp_path)
     bind(root, "target", authority="external")
@@ -76,7 +76,7 @@ def test_forged_replayed_and_oversized_attestations_fail(tmp_path):
 
 
 def test_lineage_surfaces(tmp_path):
-    from commontrace.mcp_server import build_server
+    from unimem.mcp_server import build_server
     pytest.importorskip("mcp")
     from tests.test_mcp_server import call, cli
 

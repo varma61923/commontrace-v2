@@ -13,8 +13,8 @@ from datetime import datetime, timezone
 import pytest
 
 from benchmarks.fact_search import seed
-from commontrace import fact_index, hierarchical
-from commontrace._stem import stem
+from unimem import fact_index, hierarchical
+from unimem._stem import stem
 
 
 @pytest.fixture(autouse=True)

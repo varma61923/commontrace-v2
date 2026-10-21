@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from commontrace import configuration, llm
-from commontrace.llm_runtime import LLMRuntime, purpose
+from unimem import configuration, llm
+from unimem.llm_runtime import LLMRuntime, purpose
 
 
 def test_project_model_route_is_selected_and_manifested_without_credentials(tmp_path, monkeypatch):

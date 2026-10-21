@@ -217,10 +217,10 @@ class TestBodyValidation:
 
 class TestOccasionJoin:
     @staticmethod
-    def _outcome_span(span_id, occasion, succeeded, key="commontrace.occasion_id"):
+    def _outcome_span(span_id, occasion, succeeded, key="unimem.occasion_id"):
         return {"traceId": "t" * 32, "spanId": span_id, "name": "task finished", "status": {"code": "UNSET"},
                 "attributes": [{"key": key, "value": {"stringValue": occasion}},
-                               {"key": "commontrace.occasion.succeeded", "value": {"boolValue": succeeded}}]}
+                               {"key": "unimem.occasion.succeeded", "value": {"boolValue": succeeded}}]}
 
     async def _observation(self, session_factory, org_id, occasion):
         from hub import crud
@@ -242,7 +242,7 @@ class TestOccasionJoin:
         assert len(rows) == 1
         return rows[0][0]
 
-    @pytest.mark.parametrize("key", ["commontrace.occasion_id", "session.id", "gen_ai.conversation.id"])
+    @pytest.mark.parametrize("key", ["unimem.occasion_id", "session.id", "gen_ai.conversation.id"])
     async def test_an_explicit_outcome_closes_the_occasion_whichever_id_attribute_the_caller_emits(
             self, session_factory, config, key):
         org_id, raw_key = await _org_with_key(session_factory)
@@ -257,7 +257,7 @@ class TestOccasionJoin:
         org_id, raw_key = await _org_with_key(session_factory)
         model = await self._observation(session_factory, org_id, "ep-2")
         span = _span("c" * 16, status_code="OK")
-        span["attributes"].append({"key": "commontrace.occasion_id", "value": {"stringValue": "ep-2"}})
+        span["attributes"].append({"key": "unimem.occasion_id", "value": {"stringValue": "ep-2"}})
         async with _client(_app(session_factory, config)) as client:
             r = await client.post(otlp.OTLP_TRACES_PATH, json=_otlp_body(span), headers=_key(raw_key))
         assert r.json()["occasions_resolved"] == 0

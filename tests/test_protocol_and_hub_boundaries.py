@@ -18,7 +18,7 @@ if str(REPO_ROOT) not in sys.path:
 pytest.importorskip("hub")
 
 from commons.eval import representations  # noqa: E402 -- must follow importorskip above
-from commontrace import validate  # noqa: E402 -- must follow importorskip above
+from unimem import validate  # noqa: E402 -- must follow importorskip above
 from hub import abuse, outcomes  # noqa: E402 -- must follow importorskip above
 
 

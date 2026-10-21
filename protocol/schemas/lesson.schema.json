@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://commontrace.dev/schemas/lesson.schema.json",
-  "title": "CommonTrace Lesson",
+  "$id": "https://unimem.dev/schemas/lesson.schema.json",
+  "title": "UniMem Lesson",
   "description": "A validated, generalized rule distilled from one or more Traces, with governance metadata (importance, activation condition, status) that gates it before it is reinjected into a live agent decision. Lessons are local-store scaffolding: the Curator/Validator roles turn Traces into Lessons before promoting the durable, reusable half of a Lesson to a Hub Trace via contribute_trace.",
   "type": "object",
   "required": [
@@ -125,7 +125,7 @@
     },
     "hub_trace_id": {
       "type": ["string", "null"],
-      "description": "UUID of the Hub Trace this lesson was promoted to/from via `commontrace sync`, or null if this lesson has never been synced.",
+      "description": "UUID of the Hub Trace this lesson was promoted to/from via `unimem sync`, or null if this lesson has never been synced.",
       "default": null
     },
     "status": {

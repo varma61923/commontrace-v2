@@ -5,7 +5,7 @@ from __future__ import annotations
 import ipaddress
 from dataclasses import dataclass, field
 
-from commontrace.configuration import getenv as _configuration_getenv
+from unimem.configuration import getenv as _configuration_getenv
 from hub.secrets_provider import env_secret
 
 DEFAULT_SEARCH_LIMIT = 50
@@ -71,7 +71,7 @@ def _pool_contributors(path: str) -> tuple[dict, ...]:
         return ()
     import json
 
-    from commontrace import frontier_protocol as fp
+    from unimem import frontier_protocol as fp
 
     with open(path, "rb") as stream:
         raw = stream.read(fp.MAX_BYTES + 1)

@@ -6,10 +6,10 @@ import sqlite3
 
 import pytest
 
-from commontrace.conversation import Options, Store, recall, unicode_index
-from commontrace.conversation import store as store_module
-from commontrace.conversation.search import subqueries
-from commontrace.conversation.store import write_txn
+from unimem.conversation import Options, Store, recall, unicode_index
+from unimem.conversation import store as store_module
+from unimem.conversation.search import subqueries
+from unimem.conversation.store import write_txn
 
 
 @pytest.mark.parametrize("body,query", [

@@ -5,9 +5,9 @@ import random
 
 import pytest
 
-from commontrace import experiment, holdout_io
-from commontrace.commands import experiment_cmd
-from commontrace.measure import CausalMemory, content_revision
+from unimem import experiment, holdout_io
+from unimem.commands import experiment_cmd
+from unimem.measure import CausalMemory, content_revision
 
 FIXED_SALT = "test-measure-fixed-salt"
 

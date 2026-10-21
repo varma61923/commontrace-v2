@@ -3,9 +3,9 @@ import threading
 
 import pytest
 
-from commontrace.conversation import ConversationError, Options, Store, profile, recall, spaces, timeparse
-from commontrace.conversation.search import subqueries
-from commontrace.conversation.store import split_units
+from unimem.conversation import ConversationError, Options, Store, profile, recall, spaces, timeparse
+from unimem.conversation.search import subqueries
+from unimem.conversation.store import split_units
 
 LEXICAL = Options(embedder=None)
 
@@ -255,9 +255,9 @@ class TestInterfaces:
         import io
         import json
 
-        from commontrace.cli import main
+        from unimem.cli import main
 
-        monkeypatch.setenv("COMMONTRACE_CONVERSATION_EMBEDDER", "none")
+        monkeypatch.setenv("UNIMEM_CONVERSATION_EMBEDDER", "none")
         root = str(tmp_path)
         monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(
             [{"speaker": "Ana", "text": "I started pottery yesterday."}])))
@@ -275,9 +275,9 @@ class TestInterfaces:
         import asyncio
         import json
 
-        from commontrace import mcp_server
+        from unimem import mcp_server
 
-        monkeypatch.setenv("COMMONTRACE_CONVERSATION_EMBEDDER", "none")
+        monkeypatch.setenv("UNIMEM_CONVERSATION_EMBEDDER", "none")
         server = mcp_server.build_server(str(tmp_path))
 
         def call(name, **arguments):

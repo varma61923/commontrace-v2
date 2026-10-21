@@ -3,8 +3,8 @@ from __future__ import annotations
 import os
 import time
 
-from commontrace import corpus_bin, frontmatter, lesson_cache, retrieval
-from commontrace.commands._format import read_or_warn
+from unimem import corpus_bin, frontmatter, lesson_cache, retrieval
+from unimem.commands._format import read_or_warn
 
 
 def _make_corpus(tmp_path, n=300):
@@ -98,7 +98,7 @@ def test_corrupt_bin_falls_back(tmp_path):
 
 
 def test_bin_load_faster_than_rebuild(tmp_path):
-    import commontrace.corpus_bin as _binmod
+    import unimem.corpus_bin as _binmod
 
     root = _make_corpus(tmp_path, n=4000)
     _fresh_state()

@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from commontrace import holdout_io, integrity
+from unimem import holdout_io, integrity
 
 
 def _row(lesson, occasion, injected=True, relevance=0.5, floor=0.10,

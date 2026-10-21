@@ -60,7 +60,7 @@ def run_cli(
     if env:
         full_env.update(env)
 
-    cmd = [sys.executable, "-m", "commontrace.cli"]
+    cmd = [sys.executable, "-m", "unimem.cli"]
     cmd.extend(argv)
 
     if dest:
@@ -89,19 +89,19 @@ def is_milestone_implemented(milestone: str) -> bool:
     m = milestone.upper()
     if m == "M1":
         return bool(
-            importlib.util.find_spec("commontrace.graph")
-            and importlib.util.find_spec("commontrace.hierarchical")
-            and importlib.util.find_spec("commontrace.memory_blocks")
+            importlib.util.find_spec("unimem.graph")
+            and importlib.util.find_spec("unimem.hierarchical")
+            and importlib.util.find_spec("unimem.memory_blocks")
         )
     elif m == "M2":
         return bool(
-            importlib.util.find_spec("commontrace.ingest")
-            or importlib.util.find_spec("commontrace.commands.ingest_cmd")
+            importlib.util.find_spec("unimem.ingest")
+            or importlib.util.find_spec("unimem.commands.ingest_cmd")
         )
     elif m == "M3":
         return bool(
-            importlib.util.find_spec("commontrace.agent_loop")
-            or importlib.util.find_spec("commontrace.commands.agent_cmd")
+            importlib.util.find_spec("unimem.agent_loop")
+            or importlib.util.find_spec("unimem.commands.agent_cmd")
         )
     elif m == "M4":
         return bool(

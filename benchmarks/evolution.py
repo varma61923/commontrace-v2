@@ -23,9 +23,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from commontrace import hierarchical, memory_control
-from commontrace.causal_policy import snipw
-from commontrace.search_recipes import recipe_manifest
+from unimem import hierarchical, memory_control
+from unimem.causal_policy import snipw
+from unimem.search_recipes import recipe_manifest
 
 
 @dataclass
@@ -150,7 +150,7 @@ def write_site(report: dict, destination: Path) -> None:
                   str(row["causal"]["effect"])]
         cells.append("<tr>" + "".join("<td>" + html.escape(v) + "</td>" for v in values) + "</tr>")
     markup = """<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
-<title>CommonTrace reproducible memory benchmark</title><style>
+<title>UniMem reproducible memory benchmark</title><style>
 body{font:17px system-ui;margin:4vw;max-width:1100px;color:#17232a;background:#fafbf7}
 table{border-collapse:collapse;width:100%;display:block;overflow:auto}td,th{padding:14px;border-bottom:1px solid #ccd6cf;text-align:left}
 a{color:#12683d}p{max-width:75ch;line-height:1.6}code{background:#e7ede5;padding:6px}
@@ -172,7 +172,7 @@ def main(argv=None) -> int:
     parser.add_argument("--seed", type=int, default=17)
     parser.add_argument("--adapter", action="append", default=[], help="name=python.module:factory")
     args = parser.parse_args(argv)
-    adapters: dict[str, Adapter] = {"commontrace-local": LocalAdapter(), "no-memory": NoMemoryAdapter()}
+    adapters: dict[str, Adapter] = {"unimem-local": LocalAdapter(), "no-memory": NoMemoryAdapter()}
     for specification in args.adapter:
         name, factory_path = specification.split("=", 1)
         module, factory = factory_path.split(":", 1)
@@ -181,7 +181,7 @@ def main(argv=None) -> int:
     report["manifest"]["adapter_factories"] = args.adapter
     write_site(report, Path(args.output))
     print(json.dumps(stable_metrics(report), indent=2))
-    return 0 if report["adapters"]["commontrace-local"]["recall"] == 1 else 1
+    return 0 if report["adapters"]["unimem-local"]["recall"] == 1 else 1
 
 
 if __name__ == "__main__":

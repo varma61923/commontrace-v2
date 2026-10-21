@@ -5,8 +5,8 @@ import json
 
 import pytest
 
-from commontrace import graph
-from commontrace.cli import main
+from unimem import graph
+from unimem.cli import main
 
 BASE = "2024-01-01T00:00:00+00:00"
 

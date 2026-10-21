@@ -3,7 +3,7 @@ import asyncio
 
 import pytest
 
-from commontrace import memory_guard
+from unimem import memory_guard
 
 abuse = pytest.importorskip("hub.abuse")
 run_batch = pytest.importorskip("hub.batches").run_batch

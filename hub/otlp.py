@@ -12,7 +12,7 @@ from hub.config import HubConfig
 from hub.db import session_scope
 from hub.plans import EntitlementExceeded
 
-logger = logging.getLogger("commontrace.hub.otlp")
+logger = logging.getLogger("unimem.hub.otlp")
 
 OTLP_TRACES_PATH = "/v1/traces"
 
@@ -57,7 +57,7 @@ def add_otlp_routes(
     trusted_proxy_hops: int = 0,
 ) -> None:
     """Register `POST /v1/traces`. Call only when OTLP ingest is enabled."""
-    from commontrace import adapters
+    from unimem import adapters
 
     auth_limiter = make_named_limiter(
         config, config.auth_attempts_per_minute, config.auth_attempts_burst, "otlp_auth"

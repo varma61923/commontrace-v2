@@ -5,8 +5,8 @@ import random
 
 import pytest
 
-from commontrace import allocation, holdout_io, promotion
-from commontrace import frontier_protocol as fp
+from unimem import allocation, holdout_io, promotion
+from unimem import frontier_protocol as fp
 
 
 def traffic(rng, n, treatment=.8, control=.2):

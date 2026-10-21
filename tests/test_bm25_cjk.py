@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from commontrace import corpus_bin, lesson_cache, retrieval, retrieval_io
-from commontrace._lexical import STOPWORDS, WORD_RE, has_cjk, segment_cjk
-from commontrace.retrieval import (
+from unimem import corpus_bin, lesson_cache, retrieval, retrieval_io
+from unimem._lexical import STOPWORDS, WORD_RE, has_cjk, segment_cjk
+from unimem.retrieval import (
     BM25_B,
     BM25_K1,
     _bm25_term,

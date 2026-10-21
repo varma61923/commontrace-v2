@@ -4,7 +4,7 @@ from dataclasses import replace
 import pytest
 
 from benchmarks.conversation_retrieval import Measurement, clustered_delta, evaluate, load_cases, source_retention
-from commontrace.conversation import Store
+from unimem.conversation import Store
 
 
 def _dataset(path, count=5):
@@ -143,7 +143,7 @@ def test_invalid_budgets_fail_before_loading_or_ingestion(budgets):
 
 def test_semantic_and_mmr_evaluation_use_production_paths_and_record_conditions(tmp_path, monkeypatch):
     pytest.importorskip("numpy")
-    from commontrace import embeddings
+    from unimem import embeddings
 
     calls = []
 
@@ -169,7 +169,7 @@ def test_semantic_and_mmr_evaluation_use_production_paths_and_record_conditions(
 
 def test_evaluation_records_degraded_dense_service_without_fabricating_success(tmp_path, monkeypatch):
     pytest.importorskip("numpy")
-    from commontrace import embeddings
+    from unimem import embeddings
 
     class Broken:
         def __init__(self, spec):

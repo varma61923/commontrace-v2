@@ -4,8 +4,8 @@ import os
 import subprocess
 import sys
 
-from commontrace import hierarchical
-from commontrace.ingest import pipeline as pl
+from unimem import hierarchical
+from unimem.ingest import pipeline as pl
 
 
 def _docs(tmp_path):
@@ -94,7 +94,7 @@ def test_facts_are_written_and_searchable(tmp_path):
 
 
 def test_conversation_submitter(tmp_path):
-    from commontrace.conversation import Store
+    from unimem.conversation import Store
 
     src, store = _docs(tmp_path)
     pl.create_document_pipeline(src, store, space="docs", contextualize="none").run()
@@ -107,24 +107,24 @@ def test_conversation_submitter(tmp_path):
 
 def test_ingest_docs_cli(tmp_path):
     src, store = _docs(tmp_path)
-    out = subprocess.run([sys.executable, "-m", "commontrace.cli", "ingest", src, "--type", "docs",  # nosec
+    out = subprocess.run([sys.executable, "-m", "unimem.cli", "ingest", src, "--type", "docs",  # nosec
                           "--dest", store, "--contextualize", "none"],
                          capture_output=True, text=True, check=False)
     assert out.returncode == 0, out.stderr
 
 
 def test_ingest_docs_reads_one_document_from_stdin(tmp_path):
-    from commontrace.conversation import Store
+    from unimem.conversation import Store
 
     store = str(tmp_path / "store")
     text = "# Runbook\n\nRestart the billing worker after rotating the queue credentials.\n"
-    out = subprocess.run([sys.executable, "-m", "commontrace.cli", "ingest", "-", "--type", "docs",  # nosec
+    out = subprocess.run([sys.executable, "-m", "unimem.cli", "ingest", "-", "--type", "docs",  # nosec
                           "--dest", store, "--contextualize", "none", "--space", "docs", "--json"],
                          input=text, capture_output=True, text=True, check=False)
     assert out.returncode == 0, out.stderr
     with Store(store, "docs") as conv:
         stored = conv.db.execute("SELECT text FROM turns").fetchall()
     assert any("billing worker" in row[0] for row in stored)
-    background = subprocess.run([sys.executable, "-m", "commontrace.cli", "ingest", "-", "--type", "docs",  # nosec
+    background = subprocess.run([sys.executable, "-m", "unimem.cli", "ingest", "-", "--type", "docs",  # nosec
                                  "--background", "--dest", store], input=text, capture_output=True, text=True)
     assert background.returncode == 2 and "stdin" in background.stderr

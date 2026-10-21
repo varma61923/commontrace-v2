@@ -1,7 +1,7 @@
 """Ranking rules that once let a boost outvote the one turn that answers the question."""
 from __future__ import annotations
 
-from commontrace.conversation import Options, Store, recall, search
+from unimem.conversation import Options, Store, recall, search
 
 LEX = {"embedder": None, "rerank": None, "summaries": False, "instructions": 0, "profile_facts": 0}
 
@@ -123,7 +123,7 @@ def test_a_filter_that_excludes_nothing_is_dropped_from_search(tmp_path, monkeyp
 
 
 def test_a_users_own_plans_are_not_standing_instructions():
-    from commontrace.conversation import profile
+    from unimem.conversation import profile
 
     def kinds(text):
         return [f.kind for f in profile.extract(text)]
@@ -139,7 +139,7 @@ def test_a_users_own_plans_are_not_standing_instructions():
 def test_frequency_lookup_matches_full_decoding():
     from collections import Counter
 
-    from commontrace.fact_index import _frequencies
+    from unimem.fact_index import _frequencies
 
     for counts in (Counter({"alpha": 1, "beta": 3, "gamma": 2}), Counter({"alpha": 1, "beta": 300, "gamma": 2})):
         packed = _frequencies(counts)

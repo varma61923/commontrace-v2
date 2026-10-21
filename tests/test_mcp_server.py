@@ -8,9 +8,9 @@ import sys
 
 import pytest
 
-from commontrace import mcp_server, paths
+from unimem import mcp_server, paths
 
-pytest.importorskip("mcp", reason="`commontrace serve` needs the MCP SDK: pip install 'commontrace[serve]'")
+pytest.importorskip("mcp", reason="`unimem serve` needs the MCP SDK: pip install 'unimem[serve]'")
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -32,7 +32,7 @@ def tool_names(server) -> set[str]:
 
 def cli(*argv: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [sys.executable, "-m", "commontrace.cli", *argv],
+        [sys.executable, "-m", "unimem.cli", *argv],
         capture_output=True, text=True, cwd=REPO_ROOT, check=False,
     )
 
@@ -99,7 +99,7 @@ def test_tool_surface_matches_the_advertised_list(server):
 
 
 def test_the_names_live_in_a_dependency_free_module():
-    from commontrace import mcp_tools
+    from unimem import mcp_tools
 
     assert mcp_server.LOCAL_TOOLS is mcp_tools.LOCAL_TOOLS
     assert mcp_server.APPROVAL_TOOLS is mcp_tools.APPROVAL_TOOLS
@@ -161,7 +161,7 @@ def test_retrieve_returns_the_body_not_just_the_frontmatter(server):
 
 
 def test_retrieve_filters_by_scope_and_valid_time(store):
-    from commontrace import retrieval_io
+    from unimem import retrieval_io
 
     retrieval_io.configure(
         store, fusion=retrieval_io.FUSION_NONE, rerank=retrieval_io.RERANK_NONE,
@@ -208,7 +208,7 @@ def test_retrieve_matches_the_cli_ranking(server, store):
 
 
 def test_a_withheld_lesson_never_ships_its_body(server, store):
-    from commontrace import holdout_io
+    from unimem import holdout_io
 
     _curate(server)
     holdout_io.configure(store, rate=0.9)
@@ -225,7 +225,7 @@ def test_a_withheld_lesson_never_ships_its_body(server, store):
 
 
 def test_an_injected_lesson_still_ships_its_body(server, store):
-    from commontrace import holdout_io
+    from unimem import holdout_io
 
     _curate(server)
     holdout_io.configure(store, rate=0.0)
@@ -265,7 +265,7 @@ def test_no_occasion_id_means_no_holdout_and_no_log(server, store):
 
 
 def test_exclude_shown_drops_a_lesson_already_injected_for_that_occasion(server, store):
-    from commontrace import holdout_io
+    from unimem import holdout_io
 
     slug = _curate(server)
     holdout_io.configure(store, rate=0.0)
@@ -283,7 +283,7 @@ def test_exclude_shown_drops_a_lesson_already_injected_for_that_occasion(server,
 
 
 def test_exclude_shown_never_drops_a_core_lesson(server, store):
-    from commontrace import frontmatter, holdout_io, lesson_admission, lesson_io
+    from unimem import frontmatter, holdout_io, lesson_admission, lesson_io
 
     slug = _curate(server)
     lesson_path = lesson_io.lesson_path(store, slug)
@@ -300,7 +300,7 @@ def test_exclude_shown_never_drops_a_core_lesson(server, store):
 
 
 def test_exclude_shown_is_a_no_op_when_not_given(server, store):
-    from commontrace import holdout_io
+    from unimem import holdout_io
 
     slug = _curate(server)
     holdout_io.assign_and_log(store, [slug], occasion_id="occ-1", rate=0.0, salt="s")
@@ -331,7 +331,7 @@ def test_the_mcp_loop_alone_produces_a_measurable_experiment(server, store):
 
 
 def test_experiment_status_scopes_to_the_current_randomization(server, store):
-    from commontrace import holdout_io
+    from unimem import holdout_io
 
     _curate(server)
     for i in range(20):
@@ -456,7 +456,7 @@ def test_draft_can_fill_a_lesson_in_over_several_calls(server):
 def test_draft_refuses_an_oversized_rule_instead_of_writing_it(server):
     _capture_pattern(server)
     slug = call(server, "propose_lessons")["candidates"][0]["slug"]
-    from commontrace.commands._validators import REFUSE_CHARS
+    from unimem.commands._validators import REFUSE_CHARS
     out = call(server, "draft_lesson", slug=slug, rule="x" * (REFUSE_CHARS + 1))
     assert not out["ok"] and "large" in out["error"].lower()
     assert "x" * 100 not in call(server, "get_lesson", slug=slug)["lesson"]["body"]
@@ -537,7 +537,7 @@ def test_approve_refuses_a_lesson_carrying_a_prompt_injection_payload(server):
 
 
 def _set_policy(store, text: str) -> None:
-    from commontrace import approval, paths
+    from unimem import approval, paths
 
     os.makedirs(paths.memory_dir(store), exist_ok=True)
     with open(approval.policy_path(store), "w", encoding="utf-8") as fh:
@@ -649,14 +649,14 @@ def test_stdio_transport_end_to_end(store):
     async def drive():
         params = StdioServerParameters(
             command=sys.executable,
-            args=["-m", "commontrace.cli", "serve", "--dest", store],
+            args=["-m", "unimem.cli", "serve", "--dest", store],
             cwd=REPO_ROOT, env={**os.environ},
         )
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as session:
                 init = await session.initialize()
                 sinfo = getattr(init, "server_info", None) or getattr(init, "serverInfo", None)
-                assert sinfo.name == "commontrace-local"
+                assert sinfo.name == "unimem-local"
                 names = {t.name for t in (await session.list_tools()).tools}
                 assert names == set(mcp_server.LOCAL_TOOLS)
 
@@ -676,7 +676,7 @@ def test_stdio_transport_end_to_end(store):
 
 def test_serve_resolves_the_store_before_the_client_connects(tmp_path):
     result = subprocess.run(
-        [sys.executable, "-m", "commontrace.cli", "serve", "--dest",
+        [sys.executable, "-m", "unimem.cli", "serve", "--dest",
          str(tmp_path / "nope")],
         capture_output=True, text=True, cwd=REPO_ROOT, input="", timeout=60, check=False,
     )
@@ -686,7 +686,7 @@ def test_serve_resolves_the_store_before_the_client_connects(tmp_path):
 class TestTheGeneratedLocalConfig:
     @staticmethod
     def _doc(root="/srv/fleet"):
-        from commontrace.commands import install_cmd
+        from unimem.commands import install_cmd
         return json.loads(install_cmd._local_mcp_config(root))
 
     def test_it_is_valid_json_and_names_every_tool(self):
@@ -695,32 +695,32 @@ class TestTheGeneratedLocalConfig:
             assert tool in doc["_comment"], tool
 
     def test_it_launches_the_stdio_server_at_an_absolute_root(self):
-        entry = self._doc()["mcpServers"]["commontrace-local"]
-        assert entry["command"] == "commontrace"
+        entry = self._doc()["mcpServers"]["unimem-local"]
+        assert entry["command"] == "unimem"
         assert entry["args"] == ["serve", "--dest", "/srv/fleet"]
         assert "url" not in entry and "headers" not in entry
 
     def test_a_relative_root_would_resolve_somewhere_else(self, store):
-        from commontrace.commands import install_cmd
-        entry = json.loads(install_cmd._local_mcp_config(store))["mcpServers"]["commontrace-local"]
+        from unimem.commands import install_cmd
+        entry = json.loads(install_cmd._local_mcp_config(store))["mcpServers"]["unimem-local"]
         assert os.path.isabs(entry["args"][-1])
 
     def test_install_writes_it_for_every_mcp_capable_target(self, tmp_path, store):
-        from commontrace.commands import install_cmd
+        from unimem.commands import install_cmd
 
         for target in ("claude-code", "cursor", "windsurf", "generic-mcp"):
             dest = tmp_path / target
             dest.mkdir()
-            os.environ["COMMONTRACE_ROOT"] = store
+            os.environ["UNIMEM_ROOT"] = store
             try:
                 import argparse
                 assert install_cmd.run(argparse.Namespace(
                     target=target, dest=str(dest))) == 0
             finally:
-                os.environ.pop("COMMONTRACE_ROOT", None)
-            written = dest / "commontrace.local.mcp.json"
+                os.environ.pop("UNIMEM_ROOT", None)
+            written = dest / "unimem.local.mcp.json"
             assert written.is_file(), target
-            assert json.loads(written.read_text())["mcpServers"]["commontrace-local"]
+            assert json.loads(written.read_text())["mcpServers"]["unimem-local"]
 
 
 def test_serve_without_the_sdk_says_so(store, monkeypatch):
@@ -736,12 +736,12 @@ def test_serve_without_the_sdk_says_so(store, monkeypatch):
     monkeypatch.setattr(builtins, "__import__", refuse)
     with pytest.raises(mcp_server.LocalStoreError) as excinfo:
         mcp_server.build_server(store)
-    assert "commontrace[serve]" in str(excinfo.value)
+    assert "unimem[serve]" in str(excinfo.value)
 
 
 def _write_lesson(root: str, slug: str, *, body: str, core: bool = False,
                   description: str = "", importance: int = 3, **fm_extra) -> str:
-    from commontrace import frontmatter, lesson_io
+    from unimem import frontmatter, lesson_io
 
     path = os.path.join(paths.lessons_dir(root), f"lesson_{slug}.md")
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -761,7 +761,7 @@ def _write_lesson(root: str, slug: str, *, body: str, core: bool = False,
 
 
 def _set_budget(root: str, **kwargs) -> None:
-    from commontrace import retrieval_io
+    from unimem import retrieval_io
 
     path = retrieval_io.config_path(root)
     raw = json.loads(open(path).read()) if os.path.isfile(path) else {}
@@ -793,7 +793,7 @@ def _write_matching_lessons(root: str, n: int) -> list[str]:
 
 
 def test_retrieve_writes_a_receipt_rather_than_swallowing_the_attempt(server, store):
-    from commontrace import holdout_io, receipts
+    from unimem import holdout_io, receipts
 
     holdout_io.configure(store, rate=0.0)
     slug = _curate(server)
@@ -814,7 +814,7 @@ def test_retrieve_writes_a_receipt_rather_than_swallowing_the_attempt(server, st
 
 
 def test_the_receipt_records_what_was_never_a_candidate(server, store):
-    from commontrace import receipts
+    from unimem import receipts
 
     _curate(server)
     _write_lesson(
@@ -870,7 +870,7 @@ def test_what_did_not_fit_is_named_rather_than_silently_dropped(server, store):
 
 
 def test_a_lesson_the_budget_crowds_out_is_never_logged_as_treated(server, store):
-    from commontrace import holdout_io
+    from unimem import holdout_io
 
     _curate(server)
     _write_matching_lessons(store, 4)
@@ -897,7 +897,7 @@ def test_a_lesson_the_budget_crowds_out_is_never_logged_as_treated(server, store
 
 
 def test_use_reports_separate_injected_from_actually_used(server, store):
-    from commontrace import holdout_io, receipts
+    from unimem import holdout_io, receipts
 
     holdout_io.configure(store, rate=0.0)
     slug = _curate(server)

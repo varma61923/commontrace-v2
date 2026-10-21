@@ -20,8 +20,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from commontrace import approval, trace_io  # noqa: E402
-from commontrace.commands import import_cmd  # noqa: E402
+from unimem import approval, trace_io  # noqa: E402
+from unimem.commands import import_cmd  # noqa: E402
 
 try:
     from hub import auth, crud  # noqa: E402
@@ -525,7 +525,7 @@ class TestMcpServerLockSafetyAndTraceIo:
         }
 
         with patch.dict(sys.modules, modules_patch):
-            from commontrace import mcp_server
+            from unimem import mcp_server
 
             lessons_dir = tmp_path / "memory" / "lessons"
             lessons_dir.mkdir(parents=True)
@@ -538,7 +538,7 @@ class TestMcpServerLockSafetyAndTraceIo:
             server = mcp_server.build_server(str(tmp_path))
             draft_fn = server.tools["draft_lesson"]
 
-            with patch("commontrace.validate.validate", side_effect=RuntimeError("unexpected validator boom")):
+            with patch("unimem.validate.validate", side_effect=RuntimeError("unexpected validator boom")):
                 res = asyncio.run(draft_fn(slug="test_slug", rule="Actionable engineering rule"))
                 assert res["ok"] is False
                 assert "could not validate 'test_slug'" in res["error"]

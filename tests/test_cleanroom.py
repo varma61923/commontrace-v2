@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from commontrace import cleanroom, holdout_io, overlap, valuation
-from commontrace import frontier_protocol as fp
+from unimem import cleanroom, holdout_io, overlap, valuation
+from unimem import frontier_protocol as fp
 
 
 def test_sybils_share_one_reward_and_do_not_inflate_total():

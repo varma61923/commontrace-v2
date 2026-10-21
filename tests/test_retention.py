@@ -4,7 +4,7 @@ import random
 
 import pytest
 
-from commontrace import aipw, holdout_io, retention
+from unimem import aipw, holdout_io, retention
 
 
 def test_seeded_randomized_utility_beats_judgment_only_budget():
@@ -62,9 +62,9 @@ def test_causal_dream_cli(tmp_path):
 
 def test_retrieve_randomizes_reviewed_rewrites_and_replay_recovers_them(tmp_path):
     pytest.importorskip("mcp")
-    from commontrace import frontier_protocol as fp
-    from commontrace import incident
-    from commontrace.mcp_server import build_server
+    from unimem import frontier_protocol as fp
+    from unimem import incident
+    from unimem.mcp_server import build_server
     from tests.test_mcp_server import _write_lesson, call
 
     root = str(tmp_path)

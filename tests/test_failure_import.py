@@ -5,8 +5,8 @@ import os
 
 import pytest
 
-from commontrace import failure_import, overlap
-from commontrace.commands import commons_cmd
+from unimem import failure_import, overlap
+from unimem.commands import commons_cmd
 
 
 def _write(tmp_path, name, text):

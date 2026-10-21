@@ -9,8 +9,8 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from commontrace import _jsonl, fact_store
-from commontrace import hierarchical as h
+from unimem import _jsonl, fact_store
+from unimem import hierarchical as h
 
 
 def activate(root):
@@ -67,8 +67,8 @@ def test_new_fact_projection_does_not_reselect_its_inserted_rowid(tmp_path):
 
 
 def test_batch_additions_batch_the_fts_projection_when_semantic_search_is_unused(tmp_path, monkeypatch):
-    monkeypatch.setenv("COMMONTRACE_FACT_DEDUP", "near")
-    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "off")
+    monkeypatch.setenv("UNIMEM_FACT_DEDUP", "near")
+    monkeypatch.setenv("UNIMEM_FACT_CONFLICTS", "off")
     original = fact_store._Connection.execute
     fts_inserts = []
 
@@ -91,8 +91,8 @@ def test_batch_additions_batch_the_fts_projection_when_semantic_search_is_unused
 
 
 def test_batch_near_dedup_preserves_staged_matches_and_same_block_siblings(tmp_path, monkeypatch):
-    monkeypatch.setenv("COMMONTRACE_FACT_DEDUP", "near")
-    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "off")
+    monkeypatch.setenv("UNIMEM_FACT_DEDUP", "near")
+    monkeypatch.setenv("UNIMEM_FACT_CONFLICTS", "off")
     root = str(tmp_path)
     activate(root)
     near_pair = [
@@ -116,7 +116,7 @@ def test_batch_near_dedup_preserves_staged_matches_and_same_block_siblings(tmp_p
 
 
 def test_new_fact_revision_and_projection_share_one_detached_snapshot(tmp_path, monkeypatch):
-    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "off")
+    monkeypatch.setenv("UNIMEM_FACT_CONFLICTS", "off")
     root = str(tmp_path)
     activate(root)
     statements = [
@@ -172,8 +172,8 @@ def test_snapshot_reuse_preserves_one_argument_statement_index_overrides(tmp_pat
 
 
 def test_sparse_conflict_slots_skip_candidate_queries(tmp_path, monkeypatch):
-    monkeypatch.setenv("COMMONTRACE_FACT_DEDUP", "near")
-    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "flag")
+    monkeypatch.setenv("UNIMEM_FACT_DEDUP", "near")
+    monkeypatch.setenv("UNIMEM_FACT_CONFLICTS", "flag")
     root = str(tmp_path)
     activate(root)
     original = fact_store._Connection.execute
@@ -198,7 +198,7 @@ def test_sparse_conflict_slots_skip_candidate_queries(tmp_path, monkeypatch):
     assert len(rows) == 20 and all(action == "ADD" for _, action in rows)
     assert len(slot_probes) == 20
     assert candidate_queries == []
-    from commontrace import fact_conflicts
+    from unimem import fact_conflicts
 
     assert fact_conflicts.pending(root) == []
 
@@ -383,7 +383,7 @@ def test_scope_dedup_and_contradiction_parity(tmp_path, monkeypatch):
     legacy = os.path.join(str(tmp_path), "legacy")
     sqlite = os.path.join(str(tmp_path), "sqlite")
     activate(sqlite)
-    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "supersede")
+    monkeypatch.setenv("UNIMEM_FACT_CONFLICTS", "supersede")
     statements = [
         ("Project allows public access", ["a"]),
         ("Project does not allow public access", ["a"]),
@@ -634,7 +634,7 @@ def test_envelope_json_is_portable(tmp_path):
 
 
 def test_detached_views_and_recall_use_sqlite_generation(tmp_path):
-    from commontrace import fact_index, recall
+    from unimem import fact_index, recall
     activate(tmp_path)
     fact, _ = h.add_fact(str(tmp_path), "storage uses an event ledger")
     view = fact_index.snapshot_facts(str(tmp_path))
@@ -653,7 +653,7 @@ def test_killed_writer_cannot_publish_partial_projections(tmp_path):
     activate(tmp_path)
     code = """
 import os, sys
-from commontrace import hierarchical as h
+from unimem import hierarchical as h
 with h.mutate_facts(sys.argv[1]) as facts:
     h._add_locked(facts, 'crashed write must disappear', 'general', [], None, None, None, 0.8, '')
     os._exit(9)
@@ -672,7 +672,7 @@ def test_multiple_process_writers_are_serialized(tmp_path):
     activate(tmp_path)
     code = """
 import sys
-from commontrace import hierarchical as h
+from unimem import hierarchical as h
 for n in range(12):
     h.add_fact(sys.argv[1], 'worker ' + sys.argv[2] + ' records unique' + str(n), scopes=[sys.argv[2]])
 """
@@ -686,7 +686,7 @@ def test_storage_commands_are_executable(tmp_path):
     import subprocess
     import sys
     def cli(*args):
-        return subprocess.run([sys.executable, "-m", "commontrace.cli", "fact", *args, "--dest", str(tmp_path)],
+        return subprocess.run([sys.executable, "-m", "unimem.cli", "fact", *args, "--dest", str(tmp_path)],
                               capture_output=True, text=True, check=False)
     assert cli("add", "portable event storage").returncode == 0
     result = cli("migrate")
@@ -730,7 +730,7 @@ def test_legacy_postings_upgrade_is_atomic_for_concurrent_readers(tmp_path):
     import sqlite3
     from concurrent.futures import ThreadPoolExecutor
 
-    from commontrace import fact_store, hierarchical
+    from unimem import fact_store, hierarchical
     root = str(tmp_path)
     fact_store.migrate(root)
     fact, _ = hierarchical.add_fact(root, 'A durable assertion exists', category='test')
@@ -784,7 +784,7 @@ def _authoritative_fact_bytes(connection):
 def test_global_near_upgrade_preserves_authoritative_bytes(tmp_path, monkeypatch):
     root = str(tmp_path)
     activate(root)
-    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "off")
+    monkeypatch.setenv("UNIMEM_FACT_CONFLICTS", "off")
     h.add_facts(root, [{"statement": f"Component {n} requires a durable replicated journal"} for n in range(30)])
     _restore_blocked_near_projection(root)
     with sqlite3.connect(fact_store.database_path(root)) as connection:
@@ -869,8 +869,8 @@ def test_global_near_upgrade_preserves_reader_snapshot_and_concurrent_openers(tm
 def test_global_near_matches_brute_force_across_blocks_and_scopes(tmp_path, monkeypatch, scopes):
     root = str(tmp_path)
     activate(root)
-    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "off")
-    monkeypatch.setenv("COMMONTRACE_FACT_DEDUP", "exact")
+    monkeypatch.setenv("UNIMEM_FACT_CONFLICTS", "off")
+    monkeypatch.setenv("UNIMEM_FACT_DEDUP", "exact")
     items = [
         {"statement": f"Component {n} requires a durable replicated journal", "scopes": ["a"]}
         for n in range(30)
@@ -901,7 +901,7 @@ def test_global_near_matches_brute_force_across_blocks_and_scopes(tmp_path, monk
 def test_global_near_rebuild_updates_removals_and_forgotten_candidates(tmp_path, monkeypatch):
     root = str(tmp_path)
     activate(root)
-    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "off")
+    monkeypatch.setenv("UNIMEM_FACT_CONFLICTS", "off")
     first, _ = h.add_fact(root, "Component 7 requires a durable replicated journal")
     second, _ = h.add_fact(root, "Component 7 records a durable replicated journal")
     _restore_blocked_near_projection(root)
@@ -926,8 +926,8 @@ def test_global_near_rebuild_updates_removals_and_forgotten_candidates(tmp_path,
 def test_global_near_keeps_strongest_match_beyond_first_hundred(tmp_path, monkeypatch):
     root = str(tmp_path)
     activate(root)
-    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "off")
-    monkeypatch.setenv("COMMONTRACE_FACT_DEDUP", "exact")
+    monkeypatch.setenv("UNIMEM_FACT_CONFLICTS", "off")
+    monkeypatch.setenv("UNIMEM_FACT_DEDUP", "exact")
     query = "Component requires durable replicated journal storage"
     rows = h.add_facts(root, [
         {"statement": query + " tag" + chr(97 + n // 26) + chr(97 + n % 26)} for n in range(150)
@@ -947,7 +947,7 @@ def test_global_near_keeps_strongest_match_beyond_first_hundred(tmp_path, monkey
 def test_batch_amortizes_shared_near_term_frequency_updates(tmp_path, monkeypatch):
     root = str(tmp_path)
     activate(root)
-    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "off")
+    monkeypatch.setenv("UNIMEM_FACT_CONFLICTS", "off")
     with fact_store.transaction(root) as facts:
         connection = facts.connection
     statements = []
@@ -995,12 +995,12 @@ def test_batched_event_failure_rolls_back_metadata_fts_and_postings(tmp_path, mo
 
 
 def test_same_batch_semantic_match_keeps_fts_ranking_beyond_pending_cap(tmp_path, monkeypatch):
-    from commontrace import fact_embeddings, fact_vector_projection
+    from unimem import fact_embeddings, fact_vector_projection
 
     root = str(tmp_path)
     activate(root)
-    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "off")
-    monkeypatch.setenv("COMMONTRACE_FACT_DEDUP", "semantic")
+    monkeypatch.setenv("UNIMEM_FACT_CONFLICTS", "off")
+    monkeypatch.setenv("UNIMEM_FACT_DEDUP", "semantic")
     query = "Offshore vault protects classified material"
     target = "Vault secures this project's encrypted artifact"
     seen = []
@@ -1025,7 +1025,7 @@ def test_same_batch_semantic_match_keeps_fts_ranking_beyond_pending_cap(tmp_path
 def test_same_batch_near_lookup_reinforces_strongest_pending_fact(tmp_path, monkeypatch):
     root = str(tmp_path)
     activate(root)
-    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "off")
+    monkeypatch.setenv("UNIMEM_FACT_CONFLICTS", "off")
     base = "Component requires durable replicated journal storage"
     with h.mutate_facts(root) as facts:
         index = h._statement_index(facts)
@@ -1103,7 +1103,7 @@ def test_reverted_staged_edit_cannot_diverge_from_authoritative_events(tmp_path)
 def test_large_batch_reinforcement_keeps_all_versions_and_document_counts(tmp_path, monkeypatch):
     root = str(tmp_path)
     activate(root)
-    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "off")
+    monkeypatch.setenv("UNIMEM_FACT_CONFLICTS", "off")
     items = [{"statement": f"Journal item{n} retains durable storage", "source_trace_id": "first"}
              for n in range(513)]
     first = h.add_facts(root, items)

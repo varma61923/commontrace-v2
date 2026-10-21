@@ -4,9 +4,9 @@ import os
 
 import pytest
 
-from commontrace import import_data
-from commontrace.cli import main
-from commontrace.import_data import FieldMapping
+from unimem import import_data
+from unimem.cli import main
+from unimem.import_data import FieldMapping
 
 
 class TestParseJsonl:
@@ -106,7 +106,7 @@ class TestBoolParsing:
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
-    monkeypatch.delenv("COMMONTRACE_ROOT", raising=False)
+    monkeypatch.delenv("UNIMEM_ROOT", raising=False)
     monkeypatch.chdir(tmp_path)
     return tmp_path
 
@@ -214,7 +214,7 @@ class TestImportCommand:
 
 class TestSourceIdCannotInjectMarkdownSections:
     def test_a_newline_in_source_id_cannot_inject_a_context_section(self, store, tmp_path, capsys):
-        from commontrace import trace_io
+        from unimem import trace_io
 
         main(["init", "--agent-type", "support", "--dest", str(store)])
         jsonl_path = tmp_path / "export.jsonl"

@@ -5,9 +5,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from commontrace import distill, draft_quality, frontmatter, templates
-from commontrace.cli import main
-from commontrace.failure_signals import _trend
+from unimem import distill, draft_quality, frontmatter, templates
+from unimem.cli import main
+from unimem.failure_signals import _trend
 
 
 def cluster(solutions: list[str], contexts: list[str] | None = None) -> distill.Cluster:
@@ -146,7 +146,7 @@ def test_duplicate_screen_rejects_invalid_semantic_threshold(threshold):
 
 
 def test_unavailable_semantic_stack_falls_back_to_real_lexical_screen(tmp_path, monkeypatch, capsys):
-    from commontrace import semantic
+    from unimem import semantic
 
     monkeypatch.setattr(semantic, "available", lambda: False)
     root = str(tmp_path)
@@ -160,7 +160,7 @@ def test_unavailable_semantic_stack_falls_back_to_real_lexical_screen(tmp_path, 
 
 def test_semantic_candidate_screen_keeps_labels_aligned_across_bounded_batches(monkeypatch):
     np = pytest.importorskip("numpy")
-    from commontrace import semantic
+    from unimem import semantic
 
     class LocalEncoder:
         # Exercise actual normalization, NumPy cosine matching and cached encode

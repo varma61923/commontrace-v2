@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "unimem": {
+      "command": "unimem",
+      "args": ["serve"]
+    }
+  }
+}

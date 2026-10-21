@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from commontrace import frontmatter, import_data, validate
+from unimem import frontmatter, import_data, validate
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -54,13 +54,13 @@ class TestInstallDoesNotFollowSymlinks:
         secret = tmp_path / "secret.txt"
         secret.write_text("SECRET_PAYLOAD", encoding="utf-8")
         dest = tmp_path / "proj"
-        skill_dir = dest / ".claude" / "skills" / "commontrace"
+        skill_dir = dest / ".claude" / "skills" / "unimem"
         skill_dir.mkdir(parents=True)
         link = skill_dir / "SKILL.md"
         os.symlink(secret, link)
 
         subprocess.run(
-            [sys.executable, "-m", "commontrace", "install",
+            [sys.executable, "-m", "unimem", "install",
              "--target", "claude-code", "--dest", str(dest)],
             cwd=REPO_ROOT, capture_output=True, text=True, check=True,
         )
@@ -72,7 +72,7 @@ class TestInstallDoesNotFollowSymlinks:
 class TestCaptureWritesAtomicallyAndUniquely:
     def _capture(self, dest, title):
         return subprocess.run(
-            [sys.executable, "-m", "commontrace", "capture",
+            [sys.executable, "-m", "unimem", "capture",
              "--title", title, "--context", "c", "--solution", "s",
              "--agent-type", "code", "--dest", str(dest)],
             cwd=REPO_ROOT, capture_output=True, text=True,
@@ -80,7 +80,7 @@ class TestCaptureWritesAtomicallyAndUniquely:
 
     def test_same_titled_captures_do_not_overwrite_each_other(self, tmp_path):
         subprocess.run(
-            [sys.executable, "-m", "commontrace", "init",
+            [sys.executable, "-m", "unimem", "init",
              "--agent-type", "code", "--dest", str(tmp_path)],
             cwd=REPO_ROOT, capture_output=True, text=True, check=True,
         )
@@ -95,7 +95,7 @@ class TestCaptureWritesAtomicallyAndUniquely:
     def test_the_filename_carries_the_trace_id(self, tmp_path):
         date = datetime.date.today().isoformat()
         subprocess.run(
-            [sys.executable, "-m", "commontrace", "init",
+            [sys.executable, "-m", "unimem", "init",
              "--agent-type", "code", "--dest", str(tmp_path)],
             cwd=REPO_ROOT, capture_output=True, text=True, check=True,
         )
@@ -107,7 +107,7 @@ class TestCaptureWritesAtomicallyAndUniquely:
 
     def test_the_written_trace_round_trips(self, tmp_path):
         subprocess.run(
-            [sys.executable, "-m", "commontrace", "init",
+            [sys.executable, "-m", "unimem", "init",
              "--agent-type", "code", "--dest", str(tmp_path)],
             cwd=REPO_ROOT, capture_output=True, text=True, check=True,
         )
@@ -132,7 +132,7 @@ class TestPushSkipsAlreadyPushedLessons:
     def test_a_lesson_with_a_hub_trace_id_is_never_recontributed(self, tmp_path, monkeypatch):
         import asyncio
 
-        from commontrace import hub_client
+        from unimem import hub_client
 
         calls = []
 
@@ -156,7 +156,7 @@ class TestPushSkipsAlreadyPushedLessons:
     ):
         import asyncio
 
-        from commontrace import hub_client
+        from unimem import hub_client
 
         calls = []
 
@@ -179,7 +179,7 @@ class TestPushSkipsAlreadyPushedLessons:
     def test_pushing_twice_contributes_exactly_once(self, tmp_path, monkeypatch):
         import asyncio
 
-        from commontrace import hub_client
+        from unimem import hub_client
 
         calls = []
 
@@ -198,18 +198,18 @@ class TestPushSkipsAlreadyPushedLessons:
 
 class TestTokenizersHandleNonAscii:
     def test_cjk_and_cyrillic_produce_tokens(self):
-        from commontrace import distill, retrieval
+        from unimem import distill, retrieval
 
         assert retrieval._tokenize("数据库连接失败") != []
         assert distill._tokenize("Ошибка подключения") != set()
 
     def test_accented_latin_is_not_mutilated(self):
-        from commontrace import retrieval
+        from unimem import retrieval
 
         assert retrieval._tokenize("résumé") == ["résumé"]
 
     def test_ascii_behaviour_is_unchanged(self):
-        from commontrace import retrieval
+        from unimem import retrieval
 
         assert retrieval._tokenize("The database connection failed") == [
             "database", "connection", "failed",
@@ -218,13 +218,13 @@ class TestTokenizersHandleNonAscii:
 
 class TestSectionParsing:
     def test_first_occurrence_wins_not_last(self):
-        from commontrace import hub_client
+        from unimem import hub_client
 
         body = "## Rule\nReal rule\n\n## Why\nDocs say:\n```md\n## Rule\nfrom the docs\n```\n"
         assert hub_client._lesson_sections(body)["rule"] == "Real rule"
 
     def test_trace_sections_are_case_insensitive(self, tmp_path):
-        from commontrace import trace_io
+        from unimem import trace_io
 
         p = tmp_path / "t.md"
         p.write_text(
@@ -236,7 +236,7 @@ class TestSectionParsing:
         assert inst["solution_text"] == "lower sol"
 
     def test_title_case_lesson_headings_match(self):
-        from commontrace import hub_client
+        from unimem import hub_client
 
         sections = hub_client._lesson_sections("## Rule\nr\n\n## How To Apply\nsteps here\n")
         assert sections.get("how to apply") == "steps here"
@@ -244,7 +244,7 @@ class TestSectionParsing:
 
 class TestBenchmarkSurvivesBadUsesValues:
     def test_safe_int_coerces_without_raising(self):
-        from commontrace.reference.measure_performance import _safe_int
+        from unimem.reference.measure_performance import _safe_int
 
         assert _safe_int(1) == 1
         assert _safe_int("2") == 2
@@ -252,12 +252,12 @@ class TestBenchmarkSurvivesBadUsesValues:
         assert _safe_int("nonsense") == 0
 
     def test_booleans_do_not_count_as_uses(self):
-        from commontrace.reference.measure_performance import _safe_int
+        from unimem.reference.measure_performance import _safe_int
 
         assert _safe_int(True) == 0
 
     def test_mixed_types_do_not_crash_the_benchmark(self):
-        from commontrace.reference.measure_performance import compute_extras
+        from unimem.reference.measure_performance import compute_extras
 
         lessons = {"a": {"uses": 3}, "b": {"uses": "2"}, "c": {"uses": None}, "d": {"uses": True}}
         compute_extras([], lessons)
@@ -266,7 +266,7 @@ class TestBenchmarkSurvivesBadUsesValues:
 class TestCliReportsOperationalErrorsCleanly:
     def _run(self, *args):
         return subprocess.run(
-            [sys.executable, "-m", "commontrace", *args],
+            [sys.executable, "-m", "unimem", *args],
             cwd=REPO_ROOT, capture_output=True, text=True,
         )
 
@@ -276,7 +276,7 @@ class TestCliReportsOperationalErrorsCleanly:
         r = self._run("overlap", "report", "--ours", str(bad), "--theirs", str(bad))
         assert r.returncode == 1
         assert "Traceback" not in r.stderr
-        assert "[commontrace] error:" in r.stderr
+        assert "[unimem] error:" in r.stderr
 
     def test_a_signature_file_missing_required_keys_is_reported(self, tmp_path):
         import json as _json
@@ -289,7 +289,7 @@ class TestCliReportsOperationalErrorsCleanly:
         assert "fleet_label" in r.stderr
 
     def test_a_genuine_bug_still_raises(self):
-        import commontrace.cli as cli
+        import unimem.cli as cli
 
         src = __import__("inspect").getsource(cli.main)
         assert "except Exception" not in src
@@ -299,7 +299,7 @@ class TestCliReportsOperationalErrorsCleanly:
 class TestExperimentLoopCloses:
     def _run(self, *args, dest):
         return subprocess.run(
-            [sys.executable, "-m", "commontrace", *args, "--dest", str(dest)],
+            [sys.executable, "-m", "unimem", *args, "--dest", str(dest)],
             cwd=REPO_ROOT, capture_output=True, text=True,
         )
 
@@ -372,7 +372,7 @@ class TestExperimentLoopCloses:
 class TestCaptureOccasionIdMergesRatherThanOverwrites:
     def _run(self, *args, dest):
         return subprocess.run(
-            [sys.executable, "-m", "commontrace", *args, "--dest", str(dest)],
+            [sys.executable, "-m", "unimem", *args, "--dest", str(dest)],
             cwd=REPO_ROOT, capture_output=True, text=True,
         )
 
@@ -468,7 +468,7 @@ class TestCaptureOccasionIdMergesRatherThanOverwrites:
 
 
 def trace_io_read(path):
-    from commontrace import trace_io
+    from unimem import trace_io
 
     return trace_io.read(path)
 
@@ -476,7 +476,7 @@ def trace_io_read(path):
 class TestHoldoutLogIntegrity:
     def _store(self, tmp_path):
         subprocess.run(
-            [sys.executable, "-m", "commontrace", "init", "--agent-type", "code",
+            [sys.executable, "-m", "unimem", "init", "--agent-type", "code",
              "--dest", str(tmp_path)],
             cwd=REPO_ROOT, capture_output=True, text=True, check=True,
         )
@@ -502,7 +502,7 @@ class TestHoldoutLogIntegrity:
 
         def one(n):
             return subprocess.run(
-                [sys.executable, "-m", "commontrace", "query", "paginating a large table",
+                [sys.executable, "-m", "unimem", "query", "paginating a large table",
                  "--experiment", "--occasion-id", f"occ-{n}", "--dest", str(tmp_path)],
                 cwd=REPO_ROOT, capture_output=True, text=True,
             ).returncode
@@ -519,7 +519,7 @@ class TestHoldoutLogIntegrity:
     def test_a_corrupt_line_is_reported_not_silently_dropped(self, tmp_path):
         self._store(tmp_path)
         subprocess.run(
-            [sys.executable, "-m", "commontrace", "query", "paginating a large table",
+            [sys.executable, "-m", "unimem", "query", "paginating a large table",
              "--experiment", "--occasion-id", "occ-1", "--dest", str(tmp_path)],
             cwd=REPO_ROOT, capture_output=True, text=True,
         )
@@ -528,7 +528,7 @@ class TestHoldoutLogIntegrity:
             fh.write('{"occasion_id": "occ-2", "lesso\n')
 
         r = subprocess.run(
-            [sys.executable, "-m", "commontrace", "experiment", "--dest", str(tmp_path)],
+            [sys.executable, "-m", "unimem", "experiment", "--dest", str(tmp_path)],
             cwd=REPO_ROOT, capture_output=True, text=True,
         )
         assert "unparseable line" in r.stderr
@@ -537,12 +537,12 @@ class TestHoldoutLogIntegrity:
     def test_a_clean_log_produces_no_warning(self, tmp_path):
         self._store(tmp_path)
         subprocess.run(
-            [sys.executable, "-m", "commontrace", "query", "paginating a large table",
+            [sys.executable, "-m", "unimem", "query", "paginating a large table",
              "--experiment", "--occasion-id", "occ-1", "--dest", str(tmp_path)],
             cwd=REPO_ROOT, capture_output=True, text=True,
         )
         r = subprocess.run(
-            [sys.executable, "-m", "commontrace", "experiment", "--dest", str(tmp_path)],
+            [sys.executable, "-m", "unimem", "experiment", "--dest", str(tmp_path)],
             cwd=REPO_ROOT, capture_output=True, text=True,
         )
         assert "unparseable line" not in r.stderr
@@ -551,7 +551,7 @@ class TestHoldoutLogIntegrity:
 class TestDoctorReportsFailuresInItsExitCode:
     def _run(self, *args):
         return subprocess.run(
-            [sys.executable, "-m", "commontrace", "doctor", *args],
+            [sys.executable, "-m", "unimem", "doctor", *args],
             cwd=REPO_ROOT, capture_output=True, text=True,
         )
 
@@ -564,7 +564,7 @@ class TestDoctorReportsFailuresInItsExitCode:
         # The checkout holds no memory/ store, so a bare `doctor` in REPO_ROOT only
         # passed when another test happened to have left one behind.
         subprocess.run(
-            [sys.executable, "-m", "commontrace", "init", "--agent-type", "code", "--dest", str(tmp_path)],
+            [sys.executable, "-m", "unimem", "init", "--agent-type", "code", "--dest", str(tmp_path)],
             cwd=REPO_ROOT, capture_output=True, text=True, check=True,
         )
         return str(tmp_path)
@@ -579,7 +579,7 @@ class TestDoctorReportsFailuresInItsExitCode:
         assert "critical check(s) failed" not in r.stdout
 
     def test_info_never_registers_a_failure(self, capsys):
-        from commontrace.commands import doctor_cmd
+        from unimem.commands import doctor_cmd
 
         before = list(doctor_cmd._FAILURES)
         try:
@@ -591,7 +591,7 @@ class TestDoctorReportsFailuresInItsExitCode:
 
     def test_a_fresh_store_with_no_lessons_is_not_a_failure(self, tmp_path):
         subprocess.run(
-            [sys.executable, "-m", "commontrace", "init", "--agent-type", "code",
+            [sys.executable, "-m", "unimem", "init", "--agent-type", "code",
              "--dest", str(tmp_path)],
             cwd=REPO_ROOT, capture_output=True, text=True, check=True,
         )
@@ -602,7 +602,7 @@ class TestDoctorReportsFailuresInItsExitCode:
 
 class TestValidatorRejectsTupleFormItems:
     def test_list_typed_items_raises_unsupported_not_attribute_error(self):
-        from commontrace import validate
+        from unimem import validate
 
         schema = {"type": "object",
                   "properties": {"tags": {"type": "array", "items": [{"type": "string"}]}}}
@@ -610,14 +610,14 @@ class TestValidatorRejectsTupleFormItems:
             validate.assert_supported_schema(schema)
 
     def test_the_supported_form_still_passes(self):
-        from commontrace import validate
+        from unimem import validate
 
         schema = {"type": "object",
                   "properties": {"tags": {"type": "array", "items": {"type": "string"}}}}
         validate.assert_supported_schema(schema)
 
     def test_the_shipped_schemas_still_load(self):
-        from commontrace import validate
+        from unimem import validate
 
         for name in ("trace.schema.json", "lesson.schema.json"):
             validate.assert_supported_schema(validate.load_schema(name))
@@ -625,7 +625,7 @@ class TestValidatorRejectsTupleFormItems:
 
 class TestReportKeepsPlaceholderRows:
     def test_a_dash_only_data_row_is_not_mistaken_for_a_separator(self):
-        from commontrace.reference.measure_performance import _md_to_html_fragment
+        from unimem.reference.measure_performance import _md_to_html_fragment
 
         html = _md_to_html_fragment(
             "| Metric | Value |\n|---|---|\n| lexical | 0.42 |\n| - | - |\n| fresh | 0.9 |\n"
@@ -634,7 +634,7 @@ class TestReportKeepsPlaceholderRows:
         assert "<td>-</td>" in html
 
     def test_real_separators_are_still_skipped(self):
-        from commontrace.reference.measure_performance import _md_to_html_fragment
+        from unimem.reference.measure_performance import _md_to_html_fragment
 
         html = _md_to_html_fragment("| A | B |\n|---|---|\n| 1 | 2 |\n")
         assert "<td>---</td>" not in html
@@ -645,13 +645,13 @@ class TestEveryThresholdFlagIsActuallyImplemented:
         for flag in ("--threshold-lexical=0.99", "--threshold-freshness=0.5",
                      "--threshold-composite=0.7", "--threshold-semantic=0.99"):
             r = subprocess.run(
-                [sys.executable, "-m", "commontrace", "bench", flag],
+                [sys.executable, "-m", "unimem", "bench", flag],
                 cwd=REPO_ROOT, capture_output=True, text=True,
             )
             assert "not implemented" not in r.stderr, flag
 
     def test_lexical_duplicates_are_actually_detected(self):
-        from commontrace.reference import measure_performance as mp
+        from unimem.reference import measure_performance as mp
 
         lessons = {
             "lesson_a": {"description": "Reuse the gateway idempotency key on a refund retry",
@@ -667,7 +667,7 @@ class TestEveryThresholdFlagIsActuallyImplemented:
     def test_freshness_measures_recent_hits_not_merely_any_hit(self):
         import datetime
 
-        from commontrace.reference import measure_performance as mp
+        from unimem.reference import measure_performance as mp
 
         now = datetime.datetime(2026, 6, 1)
         recent = (now - datetime.timedelta(days=5)).strftime("%Y-%m-%d")
@@ -681,7 +681,7 @@ class TestEveryThresholdFlagIsActuallyImplemented:
         assert value == 0.5
 
     def test_the_composite_score_names_its_own_components(self):
-        from commontrace.reference import measure_performance as mp
+        from unimem.reference import measure_performance as mp
 
         composite = mp.compute_composite({
             "lesson_quality": {"value": 0.8},
@@ -696,7 +696,7 @@ class TestEveryThresholdFlagIsActuallyImplemented:
         }
 
     def test_a_threshold_that_is_not_passed_raises_no_alert(self):
-        from commontrace.reference import measure_performance as mp
+        from unimem.reference import measure_performance as mp
 
         report = {
             "lesson_quality": {"value": 0.9}, "implicit_retrieval": {"strict": 0.9},
@@ -710,7 +710,7 @@ class TestEveryThresholdFlagIsActuallyImplemented:
         assert mp.compute_alerts(report, thresholds) == []
 
     def test_each_threshold_fires_when_it_is_breached(self):
-        from commontrace.reference import measure_performance as mp
+        from unimem.reference import measure_performance as mp
 
         report = {
             "lesson_quality": {"value": 0.9}, "implicit_retrieval": {"strict": 0.9},
@@ -732,23 +732,23 @@ class TestEveryThresholdFlagIsActuallyImplemented:
 
 class TestRootResolutionMatchesTheReferenceScripts:
     def test_legacy_env_var_is_honoured(self, tmp_path, monkeypatch):
-        from commontrace import paths
+        from unimem import paths
 
-        monkeypatch.delenv("COMMONTRACE_ROOT", raising=False)
+        monkeypatch.delenv("UNIMEM_ROOT", raising=False)
         monkeypatch.setenv("JUSTDOIT_ROOT", str(tmp_path))
         assert paths.resolve_root(None) == os.path.abspath(str(tmp_path))
 
     def test_the_modern_var_still_wins(self, tmp_path, monkeypatch):
-        from commontrace import paths
+        from unimem import paths
 
-        monkeypatch.setenv("COMMONTRACE_ROOT", str(tmp_path / "modern"))
+        monkeypatch.setenv("UNIMEM_ROOT", str(tmp_path / "modern"))
         monkeypatch.setenv("JUSTDOIT_ROOT", str(tmp_path / "legacy"))
         assert paths.resolve_root(None) == os.path.abspath(str(tmp_path / "modern"))
 
     def test_an_explicit_dest_still_beats_both(self, tmp_path, monkeypatch):
-        from commontrace import paths
+        from unimem import paths
 
-        monkeypatch.setenv("COMMONTRACE_ROOT", str(tmp_path / "env"))
+        monkeypatch.setenv("UNIMEM_ROOT", str(tmp_path / "env"))
         assert paths.resolve_root(str(tmp_path / "explicit")) == os.path.abspath(
             str(tmp_path / "explicit")
         )
@@ -788,13 +788,13 @@ class TestCoreSuiteNeedsNoHubDependencies:
 
 class TestHttpsEnforcedForRemoteHub:
     def test_remote_http_is_refused(self):
-        from commontrace import hub_client
+        from unimem import hub_client
 
         with pytest.raises(hub_client.HubConnectionError, match="plaintext http"):
             hub_client._validate_hub_url("http://external-untrusted-server.com/mcp")
 
     def test_https_is_unaffected(self):
-        from commontrace import hub_client
+        from unimem import hub_client
 
         hub_client._validate_hub_url("https://hub.example.com/mcp")
 
@@ -804,7 +804,7 @@ class TestSemanticQueryDetectsIndexMismatch:
         import importlib.util
 
         spec = importlib.util.spec_from_file_location(
-            "_query_probe", Path(REPO_ROOT) / "commontrace" / "reference" / "query.py",
+            "_query_probe", Path(REPO_ROOT) / "unimem" / "reference" / "query.py",
         )
         module = importlib.util.module_from_spec(spec)
         return module, spec
@@ -878,28 +878,28 @@ class TestSemanticQueryDetectsIndexMismatch:
 
 class TestTemplateHeadingsMatchWhatIsGenerated:
     def test_a_store_with_episodes_indexes_episodes_not_traces(self):
-        from commontrace import templates
+        from unimem import templates
 
         idx = templates.index_md("code", has_episodes=True)
         assert "#### Episodes" in idx
         assert "#### Traces" not in idx
 
     def test_a_store_without_episodes_keeps_traces(self):
-        from commontrace import templates
+        from unimem import templates
 
         idx = templates.index_md("sales", has_episodes=False)
         assert "#### Traces" in idx
         assert "#### Episodes" not in idx
 
     def test_a_code_store_with_no_episode_profile_indexes_traces(self):
-        from commontrace import templates
+        from unimem import templates
 
         idx = templates.index_md("code", has_episodes=False)
         assert "#### Traces" in idx
         assert "#### Episodes" not in idx
 
     def test_usage_convention_matches_the_generated_heading_level(self):
-        from commontrace import templates
+        from unimem import templates
 
         idx = templates.index_md("code")
         assert "### <Domain>" in idx
@@ -908,7 +908,7 @@ class TestTemplateHeadingsMatchWhatIsGenerated:
 
 class TestBuildIndexTempFileIsUniquePerProcess:
     def test_source_no_longer_hardcodes_the_tmp_path(self):
-        text = (Path(REPO_ROOT) / "commontrace" / "reference" / "build_index.py").read_text(encoding="utf-8")
+        text = (Path(REPO_ROOT) / "unimem" / "reference" / "build_index.py").read_text(encoding="utf-8")
         assert 'INDEX_PATH + ".tmp.npz"' not in text
         assert "tempfile.mkstemp" in text
 
@@ -916,13 +916,13 @@ class TestBuildIndexTempFileIsUniquePerProcess:
 class TestImportStreamsRatherThanBuffering:
     def _run_import(self, tmp_path, jsonl_lines):
         subprocess.run(
-            [sys.executable, "-m", "commontrace", "init", "--agent-type", "code", "--dest", str(tmp_path)],
+            [sys.executable, "-m", "unimem", "init", "--agent-type", "code", "--dest", str(tmp_path)],
             cwd=REPO_ROOT, capture_output=True, text=True, check=True,
         )
         src = tmp_path / "export.jsonl"
         src.write_text("\n".join(jsonl_lines) + "\n", encoding="utf-8")
         return subprocess.run(
-            [sys.executable, "-m", "commontrace", "import", str(src),
+            [sys.executable, "-m", "unimem", "import", str(src),
              "--agent-type", "code", "--dest", str(tmp_path)],
             cwd=REPO_ROOT, capture_output=True, text=True,
         )
@@ -953,13 +953,13 @@ class TestImportStreamsRatherThanBuffering:
     def test_iter_jsonl_never_holds_more_than_one_row(self):
         import inspect
 
-        from commontrace import import_data
+        from unimem import import_data
 
         assert inspect.isgeneratorfunction(import_data.iter_jsonl)
         assert inspect.isgeneratorfunction(import_data.iter_csv)
 
     def test_list_collecting_wrappers_still_work_for_small_inputs(self):
-        from commontrace import import_data
+        from unimem import import_data
 
         mapping = import_data.FieldMapping()
         imported, skipped = import_data.parse_jsonl(
@@ -974,7 +974,7 @@ class TestImportStreamsRatherThanBuffering:
 )
 class TestFrontmatterWritePreservesPermissions:
     def test_rewriting_an_existing_file_preserves_its_mode(self, tmp_path):
-        from commontrace import frontmatter
+        from unimem import frontmatter
 
         p = tmp_path / "existing.md"
         p.write_text("---\na: 1\n---\n\nbody\n", encoding="utf-8")
@@ -986,7 +986,7 @@ class TestFrontmatterWritePreservesPermissions:
         assert oct(os.stat(p).st_mode & 0o777) == "0o644"
 
     def test_rewriting_a_group_writable_file_preserves_that_too(self, tmp_path):
-        from commontrace import frontmatter
+        from unimem import frontmatter
 
         p = tmp_path / "shared.md"
         p.write_text("---\na: 1\n---\n\nbody\n", encoding="utf-8")
@@ -998,7 +998,7 @@ class TestFrontmatterWritePreservesPermissions:
         assert oct(os.stat(p).st_mode & 0o777) == "0o664"
 
     def test_a_brand_new_file_respects_the_process_umask(self, tmp_path, monkeypatch):
-        from commontrace import frontmatter
+        from unimem import frontmatter
 
         old_umask = os.umask(0o022)
         try:

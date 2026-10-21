@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from commontrace import (
+from unimem import (
     aipw,
     allocation,
     conformal_gate,
@@ -23,7 +23,7 @@ from commontrace import (
     trace_io,
     unit_trials,
 )
-from commontrace import frontier_protocol as fp
+from unimem import frontier_protocol as fp
 
 
 @pytest.fixture
@@ -162,7 +162,7 @@ def test_schedule_delivery_integrity_and_private_catalog(tmp_path, clock):
 
 
 def test_portable_folder_certificate_and_revocation(tmp_path, clock):
-    from commontrace import skills
+    from unimem import skills
 
     root = str(tmp_path)
     value = prepare(root, clock)
@@ -183,7 +183,7 @@ def test_portable_folder_certificate_and_revocation(tmp_path, clock):
     with pytest.raises(PermissionError):
         skill_io.evidence(root, value["id"])
     assert skills.load_body(cached) == ""
-    from commontrace import nextwave_store as store
+    from unimem import nextwave_store as store
 
     removed = store.erase(root, list(value["source_digests"]))
     assert any(r["kind"] == "skill-exports" for r in removed)
@@ -203,7 +203,7 @@ def test_unmeasured_or_untrusted_sources_never_induce(tmp_path):
 
 def test_cli_and_mcp_surfaces(tmp_path, clock):
     pytest.importorskip("mcp")
-    from commontrace.mcp_server import build_server
+    from unimem.mcp_server import build_server
     from tests.test_mcp_server import call, cli
 
     root = str(tmp_path)
@@ -239,14 +239,14 @@ def test_bundle_size_is_chosen_before_individual_eligibility(tmp_path, clock):
         assert (sorted(members)[3] in assigned) is large
         holdout_io.record_outcome(root, occasion, large)
         clock.tick(1)
-    from commontrace import nextwave_store as store
+    from unimem import nextwave_store as store
 
     excluded = store.events(root, "unit-eligibility")
     assert excluded and all(row["status"] == "ineligible" for row in excluded)
 
 
 def test_artifact_erasure_removes_transitive_content(tmp_path):
-    from commontrace import nextwave_store as store
+    from unimem import nextwave_store as store
 
     root = str(tmp_path)
     identity = source(root)

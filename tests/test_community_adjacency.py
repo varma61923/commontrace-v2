@@ -4,7 +4,7 @@ from __future__ import annotations
 import random
 from datetime import datetime, timedelta, timezone
 
-from commontrace import communities, entity_store, hierarchical
+from unimem import communities, entity_store, hierarchical
 
 
 def test_adjacency_matches_pairwise_reference_for_overlapping_duplicate_groups(tmp_path, monkeypatch):

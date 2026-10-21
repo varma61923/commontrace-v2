@@ -1,4 +1,4 @@
-from commontrace import fact_embeddings, fact_store, fact_vector_projection, hierarchical, search_recipes
+from unimem import fact_embeddings, fact_store, fact_vector_projection, hierarchical, search_recipes
 
 
 class Model:

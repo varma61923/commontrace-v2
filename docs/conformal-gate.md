@@ -1,8 +1,8 @@
 # Opt-in conformal harm budget
 
-Enable `commontrace retrieval --harm-budget 0.02 --per-context --dest STORE`
+Enable `unimem retrieval --harm-budget 0.02 --per-context --dest STORE`
 (optionally `--harm-method ltt` and `--propensity-floor P`); turn it off with
-`--disable-harm-budget`. `commontrace allocate gate` reports the calibrated
+`--disable-harm-budget`. `unimem allocate gate` reports the calibrated
 threshold per stratum and the realized IPW injected-failure rate on occasions
 logged while the gate was on; MCP retrieval includes compact `harm_budget`
 metadata (the threshold in force for that context). Without this configuration,

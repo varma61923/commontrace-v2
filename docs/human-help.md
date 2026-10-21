@@ -16,7 +16,7 @@ The implementation does not run that model or reproduce its training pipeline.
 Enroll a scoped human identity before collecting correction-quality data:
 
 ```sh
-commontrace fleet operators '{"action":"register","operator":"operator-42","principal":"human-42","skill_tier":"trained","context":["project:depot"]}' --dest ./store
+unimem fleet operators '{"action":"register","operator":"operator-42","principal":"human-42","skill_tier":"trained","context":["project:depot"]}' --dest ./store
 ```
 
 Skill tiers are `novice`, `trained` and `expert`. Enrollment authenticates the
@@ -80,8 +80,8 @@ planners additionally need a G6 capability for namespace `ask`, operation
 Start the canonical experiment using the existing experiment setup, then enroll:
 
 ```sh
-commontrace fleet ask-policy '{"action":"configure","context":"support","question_type":"answer-format","risk":"low-risk","enabled":true,"budget_seconds":1200,"cost_seconds":30,"trial_size":40}' --dest ./store
-commontrace fleet ask-policy '{"action":"decide","context":"support","question_type":"answer-format","occasion":"ticket-42"}' --dest ./store
+unimem fleet ask-policy '{"action":"configure","context":"support","question_type":"answer-format","risk":"low-risk","enabled":true,"budget_seconds":1200,"cost_seconds":30,"trial_size":40}' --dest ./store
+unimem fleet ask-policy '{"action":"decide","context":"support","question_type":"answer-format","occasion":"ticket-42"}' --dest ./store
 ```
 
 The allocation schedule takes effect after its standard five-second publication
@@ -139,15 +139,15 @@ Build the real service definition when ROS 2 is installed:
 
 ```sh
 cd ros2
-colcon build --packages-select commontrace_interfaces
+colcon build --packages-select unimem_interfaces
 source install/setup.bash
 ```
 
 `robotics.bridge.create_node` accepts an explicitly configured `on_ask` callback
-and registers `commontrace_interfaces/srv/ShouldAsk`. The request carries an
+and registers `unimem_interfaces/srv/ShouldAsk`. The request carries an
 occasion and question type; the bridge supplies its own embodiment/site/skill
 context. The default service name is
-`/commontrace/robot_<sha256(robot-id)[:16]>/should_ask`, avoiding cross-robot name
+`/unimem/robot_<sha256(robot-id)[:16]>/should_ask`, avoiding cross-robot name
 collisions. Set `topics["ask_service"]` for an explicit deployment name.
 
 The callback can bind `human_help.should_ask` to a locally authorized store.

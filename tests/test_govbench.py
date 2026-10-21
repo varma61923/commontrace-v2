@@ -1,6 +1,6 @@
 """GovBench: multi-principal utility, leakage and verified forgetting through the gateway."""
 from benchmarks import govbench
-from commontrace import memory_control
+from unimem import memory_control
 
 
 def test_entitled_recall_no_leaks_and_forgetting_follows_lineage():
@@ -20,7 +20,7 @@ def test_the_benchmark_detects_a_leak_when_scoping_is_broken(monkeypatch):
 
 
 def test_governance_utility_is_independent_of_random_holdout(monkeypatch):
-    from commontrace import experiment
+    from unimem import experiment
 
     # Every nonzero holdout rate would withhold all candidates on this draw.
     monkeypatch.setattr(experiment, "_uniform_from", lambda *args: 0.0)

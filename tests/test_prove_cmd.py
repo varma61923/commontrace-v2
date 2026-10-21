@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 
-from commontrace.commands import prove_cmd
+from unimem.commands import prove_cmd
 
 
 def _args(**kw):
@@ -183,7 +183,7 @@ def _async(value):
 class TestTheValidityVerdictIsAboveTheEffects:
     @staticmethod
     def _report(integrity: dict) -> str:
-        from commontrace.commands import prove_cmd
+        from unimem.commands import prove_cmd
 
         return prove_cmd.render_outcomes({
             "headline": "Resolution is up.",

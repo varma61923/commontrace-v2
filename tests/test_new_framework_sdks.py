@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from commontrace.frameworks import MemoryTools
+from unimem.frameworks import MemoryTools
 
 
 def test_google_adk_executes_owner_bound_tools(tmp_path):
@@ -35,10 +35,10 @@ def test_ag2_public_registration_and_execution(tmp_path):
     memory.remember("Office is Tokyo", "Acknowledged")
     tools = memory.tools("ag2")
     agent = sdk.Agent("test", tools=tools)
-    assert agent is not None and tools[0].name == "commontrace_recall"
+    assert agent is not None and tools[0].name == "unimem_recall"
     # No send occurs during an ordinary FunctionTool invocation; a stream is
     # only needed for tool-side messaging, which these memory tools never use.
     context = ConversationContext(stream=None)
-    event = ToolCallEvent(name="commontrace_recall", arguments=json.dumps({"query": "office"}))
+    event = ToolCallEvent(name="unimem_recall", arguments=json.dumps({"query": "office"}))
     reply = asyncio.run(tools[0](event, context))
     assert "Tokyo" in str(reply.result)

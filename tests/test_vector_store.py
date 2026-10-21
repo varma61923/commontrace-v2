@@ -8,14 +8,14 @@ from collections.abc import Awaitable, Callable
 
 import pytest
 
-from commontrace.vector_store import PostgresVectorIndex, SQLiteVectorIndex, VectorIndex, VectorRecord
+from unimem.vector_store import PostgresVectorIndex, SQLiteVectorIndex, VectorIndex, VectorRecord
 
 
 @pytest.fixture(params=["sqlite", "pgexact", "pghnsw"])
 def factory(request, tmp_path) -> Callable[..., Awaitable[VectorIndex]]:
-    dsn = os.environ.get("COMMONTRACE_TEST_PGVECTOR_DSN")
+    dsn = os.environ.get("UNIMEM_TEST_PGVECTOR_DSN")
     if request.param != "sqlite" and not dsn:
-        pytest.skip("set COMMONTRACE_TEST_PGVECTOR_DSN to exercise real pgvector")
+        pytest.skip("set UNIMEM_TEST_PGVECTOR_DSN to exercise real pgvector")
     owner = "test-" + uuid.uuid4().hex
 
     async def opening(*, tenant=owner, namespace="memory", model="test-model", dimension=3):

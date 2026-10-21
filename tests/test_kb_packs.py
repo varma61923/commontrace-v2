@@ -4,8 +4,8 @@ import os
 
 import pytest
 
-from commontrace import frontmatter, kb_packs, paths
-from commontrace.cli import main
+from unimem import frontmatter, kb_packs, paths
+from unimem.cli import main
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CORPUS = os.path.join(REPO_ROOT, "commons", "seed", "substrate-v1.jsonl")
@@ -13,7 +13,7 @@ CORPUS = os.path.join(REPO_ROOT, "commons", "seed", "substrate-v1.jsonl")
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
-    monkeypatch.delenv("COMMONTRACE_ROOT", raising=False)
+    monkeypatch.delenv("UNIMEM_ROOT", raising=False)
     monkeypatch.chdir(tmp_path)
     main(["init", "--agent-type", "code", "--dest", str(tmp_path)])
     return tmp_path

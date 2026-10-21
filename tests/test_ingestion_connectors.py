@@ -10,7 +10,7 @@ import pytest
 def store(tmp_path):
     store = tmp_path / "store"
     store.mkdir()
-    from commontrace import paths
+    from unimem import paths
     os.makedirs(paths.lessons_dir(str(store)), exist_ok=True)
     os.makedirs(paths.traces_dir(str(store)), exist_ok=True)
     return str(store)
@@ -18,7 +18,7 @@ def store(tmp_path):
 
 class TestCodeIngestion:
     def test_ingest_python_file(self, store, tmp_path):
-        from commontrace.ingest import ingest_code_repository
+        from unimem.ingest import ingest_code_repository
 
         src = tmp_path / "mylib"
         src.mkdir()
@@ -33,7 +33,7 @@ class TestCodeIngestion:
         assert result.source_type == "code"
 
     def test_ingest_redacts_secrets(self, store, tmp_path):
-        from commontrace.ingest import ingest_code_repository
+        from unimem.ingest import ingest_code_repository
 
         src = tmp_path / "secrets_proj"
         src.mkdir()
@@ -43,14 +43,14 @@ class TestCodeIngestion:
         )
 
         result = ingest_code_repository(store, str(src))
-        from commontrace import paths
+        from unimem import paths
         for fname in os.listdir(paths.lessons_dir(store)):
             if fname.endswith(".md"):
                 content = open(os.path.join(paths.lessons_dir(store), fname)).read()
                 assert "sk-ant-api03-" not in content, f"Secret found in {fname}"
 
     def test_ingest_invalid_python_does_not_crash(self, store, tmp_path):
-        from commontrace.ingest import ingest_code_repository
+        from unimem.ingest import ingest_code_repository
 
         src = tmp_path / "bad_syntax"
         src.mkdir()
@@ -62,8 +62,8 @@ class TestCodeIngestion:
 
 class TestMarkdownIngestion:
     def test_ingest_markdown_extracts_facts(self, store, tmp_path):
-        from commontrace import hierarchical
-        from commontrace.ingest import ingest_markdown_documentation
+        from unimem import hierarchical
+        from unimem.ingest import ingest_markdown_documentation
 
         docs = tmp_path / "docs"
         docs.mkdir()
@@ -83,8 +83,8 @@ class TestMarkdownIngestion:
 
 class TestJsonLogIngestion:
     def test_ingest_json_logs_clusters_errors(self, store, tmp_path):
-        from commontrace import paths
-        from commontrace.ingest import ingest_json_logs
+        from unimem import paths
+        from unimem.ingest import ingest_json_logs
 
         log_file = tmp_path / "service.jsonl"
         log_file.write_text(
@@ -104,7 +104,7 @@ class TestJsonLogIngestion:
 
 class TestTranscriptIngestion:
     def test_ingest_failure_transcript_records_traces(self, store, tmp_path):
-        from commontrace.ingest import ingest_failure_transcript
+        from unimem.ingest import ingest_failure_transcript
 
         transcript = tmp_path / "run.jsonl"
         transcript.write_text(
@@ -117,7 +117,7 @@ class TestTranscriptIngestion:
         assert result.source_type == "transcript"
         assert result.traces_written == 1 and result.lessons_drafted == 0
 
-        from commontrace.commands._traces import load_trace_candidates
+        from unimem.commands._traces import load_trace_candidates
 
         candidates = load_trace_candidates(store)
         assert len(candidates) == 1
@@ -129,14 +129,14 @@ class TestTranscriptIngestion:
 
 class TestIngestionPipeline:
     def test_pipeline_unknown_type_returns_error(self, store):
-        from commontrace.ingest import IngestionPipeline
+        from unimem.ingest import IngestionPipeline
         pipeline = IngestionPipeline()
         result = pipeline.ingest_source("/nonexistent", "unknown_type", store)
         assert len(result.errors) > 0
         assert "unknown_type" in result.errors[0]
 
     def test_pipeline_dispatches_markdown(self, store, tmp_path):
-        from commontrace.ingest import IngestionPipeline
+        from unimem.ingest import IngestionPipeline
         docs = tmp_path / "docs"
         docs.mkdir()
         (docs / "guide.md").write_text("# Architecture\n\nPrefer async IO for all service calls.\n", encoding="utf-8")

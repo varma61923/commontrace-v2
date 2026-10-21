@@ -9,7 +9,7 @@ import uuid
 
 from hub import plans
 
-SMOKE_TAG = "commontrace-smoke"
+SMOKE_TAG = "unimem-smoke"
 
 
 def _content(result):
@@ -76,7 +76,7 @@ def _preflight(url: str, api_key: str) -> str | None:
     payload = {
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
         "params": {"protocolVersion": "2025-06-18", "capabilities": {},
-                   "clientInfo": {"name": "commontrace-smoke", "version": "1"}},
+                   "clientInfo": {"name": "unimem-smoke", "version": "1"}},
     }
     try:
         response = httpx.post(
@@ -446,7 +446,7 @@ def _diagnose(error: BaseException) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m hub.smoke",
-        description="Post-deploy smoke check against a running CommonTrace Hub.",
+        description="Post-deploy smoke check against a running UniMem Hub.",
     )
     parser.add_argument("--url", required=True, help="MCP endpoint, e.g. https://hub.example.com/mcp")
     parser.add_argument("--api-key", required=True, help="An API key for the org to write under.")
@@ -468,7 +468,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return asyncio.run(run(args))
     except ImportError:
-        print("[smoke] needs the MCP client library: pip install 'commontrace[hub-sync]'",
+        print("[smoke] needs the MCP client library: pip install 'unimem[hub-sync]'",
               file=sys.stderr)
         return 2
     except Exception as exc:

@@ -10,10 +10,10 @@ pytest.importorskip("pydantic")
 
 from pydantic import ValidationError  # noqa: E402
 
-from commontrace import embeddings, llm, providers  # noqa: E402
-from commontrace.exceptions import CapabilityError, ConfigurationError  # noqa: E402
-from commontrace.provider_config import EmbedderConfig, LLMConfig, VectorStoreConfig  # noqa: E402
-from commontrace.vector_store import VectorRecord  # noqa: E402
+from unimem import embeddings, llm, providers  # noqa: E402
+from unimem.exceptions import CapabilityError, ConfigurationError  # noqa: E402
+from unimem.provider_config import EmbedderConfig, LLMConfig, VectorStoreConfig  # noqa: E402
+from unimem.vector_store import VectorRecord  # noqa: E402
 
 
 def test_factories_expose_native_providers_and_never_import_from_configuration():
@@ -56,18 +56,18 @@ def test_public_configuration_and_schema_hide_credentials():
 
 
 def test_local_configuration_does_not_read_unrelated_cloud_secrets(monkeypatch):
-    monkeypatch.setenv("COMMONTRACE_LLM_API_KEY_FILE", "/does/not/exist")
+    monkeypatch.setenv("UNIMEM_LLM_API_KEY_FILE", "/does/not/exist")
     cfg = LLMConfig(provider="local", model="local-model").runtime_config()
     assert cfg.api_key == ""
 
 
 def test_openai_alias_uses_conventional_key_and_correct_endpoint(monkeypatch):
-    monkeypatch.delenv("COMMONTRACE_LLM_API_KEY", raising=False)
-    monkeypatch.delenv("COMMONTRACE_LLM_API_KEY_FILE", raising=False)
-    monkeypatch.setenv("COMMONTRACE_LLM_PROVIDER", "openai")
+    monkeypatch.delenv("UNIMEM_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("UNIMEM_LLM_API_KEY_FILE", raising=False)
+    monkeypatch.setenv("UNIMEM_LLM_PROVIDER", "openai")
     monkeypatch.setenv("OPENAI_API_KEY", "fixture-openai-key")
-    monkeypatch.delenv("COMMONTRACE_LLM_BASE_URL", raising=False)
-    monkeypatch.delenv("COMMONTRACE_LLM_MODEL", raising=False)
+    monkeypatch.delenv("UNIMEM_LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("UNIMEM_LLM_MODEL", raising=False)
     cfg = llm.load_config()
     assert cfg.provider == "openai-compatible" and cfg.base_url == "https://api.openai.com/v1"
     assert cfg.api_key == "fixture-openai-key" and cfg.model == "gpt-4.1-mini"
@@ -76,8 +76,8 @@ def test_openai_alias_uses_conventional_key_and_correct_endpoint(monkeypatch):
 def test_factory_keeps_credentials_and_models_per_instance(monkeypatch):
     monkeypatch.setenv("FIRST_MODEL_KEY", "fixture-first")
     monkeypatch.setenv("SECOND_MODEL_KEY", "fixture-second")
-    monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "global-unchanged")
-    monkeypatch.setenv("COMMONTRACE_LLM_CACHE", "0")
+    monkeypatch.setenv("UNIMEM_LLM_API_KEY", "global-unchanged")
+    monkeypatch.setenv("UNIMEM_LLM_CACHE", "0")
     seen = []
 
     def complete(config, prompt):
@@ -91,7 +91,7 @@ def test_factory_keeps_credentials_and_models_per_instance(monkeypatch):
     assert first.generate("one") == "first"
     assert second.complete("two") == ("second", {"input_tokens": 1})
     assert seen == [("first", "fixture-first", "one"), ("second", "fixture-second", "two")]
-    assert llm.env_secret("COMMONTRACE_LLM_API_KEY") == "global-unchanged"
+    assert llm.env_secret("UNIMEM_LLM_API_KEY") == "global-unchanged"
     with pytest.raises(ConfigurationError):
         providers.LLMFactory.create("fixture-model", {"provider": "anthropic", "model": "test"})
 
@@ -142,7 +142,7 @@ def test_embedding_registration_is_atomic_under_concurrent_startup(monkeypatch):
 
 
 def test_custom_embedding_is_available_without_sentence_transformers(monkeypatch):
-    from commontrace.conversation import embed
+    from unimem.conversation import embed
 
     monkeypatch.setitem(embeddings._CUSTOM, "fixture2", lambda spec: SimpleNamespace(spec=spec))
     monkeypatch.setattr(embed.importlib.util, "find_spec", lambda name: object() if name == "numpy" else None)
@@ -152,7 +152,7 @@ def test_custom_embedding_is_available_without_sentence_transformers(monkeypatch
 def test_legacy_wrong_dimension_vectors_are_recomputed(tmp_path, monkeypatch):
     np = pytest.importorskip("numpy")
 
-    from commontrace.conversation import embed
+    from unimem.conversation import embed
 
     calls = []
 
@@ -216,7 +216,7 @@ def test_registered_backend_cannot_silently_override_authenticated_scope(tmp_pat
 
 def test_insert_prepares_only_redacted_content_and_reuses_vectors(tmp_path, monkeypatch):
     pytest.importorskip("numpy")
-    from commontrace.conversation.store import Store
+    from unimem.conversation.store import Store
 
     calls = []
 
@@ -243,7 +243,7 @@ def test_insert_prepares_only_redacted_content_and_reuses_vectors(tmp_path, monk
 
 def test_insert_cache_failure_preserves_source_and_hides_provider_secrets(tmp_path, monkeypatch):
     pytest.importorskip("numpy")
-    from commontrace.conversation.store import Store
+    from unimem.conversation.store import Store
 
     class Broken:
         def __init__(self, spec):
@@ -265,7 +265,7 @@ def test_gateway_insertion_cache_flags_are_typed_and_wired(tmp_path, monkeypatch
     pytest.importorskip("numpy")
     import json
 
-    from commontrace import gateway
+    from unimem import gateway
 
     class Fixed:
         def __init__(self, spec):

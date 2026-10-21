@@ -6,7 +6,7 @@ import pytest
 import yaml
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CHART = os.path.join(ROOT, "deploy", "helm", "commontrace-hub")
+CHART = os.path.join(ROOT, "deploy", "helm", "unimem-hub")
 ARGS = ["--set", "image.repository=r.example/hub", "--set", "image.tag=1.0.0", "--set", "existingSecret=s"]
 
 
@@ -34,9 +34,9 @@ def test_every_metric_the_alerts_use_is_one_the_hub_exports():
     import re
     source = open(os.path.join(ROOT, "hub", "observability.py"), encoding="utf-8").read()
     with open(os.path.join(CHART, "files", "slo-alerts.yaml"), encoding="utf-8") as fh:
-        used = set(re.findall(r"commontrace_hub_[a-z_]+", fh.read()))
-    exported = set(re.findall(r"commontrace_hub_[a-z_]+", source))
-    missing = {m for m in used if not m.startswith("commontrace_hub:") and
+        used = set(re.findall(r"unimem_hub_[a-z_]+", fh.read()))
+    exported = set(re.findall(r"unimem_hub_[a-z_]+", source))
+    missing = {m for m in used if not m.startswith("unimem_hub:") and
                re.sub(r"_(bucket|count|sum)$", "", m) not in exported and m not in exported}
     assert not missing, missing
 

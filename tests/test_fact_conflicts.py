@@ -6,13 +6,13 @@ from datetime import datetime, timezone
 
 import pytest
 
-from commontrace import fact_conflicts, hierarchical
+from unimem import fact_conflicts, hierarchical
 
 
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch):
-    for name in ("COMMONTRACE_FACT_CONFLICTS", "COMMONTRACE_FACT_CONFLICT_JUDGE", "COMMONTRACE_FACT_DEDUP",
-                 "COMMONTRACE_FACT_EMBEDDER", "COMMONTRACE_FACT_EMBEDDER_PATH"):
+    for name in ("UNIMEM_FACT_CONFLICTS", "UNIMEM_FACT_CONFLICT_JUDGE", "UNIMEM_FACT_DEDUP",
+                 "UNIMEM_FACT_EMBEDDER", "UNIMEM_FACT_EMBEDDER_PATH"):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -47,7 +47,7 @@ def test_a_negation_is_flagged_by_default_and_changes_nothing(tmp_path):
 
 
 def test_supersede_mode_closes_the_contradicted_fact(tmp_path, monkeypatch):
-    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "supersede")
+    monkeypatch.setenv("UNIMEM_FACT_CONFLICTS", "supersede")
     root = str(tmp_path)
     old, _ = hierarchical.add_fact(root, "Alice likes spicy food a lot")
     new, _ = hierarchical.add_fact(root, "Alice does not like spicy food a lot")
@@ -59,7 +59,7 @@ def test_supersede_mode_closes_the_contradicted_fact(tmp_path, monkeypatch):
 
 
 def test_value_changes_are_only_flagged_even_in_supersede_mode(tmp_path, monkeypatch):
-    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "supersede")
+    monkeypatch.setenv("UNIMEM_FACT_CONFLICTS", "supersede")
     root = str(tmp_path)
     old, _ = hierarchical.add_fact(root, "Bob has 2 cats at home")
     new, _ = hierarchical.add_fact(root, "Bob has 3 cats at home")
@@ -78,10 +78,10 @@ def test_numbered_templates_are_identifiers_not_contradictions(tmp_path):
 
 @pytest.mark.parametrize("backend", ["jsonl", "sqlite"])
 def test_a_batch_compares_each_fact_only_with_earlier_ones(tmp_path, monkeypatch, backend):
-    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "supersede")
+    monkeypatch.setenv("UNIMEM_FACT_CONFLICTS", "supersede")
     root = str(tmp_path)
     if backend == "sqlite":
-        from commontrace import fact_store
+        from unimem import fact_store
 
         fact_store.migrate(root)
     [(old, _), (new, _)] = hierarchical.add_facts(root, [{"statement": "Alice likes spicy food a lot"},
@@ -92,10 +92,10 @@ def test_a_batch_compares_each_fact_only_with_earlier_ones(tmp_path, monkeypatch
 
 
 def test_batch_conflicts_reuse_staged_slot_features(tmp_path, monkeypatch):
-    from commontrace import fact_store
+    from unimem import fact_store
 
-    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "flag")
-    monkeypatch.setenv("COMMONTRACE_FACT_DEDUP", "exact")
+    monkeypatch.setenv("UNIMEM_FACT_CONFLICTS", "flag")
+    monkeypatch.setenv("UNIMEM_FACT_DEDUP", "exact")
     root = str(tmp_path)
     fact_store.migrate(root)
     original = fact_conflicts.slot_key
@@ -117,11 +117,11 @@ def test_batch_conflicts_reuse_staged_slot_features(tmp_path, monkeypatch):
 
 
 def test_batch_llm_conflict_judge_keeps_eager_fts_candidates_beyond_overlay_cap(tmp_path, monkeypatch):
-    from commontrace import fact_embeddings, fact_store, fact_vector_projection
+    from unimem import fact_embeddings, fact_store, fact_vector_projection
 
-    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "flag")
-    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICT_JUDGE", "llm")
-    monkeypatch.setenv("COMMONTRACE_FACT_DEDUP", "exact")
+    monkeypatch.setenv("UNIMEM_FACT_CONFLICTS", "flag")
+    monkeypatch.setenv("UNIMEM_FACT_CONFLICT_JUDGE", "llm")
+    monkeypatch.setenv("UNIMEM_FACT_DEDUP", "exact")
     root = str(tmp_path)
     fact_store.migrate(root)
     target = "Vault protects classified material after review"
@@ -157,17 +157,17 @@ def test_off_mode_and_scope_isolation(tmp_path, monkeypatch):
     hierarchical.add_fact(root, "Alice likes spicy food a lot", scopes=["tenant-a"])
     hierarchical.add_fact(root, "Alice does not like spicy food a lot", scopes=["tenant-b"])
     assert fact_conflicts.pending(root) == []
-    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "off")
+    monkeypatch.setenv("UNIMEM_FACT_CONFLICTS", "off")
     hierarchical.add_fact(root, "Carol enjoys long morning runs")
     hierarchical.add_fact(root, "Carol does not enjoy long morning runs")
     assert fact_conflicts.pending(root) == []
-    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "always")
-    with pytest.raises(ValueError, match="COMMONTRACE_FACT_CONFLICTS"):
+    monkeypatch.setenv("UNIMEM_FACT_CONFLICTS", "always")
+    with pytest.raises(ValueError, match="UNIMEM_FACT_CONFLICTS"):
         hierarchical.add_fact(root, "Dave reads every evening")
 
 
 def test_append_only_admission_flags_but_never_supersedes(tmp_path, monkeypatch):
-    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "supersede")
+    monkeypatch.setenv("UNIMEM_FACT_CONFLICTS", "supersede")
     root = str(tmp_path)
     [(old, _)] = hierarchical.append_facts(root, [{"statement": "Alice likes spicy food a lot"}])
     [(new, _)] = hierarchical.append_facts(root, [{"statement": "Alice does not like spicy food a lot"}])
@@ -177,8 +177,8 @@ def test_append_only_admission_flags_but_never_supersedes(tmp_path, monkeypatch)
 
 
 def test_the_llm_judge_sees_candidates_and_only_offered_ids_count(tmp_path, monkeypatch):
-    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICT_JUDGE", "llm")
-    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "supersede")
+    monkeypatch.setenv("UNIMEM_FACT_CONFLICT_JUDGE", "llm")
+    monkeypatch.setenv("UNIMEM_FACT_CONFLICTS", "supersede")
     root = str(tmp_path)
     old, _ = hierarchical.add_fact(root, "Bob has 2 cats at home")
     seen, judge = [], fact_conflicts.judge
@@ -200,7 +200,7 @@ def test_the_llm_judge_sees_candidates_and_only_offered_ids_count(tmp_path, monk
 
 
 def test_known_at_reconstructs_what_the_store_believed(tmp_path, monkeypatch):
-    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "supersede")
+    monkeypatch.setenv("UNIMEM_FACT_CONFLICTS", "supersede")
     root = str(tmp_path)
     old, _ = hierarchical.add_fact(root, "Alice likes spicy food a lot")
     time.sleep(0.02)

@@ -7,17 +7,17 @@ from __future__ import annotations
 
 import pytest
 
-from commontrace import llm, providers, rerank_arm, reranking, retrieval
-from commontrace.exceptions import CapabilityError, ConfigurationError
-from commontrace.rerankers_hosted import (
+from unimem import llm, providers, rerank_arm, reranking, retrieval
+from unimem.exceptions import CapabilityError, ConfigurationError
+from unimem.rerankers_hosted import (
     MAX_CHARS,
     MAX_DOCUMENTS,
     HostedReranker,
     LLMReranker,
     parse_permutation,
 )
-from commontrace.reranking import RerankError
-from commontrace.retrieval import RankedLesson
+from unimem.reranking import RerankError
+from unimem.retrieval import RankedLesson
 
 DOCS = ["the sky is blue", "postgres failover resets the pool", "cats sleep a lot"]
 
@@ -92,7 +92,7 @@ def test_default_transport_is_llm_post_json(monkeypatch):
 
 
 def test_offline_mode_refuses_the_hosted_call(monkeypatch):
-    monkeypatch.setenv("COMMONTRACE_OFFLINE", "1")
+    monkeypatch.setenv("UNIMEM_OFFLINE", "1")
     with pytest.raises(llm.LLMUnavailable, match="offline"):
         HostedReranker("cohere").rerank("q", ["a", "b"])
 

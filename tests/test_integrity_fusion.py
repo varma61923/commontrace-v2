@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from commontrace import integrity, retrieval
+from unimem import integrity, retrieval
 
 
 def _row(i, lesson, relevance, scorer, floor=0.04):

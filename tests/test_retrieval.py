@@ -1,4 +1,4 @@
-from commontrace import retrieval
+from unimem import retrieval
 
 
 def _lesson(name, description="", applies_when="", tags=None, domain="", importance=3, uses=0):

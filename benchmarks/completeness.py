@@ -5,7 +5,7 @@ asks whether the gold evidence turn *refs* survived into the assembled context.
 This grader asks the complementary lexical question on the retrieved context
 itself: does the context actually contain the content of the gold evidence?
 
-The pure logic lives in `commontrace.completeness`, so runtime recall grades
+The pure logic lives in `unimem.completeness`, so runtime recall grades
 its contexts the same way; this module re-exports it unchanged.
 
 Buckets:
@@ -16,7 +16,7 @@ Each element is reported under `present` or `missing` by the same key.
 """
 from __future__ import annotations
 
-from commontrace.completeness import (  # noqa: F401 - the benchmark's public names
+from unimem.completeness import (  # noqa: F401 - the benchmark's public names
     COMPLETE,
     INSUFFICIENT,
     PARTIAL,

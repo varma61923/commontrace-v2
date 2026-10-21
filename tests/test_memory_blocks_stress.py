@@ -8,13 +8,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pytest
 
-from commontrace import memory_blocks
+from unimem import memory_blocks
 
 
 @pytest.fixture
 def store(tmp_path):
     root = str(tmp_path / "fleet")
-    os.makedirs(os.path.join(root, ".commontrace"), exist_ok=True)
+    os.makedirs(os.path.join(root, ".unimem"), exist_ok=True)
     return root
 
 

@@ -5,8 +5,8 @@ import os
 
 import pytest
 
-from commontrace import frontmatter, gateway, lesson_admission, lesson_io, workbench
-from commontrace.cli import main
+from unimem import frontmatter, gateway, lesson_admission, lesson_io, workbench
+from unimem.cli import main
 from tests.test_workbench import TOKEN, _lesson, call
 
 

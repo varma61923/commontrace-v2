@@ -6,7 +6,7 @@
 
 ## Context & Objectives
 
-CommonTrace / UniMem transition from an observational memory measurement tool into a governed, causal memory system with verifiable guarantees, policies, pricing, and physical AI safety controls. The implementation encompasses Wave 1 (F1–F22) and Wave 2 (G1–G30), providing complete coverage across software agents, multi-agent fleet swarms, and robotics.
+UniMem / UniMem transition from an observational memory measurement tool into a governed, causal memory system with verifiable guarantees, policies, pricing, and physical AI safety controls. The implementation encompasses Wave 1 (F1–F22) and Wave 2 (G1–G30), providing complete coverage across software agents, multi-agent fleet swarms, and robotics.
 
 ## Verification Baseline Metrics
 
@@ -17,17 +17,17 @@ CommonTrace / UniMem transition from an observational memory measurement tool in
    - **Failed:** 0 (100% pass rate)
 
 2. **Test Coverage Gate:**
-   - **Measured Coverage:** 85.62% line coverage across the entire `commontrace` codebase.
+   - **Measured Coverage:** 85.62% line coverage across the entire `unimem` codebase.
    - **Gate Requirement:** $\ge 80.00\%$ (`--cov-fail-under=80`). Status: **GREEN**.
-   - **Branch Coverage Ratchet:** `commontrace.fact_index` achieves 95.84% branch-inclusive coverage ($\ge 95\%$ ratchet).
+   - **Branch Coverage Ratchet:** `unimem.fact_index` achieves 95.84% branch-inclusive coverage ($\ge 95\%$ ratchet).
 
 3. **Static Analysis & Type Integrity:**
    - **Strict Type Checking (mypy):** 118 pure-logic modules listed in CI security scan pass under strict typing flags (`--strict --follow-imports=silent --ignore-missing-imports`) with 0 errors.
-   - **Security Static Analysis (Bandit):** 0 Medium / 0 High severity issues across 132,528 lines of code (`bandit -r commontrace/ hub/ -x "*/tests/*,*/test_*" -ll`).
+   - **Security Static Analysis (Bandit):** 0 Medium / 0 High severity issues across 132,528 lines of code (`bandit -r unimem/ hub/ -x "*/tests/*,*/test_*" -ll`).
    - **Code Linting:** Ruff line-length $\le 120$ targeting Python 3.10+ passes with zero violations (`make lint`).
 
 4. **Architectural & Boundary Audits:**
-   - **Graphify Module Budget:** Exactly 398 `.py` source modules under `commontrace/`, conforming to the `--max-modules 398` boundary in `.github/workflows/graphify.yml`.
+   - **Graphify Module Budget:** Exactly 398 `.py` source modules under `unimem/`, conforming to the `--max-modules 398` boundary in `.github/workflows/graphify.yml`.
    - **Docker Hub Allowlist:** `hub/tests/test_image_contents.py` passes 11/11 tests, ensuring all lazily-loaded modules in Hub are explicitly allowlisted in `.dockerignore`.
    - **OpenAPI Schema Parity:** `scripts/export_openapi.py --check` and `scripts/export_hub_openapi.py --check` match the checked-in API contracts.
 

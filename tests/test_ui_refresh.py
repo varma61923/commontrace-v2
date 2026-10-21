@@ -7,7 +7,7 @@ import subprocess
 import pytest
 
 NODE = shutil.which("node")
-SOURCE = pathlib.Path(__file__).resolve().parents[1] / "commontrace" / "ui" / "app.js"
+SOURCE = pathlib.Path(__file__).resolve().parents[1] / "unimem" / "ui" / "app.js"
 pytestmark = pytest.mark.skipif(NODE is None, reason="Node is needed to execute the frontend controller")
 
 

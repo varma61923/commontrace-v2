@@ -9,9 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from commontrace import explorer, frontmatter, gateway, hierarchical, lesson_admission, recall
-from commontrace.conversation.coverage import assess
-from commontrace.fact_evidence import EvidenceResolver, bind_evidence
+from unimem import explorer, frontmatter, gateway, hierarchical, lesson_admission, recall
+from unimem.conversation.coverage import assess
+from unimem.fact_evidence import EvidenceResolver, bind_evidence
 
 SCORERS = ("overlap-v1", "bm25-v1")
 
@@ -82,7 +82,7 @@ def test_reused_ids_in_different_roots_do_not_share_rows_or_postings(tmp_path, s
 
 
 def test_returned_rows_and_nested_fields_cannot_mutate_a_cached_snapshot(tmp_path):
-    from commontrace import fact_index
+    from unimem import fact_index
 
     premise = add(tmp_path, "Instrument recorded the Lumen timeout", scopes=["alpha"])
     receipt = bind_evidence(str(tmp_path), "fact", premise.id)
@@ -105,7 +105,7 @@ def test_returned_rows_and_nested_fields_cannot_mutate_a_cached_snapshot(tmp_pat
 
 
 def test_held_views_own_mutable_copies_but_reject_access_after_source_changes(tmp_path):
-    from commontrace import fact_index
+    from unimem import fact_index
 
     fact = add(tmp_path, "Lumen timeout is five seconds", scopes=["alpha"])
     first = fact_index.snapshot_facts(str(tmp_path))
@@ -127,7 +127,7 @@ def test_held_views_own_mutable_copies_but_reject_access_after_source_changes(tm
 
 
 def test_statistics_registration_race_cannot_publish_an_orphan_old_generation(tmp_path, monkeypatch):
-    from commontrace import fact_index
+    from unimem import fact_index
 
     add(tmp_path, "Lumen timeout is five seconds")
     fact_index.clear_cache()
@@ -153,7 +153,7 @@ def test_statistics_registration_race_cannot_publish_an_orphan_old_generation(tm
 
 
 def test_oversized_category_keys_do_not_escape_statistics_retention_budget(tmp_path):
-    from commontrace import fact_index
+    from unimem import fact_index
 
     add(tmp_path, "Lumen timeout is five seconds")
     fact_index.clear_cache()
@@ -165,7 +165,7 @@ def test_oversized_category_keys_do_not_escape_statistics_retention_budget(tmp_p
 
 @pytest.mark.parametrize("atomic", [False, True])
 def test_another_process_same_size_restored_mtime_write_invalidates_hot_snapshot(tmp_path, atomic):
-    from commontrace import fact_index
+    from unimem import fact_index
 
     fact = add(tmp_path, "Lumen timeout is five seconds")
     path = file_path(tmp_path)
@@ -181,7 +181,7 @@ def test_another_process_same_size_restored_mtime_write_invalidates_hot_snapshot
 
 
 def test_retained_symlink_api_invalidates_on_retargeting(tmp_path):
-    from commontrace import fact_index
+    from unimem import fact_index
 
     one, two, routed = tmp_path / "one", tmp_path / "two", tmp_path / "routed"
     first = add(one, "Lumen timeout is five seconds")
@@ -203,7 +203,7 @@ def test_retained_symlink_api_invalidates_on_retargeting(tmp_path):
 @pytest.mark.parametrize("scorer", SCORERS)
 @pytest.mark.parametrize("change", ["revoke", "body", "restore_after_revoke"])
 def test_lesson_source_trust_is_current_while_fact_generation_stays_hot(tmp_path, scorer, change):
-    from commontrace import fact_index
+    from unimem import fact_index
 
     lesson = tmp_path / "memory" / "lessons" / "lesson_lumen.md"
     lesson.parent.mkdir(parents=True)
@@ -231,7 +231,7 @@ def test_lesson_source_trust_is_current_while_fact_generation_stays_hot(tmp_path
 
 @pytest.mark.parametrize("scorer", SCORERS)
 def test_approval_policy_change_invalidates_legacy_dependencies_without_fact_file_change(tmp_path, scorer):
-    from commontrace import fact_index
+    from unimem import fact_index
 
     lesson = tmp_path / "memory" / "lessons" / "lesson_lumen.md"
     lesson.parent.mkdir(parents=True)
@@ -304,7 +304,7 @@ def test_explicit_invalid_scorer_never_coalesces_to_a_default(tmp_path, scorer):
 def test_candidate_materialization_during_crossprocess_replacement_retries_the_whole_snapshot(
     tmp_path, monkeypatch, scorer,
 ):
-    from commontrace import fact_index
+    from unimem import fact_index
 
     add(tmp_path, "Lumen timeout is five seconds")
     add(tmp_path, "Orchid timeout is five seconds")
@@ -326,7 +326,7 @@ def test_candidate_materialization_during_crossprocess_replacement_retries_the_w
 
 
 def test_source_replacement_during_cold_read_cannot_publish_the_old_payload(tmp_path, monkeypatch):
-    from commontrace import _jsonl, fact_index
+    from unimem import _jsonl, fact_index
 
     add(tmp_path, "Lumen timeout is five seconds")
     reader = _jsonl.read_rows
@@ -347,7 +347,7 @@ def test_source_replacement_during_cold_read_cannot_publish_the_old_payload(tmp_
 
 
 def test_missing_generation_is_invalidated_on_creation_and_deletion(tmp_path):
-    from commontrace import fact_index
+    from unimem import fact_index
 
     absent = fact_index.snapshot_facts(str(tmp_path))
     assert len(absent) == 0 and absent.generation is None
@@ -381,7 +381,7 @@ def test_public_recall_and_explorer_strictly_validate_explicit_scorer(tmp_path, 
 @pytest.mark.parametrize("scorer", ["", "BM25", "bm25-v1\n"])
 def test_actual_mcp_envelopes_reject_unknown_scorer(tmp_path, scorer):
     pytest.importorskip("mcp")
-    from commontrace import mcp_server
+    from unimem import mcp_server
 
     add(tmp_path, "Lumen timeout is five seconds")
     server = mcp_server.build_server(str(tmp_path))
@@ -404,7 +404,7 @@ def test_actual_mcp_schema_rejects_non_string_scorer(tmp_path, scorer):
     except ImportError:
         from mcp.server.fastmcp.exceptions import ToolError
 
-    from commontrace import mcp_server
+    from unimem import mcp_server
 
     server = mcp_server.build_server(str(tmp_path))
     for name, field in (("memory_recall", "fact_scorer"), ("query_facts", "scorer")):

@@ -6,8 +6,8 @@ import json
 
 import pytest
 
-from commontrace.conversation import AsyncStore, Options, Store
-from commontrace.frameworks import FrameworkUnavailable, MemoryTools
+from unimem.conversation import AsyncStore, Options, Store
+from unimem.frameworks import FrameworkUnavailable, MemoryTools
 
 
 def tools(root: str, space: str = "owner-a", session: str = "session-a") -> MemoryTools:

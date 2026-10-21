@@ -12,7 +12,7 @@ import math
 import sys
 
 from benchmarks import conversation_bench
-from commontrace.conversation import search, timeparse
+from unimem.conversation import search, timeparse
 
 
 def _session_prior_order(store, ranked: list[int], alpha: float) -> list[int]:

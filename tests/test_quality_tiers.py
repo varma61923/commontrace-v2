@@ -1,6 +1,6 @@
 import json
 
-from commontrace import entity_resolution, fact_conflicts, graph, hierarchical
+from unimem import entity_resolution, fact_conflicts, graph, hierarchical
 
 
 def test_joint_judgment_bounds_and_disjoint_decisions(tmp_path):
@@ -14,9 +14,9 @@ def test_joint_judgment_bounds_and_disjoint_decisions(tmp_path):
 
 
 def test_joint_judge_drives_temporal_supersede_and_preserves_old_valid_time(tmp_path, monkeypatch):
-    monkeypatch.setenv('COMMONTRACE_FACT_CONFLICT_JUDGE', 'llm')
-    monkeypatch.setenv('COMMONTRACE_FACT_CONFLICTS', 'supersede')
-    monkeypatch.setenv('COMMONTRACE_FACT_DEDUP', 'exact')
+    monkeypatch.setenv('UNIMEM_FACT_CONFLICT_JUDGE', 'llm')
+    monkeypatch.setenv('UNIMEM_FACT_CONFLICTS', 'supersede')
+    monkeypatch.setenv('UNIMEM_FACT_DEDUP', 'exact')
     calls = []
 
     def complete(prompt):
@@ -25,7 +25,7 @@ def test_joint_judge_drives_temporal_supersede_and_preserves_old_valid_time(tmp_
         fact_id = next(iter(offered))
         return json.dumps({'duplicates': [], 'contradictions': [fact_id]}), {}
 
-    monkeypatch.setattr('commontrace.llm.complete', complete)
+    monkeypatch.setattr('unimem.llm.complete', complete)
     root = str(tmp_path)
     old, _ = hierarchical.add_fact(root, 'Alice likes spicy food a lot', valid_from='2024-01-01')
     new, _ = hierarchical.add_fact(root, 'Alice does not like spicy food a lot', valid_from='2025-01-01')

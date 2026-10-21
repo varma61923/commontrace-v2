@@ -7,7 +7,7 @@ import random
 
 import pytest
 
-from commontrace import (
+from unimem import (
     agent_hooks,
     assurance,
     compression,
@@ -20,7 +20,7 @@ from commontrace import (
     trace_io,
     wrap_openai,
 )
-from commontrace.client import MemoryClient
+from unimem.client import MemoryClient
 
 
 def test_cjk_native_text_and_derived_forgetting(tmp_path):
@@ -224,7 +224,7 @@ def test_compression_real_experiment_promotion_and_raw_control(tmp_path):
 
 
 def test_scoped_directives_and_mutating_evaluators_cannot_bypass_vote(tmp_path):
-    from commontrace import memory_control
+    from unimem import memory_control
 
     root = str(tmp_path)
     holdout_io.configure(root, rate=0, salt="test")
@@ -273,7 +273,7 @@ def test_origin_ids_cannot_cross_record_kinds(tmp_path):
 
 
 def test_retrospective_policy_and_fake_compression_status_never_admit(tmp_path):
-    from commontrace import memory_control
+    from unimem import memory_control
 
     root = str(tmp_path)
     _policy_log(root, 50)
@@ -311,7 +311,7 @@ def test_action_vote_rechecks_revocation_after_judges(tmp_path):
 
 
 def test_rebuildable_markdown_store_does_not_serve_revoked_index(tmp_path):
-    from commontrace.store import SQLiteStore
+    from unimem.store import SQLiteStore
 
     root = str(tmp_path)
     store = SQLiteStore(root)
@@ -324,7 +324,7 @@ def test_rebuildable_markdown_store_does_not_serve_revoked_index(tmp_path):
 
 
 def test_provider_sync_pinned_origin_authority_and_failure_watermark(tmp_path):
-    from commontrace.connectors.knowledge import sync
+    from unimem.connectors.knowledge import sync
 
     root = str(tmp_path)
     payload = json.dumps({"messages": [{"text": "Office is 東京"}],
@@ -347,7 +347,7 @@ def test_provider_sync_pinned_origin_authority_and_failure_watermark(tmp_path):
 
 
 def test_query_plan_rejects_executable_or_unbounded_output(tmp_path):
-    from commontrace.query_plan import plan, retrieve
+    from unimem.query_plan import plan, retrieve
 
     root = str(tmp_path)
     MemoryClient(root).add("Tokyo office")
@@ -363,7 +363,7 @@ def test_query_plan_rejects_executable_or_unbounded_output(tmp_path):
 
 @pytest.mark.parametrize("provider", ["drive", "onedrive"])
 def test_provider_document_json_is_content_not_an_api_envelope(tmp_path, provider):
-    from commontrace.connectors.knowledge import sync
+    from unimem.connectors.knowledge import sync
 
     text = '{"configuration":"Tokyo office", "error":"example field"}'
     report = sync(str(tmp_path), provider, "document", token="secret", context=["agent:alice"],
@@ -375,7 +375,7 @@ def test_provider_document_json_is_content_not_an_api_envelope(tmp_path, provide
 
 
 def test_native_provider_rich_text_and_graphql_pagination(tmp_path):
-    from commontrace.connectors.knowledge import _text, sync
+    from unimem.connectors.knowledge import _text, sync
 
     assert "Tokyo" in _text({"body": {"storage": {"value": "<p>Tokyo office</p>"}}})
     assert "Tokyo" in _text({"fields": {"summary": "Tokyo office"}})
@@ -390,7 +390,7 @@ def test_native_provider_rich_text_and_graphql_pagination(tmp_path):
 
 @pytest.mark.parametrize("context", [[" "], ["agent:a\n"], [], [""]])
 def test_provider_rejects_empty_or_control_owner_scope_before_fetch(tmp_path, context):
-    from commontrace.connectors.knowledge import sync
+    from unimem.connectors.knowledge import sync
 
     def fetch(_):
         pytest.fail("an invalid owner scope reached the provider")

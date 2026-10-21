@@ -7,10 +7,10 @@ memory stores and AgentCore, and does automatic withdrawal act in time?
 
 Slow and opt-in: it is evidence, not a unit test. Each run drives the whole path
 a customer's agent drives -- a vendor-shaped client, its adapter, `MeasuredMemory`,
-the holdout log, and the same analysis `commontrace experiment` runs -- with
+the holdout log, and the same analysis `unimem experiment` runs -- with
 outcomes drawn HERE from a planted truth, never read back from anything
-CommonTrace computed. The fakes return each SDK's documented shape (as read from
-its published source; see commontrace/memory_adapters.py), not live accounts.
+UniMem computed. The fakes return each SDK's documented shape (as read from
+its published source; see unimem/memory_adapters.py), not live accounts.
 
 COVERAGE. Three memories per run: one that raises the success rate by 20pp, one
 that lowers it by 20pp, one that does nothing. Per adapter, over the seeds:
@@ -51,10 +51,10 @@ import tempfile
 from concurrent.futures import ProcessPoolExecutor
 from types import SimpleNamespace as NS
 
-from commontrace import experiment, holdout_io, integrity, retrieval_io
-from commontrace import memory_adapters as ma
-from commontrace.commands import experiment_cmd
-from commontrace.measure import CausalMemory
+from unimem import experiment, holdout_io, integrity, retrieval_io
+from unimem import memory_adapters as ma
+from unimem.commands import experiment_cmd
+from unimem.measure import CausalMemory
 
 GOOD, BAD, NEUTRAL = "good", "bad", "neutral"
 EFFECTS = {GOOD: +0.20, BAD: -0.20, NEUTRAL: 0.0}
@@ -116,7 +116,7 @@ ADAPTERS = {"mem0": _mem0, "letta": _letta, "zep": _zep, "claude-memory-store": 
 
 def run_seed(adapter: str, seed: int, occasions: int = OCCASIONS) -> dict:
     """One run: returns {memory: {verdict, effect, ci_low, ci_high}} and the integrity verdict."""
-    root = tempfile.mkdtemp(prefix=f"commontrace-cov-{adapter}-")
+    root = tempfile.mkdtemp(prefix=f"unimem-cov-{adapter}-")
     try:
         holdout_io.configure(root, rate=RATE, salt=f"cov-{adapter}-{seed}")
         memory = ma.MeasuredMemory(ADAPTERS[adapter](), root=root, on_harm="inform")
@@ -184,7 +184,7 @@ def coverage(adapters: list[str], seeds: int, jobs: int, occasions: int = OCCASI
 
 def _withdrawal_seed(args: tuple) -> dict:
     seed, max_occasions = args
-    root = tempfile.mkdtemp(prefix="commontrace-wd-")
+    root = tempfile.mkdtemp(prefix="unimem-wd-")
     try:
         holdout_io.configure(root, rate=RATE, salt=f"wd-{seed}")
         path = retrieval_io.config_path(root)
@@ -236,7 +236,7 @@ EDIT_AT = 0.5
 
 def _variant_seed(args: tuple) -> dict:
     variant, seed, occasions = args
-    root = tempfile.mkdtemp(prefix=f"commontrace-{variant}-")
+    root = tempfile.mkdtemp(prefix=f"unimem-{variant}-")
     try:
         holdout_io.configure(root, rate=RATE, salt=f"{variant}-{seed}")
         texts = dict(TEXT)

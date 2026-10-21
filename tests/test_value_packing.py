@@ -4,7 +4,7 @@ import random
 
 import pytest
 
-from commontrace import compression, dosage
+from unimem import compression, dosage
 
 
 def test_seeded_knapsack_dominates_relevance_under_fixed_budget():

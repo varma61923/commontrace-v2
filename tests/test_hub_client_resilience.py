@@ -1,6 +1,6 @@
 import pytest
 
-from commontrace import hub_client
+from unimem import hub_client
 
 
 class TestRetryPolicy:

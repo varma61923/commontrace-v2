@@ -104,8 +104,8 @@ class _Robot:
 
 
 def _verdicts(root: str) -> dict:
-    from commontrace import experiment
-    from commontrace.commands import experiment_cmd
+    from unimem import experiment
+    from unimem.commands import experiment_cmd
 
     rows, _rate, _corrupt = experiment_cmd._load(root)
     rows, _salt, _other = experiment_cmd.scope_to_current_salt(root, rows)
@@ -120,7 +120,7 @@ def _percentile(values: list[float], q: float) -> float:
 
 
 def run(*, occasions: int = 300, seed: int = 0, workdir: str | None = None) -> dict:
-    from commontrace import fleet, gateway, holdout_io
+    from unimem import fleet, gateway, holdout_io
 
     base = workdir or tempfile.mkdtemp(prefix="robot-fleet-")
     rng = random.Random(seed)

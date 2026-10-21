@@ -3,16 +3,16 @@ from __future__ import annotations
 
 import pytest
 
-from commontrace import capability_io as io
-from commontrace import change_stream, lineage, nextwave_store
-from commontrace.memory_journal import Journal
-from commontrace.memory_record import MemoryRecord
+from unimem import capability_io as io
+from unimem import change_stream, lineage, nextwave_store
+from unimem.memory_journal import Journal
+from unimem.memory_record import MemoryRecord
 from tests.test_capabilities import policy
 from tests.test_capability_io import authenticate, fixed_time, prepare, proof  # noqa: F401 - shared clock fixture
 
 
 def test_runtime_class_scope_trust_and_typed_identity(tmp_path):
-    from commontrace import hierarchical, memory_authority
+    from unimem import hierarchical, memory_authority
 
     root, _ = prepare(tmp_path)
     scope = {"labels": ["project:a"]}
@@ -92,8 +92,8 @@ def test_rolled_back_update_changes_neither_provenance_nor_stream(tmp_path):
 
 
 def test_capture_replay_and_capture_only_erase_do_not_change_unrelated_authority(tmp_path):
-    from commontrace import frontier_protocol as fp
-    from commontrace import memory_authority
+    from unimem import frontier_protocol as fp
+    from unimem import memory_authority
 
     root, _ = prepare(tmp_path)
     journal = Journal(root)

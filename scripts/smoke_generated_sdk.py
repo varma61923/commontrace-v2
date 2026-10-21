@@ -9,15 +9,15 @@ import tempfile
 import threading
 from pathlib import Path
 
-from commontrace import holdout_io, memory_control
-from commontrace.gateway import Gateway, make_http_server
+from unimem import holdout_io, memory_control
+from unimem.gateway import Gateway, make_http_server
 
 SMOKE = r'''
 const assert = require('node:assert/strict');
 const {MemoryApi, ConversationsApi, HistoryApi, Configuration, ResponseError} =
-    require(process.env.COMMONTRACE_GENERATED_SDK);
-const configuration = new Configuration({basePath: process.env.COMMONTRACE_SMOKE_URL,
-    accessToken: process.env.COMMONTRACE_SMOKE_TOKEN});
+    require(process.env.UNIMEM_GENERATED_SDK);
+const configuration = new Configuration({basePath: process.env.UNIMEM_SMOKE_URL,
+    accessToken: process.env.UNIMEM_SMOKE_TOKEN});
 const api = new MemoryApi(configuration);
 (async () => {
     const added = await api.memoryAdd({addRequest: {text: 'Office is Tokyo', context: ['user:smoke']}});
@@ -99,7 +99,7 @@ def main() -> None:
     module = args.sdk.resolve()/'dist'/'index.js'
     if not module.is_file():
         parser.error('compile the generated client before the smoke test')
-    with tempfile.TemporaryDirectory(prefix='commontrace-generated-sdk-') as root:
+    with tempfile.TemporaryDirectory(prefix='unimem-generated-sdk-') as root:
         holdout_io.configure(root, rate=0, salt='generated-sdk-smoke')
         memory_control.directive(root, 'Deployment prohibited', deny_tools=['deploy'])
         token = secrets.token_urlsafe(32)
@@ -107,9 +107,9 @@ def main() -> None:
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            environment = {**os.environ, 'COMMONTRACE_GENERATED_SDK': str(module),
-                           'COMMONTRACE_SMOKE_URL': 'http://127.0.0.1:'+str(server.server_port),
-                           'COMMONTRACE_SMOKE_TOKEN': token}
+            environment = {**os.environ, 'UNIMEM_GENERATED_SDK': str(module),
+                           'UNIMEM_SMOKE_URL': 'http://127.0.0.1:'+str(server.server_port),
+                           'UNIMEM_SMOKE_TOKEN': token}
             subprocess.run(['node', '-e', SMOKE], env=environment, check=True, timeout=60)
         finally:
             server.shutdown()

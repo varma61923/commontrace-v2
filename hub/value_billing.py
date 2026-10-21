@@ -57,7 +57,7 @@ def warranty_line(root: str, certificate: dict, *, contract: str, memory: str,
     Existing positive usage meter events and their canonical hashes stay intact.
     A refund consumer uses the stable ledger id as its provider idempotency key.
     """
-    from commontrace import valuation
+    from unimem import valuation
 
     credit = valuation.warranty_credit(root, certificate, contract=contract, memory=memory,
                                       minimum_lift=minimum_lift, paid_cents=paid_cents)

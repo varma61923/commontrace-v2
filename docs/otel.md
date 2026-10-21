@@ -8,12 +8,12 @@ records the operation names and attribute types verified against that source.
 Enable the optional instrumentation explicitly:
 
 ```python
-from commontrace import otel_memory
+from unimem import otel_memory
 otel_memory.configure(root, enabled=True, include_content=False)
 ```
 
-Install `commontrace[otel]` and configure the existing OpenTelemetry pipeline
-(`COMMONTRACE_OTEL=1`, an SDK exporter and its endpoint) to export spans.
+Install `unimem[otel]` and configure the existing OpenTelemetry pipeline
+(`UNIMEM_OTEL=1`, an SDK exporter and its endpoint) to export spans.
 The extra supplies the SDK; an OTLP exporter is a separate deployment dependency.
 With no SDK or tracer, canonical operations continue normally. A created span
 is not an exporter delivery acknowledgement. Exporter failures cannot turn a

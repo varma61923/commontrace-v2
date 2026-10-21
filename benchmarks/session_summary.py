@@ -15,7 +15,7 @@ import statistics
 import tempfile
 import time
 
-from commontrace.conversation import Store, summary
+from unimem.conversation import Store, summary
 
 
 def run(turns: int = 1000, trials: int = 3) -> dict:
@@ -35,7 +35,7 @@ def run(turns: int = 1000, trials: int = 3) -> dict:
     def full_order(rows: list[dict], _count: int) -> list[dict]:
         return selector(rows, len(rows))
 
-    with tempfile.TemporaryDirectory(prefix="commontrace-summary-") as root, Store(root, "operations") as store:
+    with tempfile.TemporaryDirectory(prefix="unimem-summary-") as root, Store(root, "operations") as store:
         store.add("operations", [
             {"speaker": f"Operator {i % 4}",
              "text": f"Team {i % 9} {actions[i % len(actions)]} for service {i % 17} in region {i % 3}. "

@@ -3,7 +3,7 @@ import uuid
 import pytest
 from sqlalchemy import text
 
-from commontrace.memory_record import MemoryRecord
+from unimem.memory_record import MemoryRecord
 from hub.db import session_scope
 from hub.memory_records import PostgresJournal
 from hub.models import Organization
@@ -176,7 +176,7 @@ async def test_hosted_reaper_uses_a_bounded_batch_and_version_checked_forget(mon
     calls = []
 
     async def forget(identity, *, reason, expected_version, _expected_digest):
-        from commontrace.frontier_protocol import digest
+        from unimem.frontier_protocol import digest
 
         calls.append((identity, reason, expected_version, _expected_digest))
         assert _expected_digest == digest(next(record.to_dict() for record in records if record.id == identity))
@@ -260,7 +260,7 @@ async def test_hosted_equal_lexical_matches_have_stable_order(session_factory, q
 @pytest.mark.asyncio
 @pytest.mark.parametrize("observations", ["unknown", None, True, -1, 2**2048])
 async def test_hosted_capture_recovers_invalid_preference_counter(session_factory, observations):
-    from commontrace.memory_record import preference_candidates
+    from unimem.memory_record import preference_candidates
 
     org = str(uuid.uuid4())
     async with session_scope(session_factory) as session:
@@ -282,7 +282,7 @@ async def test_hosted_capture_recovers_invalid_preference_counter(session_factor
 async def test_hosted_capture_reinforces_decayed_preference_weight(session_factory):
     from datetime import datetime, timedelta, timezone
 
-    from commontrace.memory_record import preference_candidates
+    from unimem.memory_record import preference_candidates
 
     org = str(uuid.uuid4())
     async with session_scope(session_factory) as session:
@@ -459,12 +459,12 @@ async def test_record_rls_denies_unscoped_nonowner_reads(session_factory):
             await session.execute(
                 text(
                     "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname="
-                    "'commontrace_record_reader') THEN CREATE ROLE commontrace_record_reader NOLOGIN; END IF; END $$"
+                    "'unimem_record_reader') THEN CREATE ROLE unimem_record_reader NOLOGIN; END IF; END $$"
                 )
             )
-            await session.execute(text("GRANT USAGE ON SCHEMA public TO commontrace_record_reader"))
+            await session.execute(text("GRANT USAGE ON SCHEMA public TO unimem_record_reader"))
             for table in _NEW_TABLES:
-                await session.execute(text("GRANT SELECT ON " + table + " TO commontrace_record_reader"))
+                await session.execute(text("GRANT SELECT ON " + table + " TO unimem_record_reader"))
                 await session.execute(text("ALTER TABLE " + table + " ENABLE ROW LEVEL SECURITY"))
                 await session.execute(text("ALTER TABLE " + table + " FORCE ROW LEVEL SECURITY"))
                 await session.execute(
@@ -480,7 +480,7 @@ async def test_record_rls_denies_unscoped_nonowner_reads(session_factory):
                 )
         for org in [None, *orgs]:
             async with session_scope(session_factory, org_id=org) as session:
-                await session.execute(text("SET LOCAL ROLE commontrace_record_reader"))
+                await session.execute(text("SET LOCAL ROLE unimem_record_reader"))
                 rows = (await session.execute(text("SELECT org_id::text FROM memory_records"))).scalars().all()
                 assert rows == ([] if org is None else [org])
                 pending = (

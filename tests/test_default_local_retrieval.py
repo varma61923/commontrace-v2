@@ -4,16 +4,16 @@ from __future__ import annotations
 import sys
 from types import SimpleNamespace
 
-from commontrace import embeddings, fact_embeddings, hierarchical, kg_similarity, search_recipes
-from commontrace.configuration import DEFAULTS
-from commontrace.conversation import Options, Store, embed, recall, search
+from unimem import embeddings, fact_embeddings, hierarchical, kg_similarity, search_recipes
+from unimem.configuration import DEFAULTS
+from unimem.conversation import Options, Store, embed, recall, search
 
 DEFAULT_TAG = "fastembed:BAAI/bge-small-en-v1.5"
 
 
 def test_profiles_and_conversation_choose_the_fastembed_default(monkeypatch):
     assert all(profile["embedding"] == DEFAULT_TAG for profile in DEFAULTS["profiles"].values())
-    monkeypatch.delenv("COMMONTRACE_CONVERSATION_EMBEDDER", raising=False)
+    monkeypatch.delenv("UNIMEM_CONVERSATION_EMBEDDER", raising=False)
     monkeypatch.setattr(embed, "_configuration_getenv", lambda _name, default: default)
     monkeypatch.setattr(embed, "available_for", lambda tag: tag == DEFAULT_TAG)
 
@@ -21,7 +21,7 @@ def test_profiles_and_conversation_choose_the_fastembed_default(monkeypatch):
 
 
 def test_conversation_cache_miss_keeps_lexical_recall_and_never_downloads(tmp_path, monkeypatch):
-    monkeypatch.setenv("COMMONTRACE_CONVERSATION_EMBEDDER", DEFAULT_TAG)
+    monkeypatch.setenv("UNIMEM_CONVERSATION_EMBEDDER", DEFAULT_TAG)
     monkeypatch.setattr(embed, "available_for", lambda _tag: True)
     monkeypatch.setitem(sys.modules, "numpy", SimpleNamespace(asarray=lambda rows, **_kw: rows, float32="float32"))
     calls = []
@@ -97,7 +97,7 @@ def test_graph_default_provider_is_cache_only_but_other_tags_keep_explicit_behav
 
 
 def test_auto_rerank_uses_only_a_cached_cross_encoder(tmp_path, monkeypatch):
-    from commontrace import rerank_arm
+    from unimem import rerank_arm
 
     calls = []
 

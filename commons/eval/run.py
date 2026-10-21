@@ -47,11 +47,11 @@ sys.path.insert(0, str(ROOT))
 
 from hub import commons  # noqa: E402
 
-CORPUS = Path(os.environ.get("COMMONTRACE_EVAL_CORPUS", "corpus.jsonl"))  # bring your own corpus
+CORPUS = Path(os.environ.get("UNIMEM_EVAL_CORPUS", "corpus.jsonl"))  # bring your own corpus
 EVAL_DIR = Path(__file__).resolve().parent
 PROBE_SETS = {
-    "v1": Path(os.environ.get("COMMONTRACE_EVAL_PROBES_V1", "probes-v1.jsonl")),
-    "v2": Path(os.environ.get("COMMONTRACE_EVAL_PROBES_V2", "probes-v2.jsonl")),
+    "v1": Path(os.environ.get("UNIMEM_EVAL_PROBES_V1", "probes-v1.jsonl")),
+    "v2": Path(os.environ.get("UNIMEM_EVAL_PROBES_V2", "probes-v2.jsonl")),
 }
 PROBES = PROBE_SETS["v1"]
 

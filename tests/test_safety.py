@@ -5,8 +5,8 @@ from datetime import datetime
 
 import pytest
 
-from commontrace import compression, dosage, hierarchical, holdout_io, privacy_erasure, safety
-from commontrace import frontier_protocol as fp
+from unimem import compression, dosage, hierarchical, holdout_io, privacy_erasure, safety
+from unimem import frontier_protocol as fp
 
 
 def protected_fact(root):
@@ -56,7 +56,7 @@ def test_retention_correction_and_spi_survive_restart(tmp_path):
 
 
 def test_review_forgery_and_context_surface(tmp_path):
-    from commontrace.mcp_server import build_server
+    from unimem.mcp_server import build_server
     pytest.importorskip("mcp")
     from tests.test_mcp_server import call
 
@@ -71,7 +71,7 @@ def test_review_forgery_and_context_surface(tmp_path):
 
 def test_property_hazards_survive_every_withholding_path(tmp_path):
     """Random experiment, gate, packing and budget configurations never withhold a hazard."""
-    from commontrace import conformal_gate, fact_consolidation, measure, recall, retention
+    from unimem import conformal_gate, fact_consolidation, measure, recall, retention
 
     root = str(tmp_path)
     fact = protected_fact(root)

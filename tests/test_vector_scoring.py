@@ -10,8 +10,8 @@ import sys
 
 import pytest
 
-from commontrace import vector_scoring
-from commontrace.vector_store import SQLiteVectorIndex, VectorRecord
+from unimem import vector_scoring
+from unimem.vector_store import SQLiteVectorIndex, VectorRecord
 
 
 def blob(values):

@@ -6,9 +6,9 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from commontrace import experiment, holdout_io
-from commontrace import memory_adapters as ma
-from commontrace.commands import experiment_cmd
+from unimem import experiment, holdout_io
+from unimem import memory_adapters as ma
+from unimem.commands import experiment_cmd
 
 FIXED_SALT = "test-memory-adapters-fixed-salt"
 GOOD, NEUTRAL = "good", "neutral"

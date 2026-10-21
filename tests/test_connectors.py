@@ -6,16 +6,16 @@ import os
 
 import pytest
 
-from commontrace.commands import sync_cmd
-from commontrace.connectors.base import (
+from unimem.commands import sync_cmd
+from unimem.connectors.base import (
     Connector,
     SyncResult,
     decode_state_token,
     encode_state_token,
     load_connector_state,
 )
-from commontrace.connectors.local_dir import LocalDirConnector
-from commontrace.connectors.web_crawler import WebCrawlerConnector
+from unimem.connectors.local_dir import LocalDirConnector
+from unimem.connectors.web_crawler import WebCrawlerConnector
 
 
 def _write_md(path, heading, body):
@@ -262,7 +262,7 @@ class TestCrawlerSafety:
     def test_a_redirect_to_a_file_url_is_refused(self):
         import urllib.error
 
-        from commontrace.connectors import web_crawler
+        from unimem.connectors import web_crawler
 
         handler = web_crawler._HttpOnlyRedirects()
         req = web_crawler.urllib.request.Request("https://example.com/a")
@@ -270,7 +270,7 @@ class TestCrawlerSafety:
             handler.redirect_request(req, None, 302, "Found", {}, "file:///etc/passwd")
 
     def test_robots_fetch_uses_the_timeout_and_a_size_cap(self, monkeypatch):
-        from commontrace.connectors import web_crawler
+        from unimem.connectors import web_crawler
 
         seen = {}
 

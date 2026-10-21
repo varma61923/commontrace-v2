@@ -26,11 +26,11 @@ INPUTS = {
     "longmemeval": ("longmemeval_s.json", "08d8dad4be43ee2049a22ff5674eb86725d0ce5ff434cde2627e5e8e7e117894", 30),
 }
 CONDITIONS = (
-    ("baseline-lexical", "baseline", "none", "none", "commontrace"),
-    ("candidate-lexical", "candidate", "none", "none", "commontrace"),
-    ("candidate-dense", "candidate", "minilm", "none", "commontrace"),
-    ("candidate-dense-rerank", "candidate", "minilm", "cross-encoder", "commontrace"),
-    ("baseline-dense-rerank", "baseline", "minilm", "cross-encoder", "commontrace"),
+    ("baseline-lexical", "baseline", "none", "none", "unimem"),
+    ("candidate-lexical", "candidate", "none", "none", "unimem"),
+    ("candidate-dense", "candidate", "minilm", "none", "unimem"),
+    ("candidate-dense-rerank", "candidate", "minilm", "cross-encoder", "unimem"),
+    ("baseline-dense-rerank", "baseline", "minilm", "cross-encoder", "unimem"),
     ("mem0-raw", "candidate", "none", "none", "mem0-raw"),
     ("graphiti-episodic", "candidate", "none", "none", "graphiti-episodic"),
 )

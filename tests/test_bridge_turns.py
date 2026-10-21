@@ -1,5 +1,5 @@
 """Gap bridging: the turns between two nearby hits of one session are delivered together."""
-from commontrace.conversation import Options, Store, recall
+from unimem.conversation import Options, Store, recall
 
 
 def _store(tmp_path):

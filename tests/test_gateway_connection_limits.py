@@ -8,7 +8,7 @@ import time
 
 import pytest
 
-from commontrace import gateway, gateway_transport
+from unimem import gateway, gateway_transport
 
 
 def wait_until(predicate):

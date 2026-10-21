@@ -2,7 +2,7 @@
 import os
 import random
 
-from commontrace import experiment, frontmatter, heterogeneity, interactions, lesson_io, paths, templates
+from unimem import experiment, frontmatter, heterogeneity, interactions, lesson_io, paths, templates
 
 
 def _world(n=4000, interaction=-0.4, seed=7):

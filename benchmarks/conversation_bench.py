@@ -1,10 +1,10 @@
-"""LoCoMo and LongMemEval through CommonTrace's conversation memory, end to end.
+"""LoCoMo and LongMemEval through UniMem's conversation memory, end to end.
 
 Each conversation is written with `Store.add` exactly as an agent would write it,
 and each question is answered from `recall`'s context. Without a model it measures
 what a memory layer owns: how much of the gold evidence reaches the context, how
 many tokens that context costs, and whether the gold answer appears in it. With
-COMMONTRACE_LLM_* configured, `--answer` also has a model answer from the context
+UNIMEM_LLM_* configured, `--answer` also has a model answer from the context
 and a judge grade the answer, as published results do.
 
     python benchmarks/conversation_bench.py --dataset locomo --data locomo10.json
@@ -67,8 +67,8 @@ from benchmarks.measurement import (  # noqa: E402
 )
 from benchmarks.requests import benchmark_binding, bounded_complete, text_counter_binding, text_tokens  # noqa: E402
 from benchmarks.vendor_adapters import PROFILES, vendor_profile  # noqa: E402
-from commontrace.conversation import Options, Store, recall  # noqa: E402
-from commontrace.conversation.search import Recall, tokens  # noqa: E402
+from unimem.conversation import Options, Store, recall  # noqa: E402
+from unimem.conversation.search import Recall, tokens  # noqa: E402
 
 # Options newer than some measured product revisions, with the value that leaves them off.
 # CI runs this harness against an older reference checkout, so an option the product does
@@ -641,7 +641,7 @@ def answer_in(context: str, answer: str) -> bool | None:
     return f" {answer} " in f" {_norm(context)} "
 
 
-from commontrace.conversation.answer import ANSWER as ANSWER_PROMPT  # noqa: E402  the product's own prompt
+from unimem.conversation.answer import ANSWER as ANSWER_PROMPT  # noqa: E402  the product's own prompt
 
 JUDGE_PROMPT = """Grade an answer against a gold answer. Be generous: the answer is CORRECT if it
 contains the same information as the gold answer, even if phrased differently or longer.
@@ -692,7 +692,7 @@ def _p50_p95(values) -> dict[str, float] | None:
 
 
 def _get_llm_config(model: str):
-    from commontrace import llm
+    from unimem import llm
 
     try:
         base = llm.load_config()
@@ -706,13 +706,13 @@ def _get_llm_config(model: str):
             cache_namespace=base.cache_namespace,
         )
     except Exception:
-        provider = os.environ.get("COMMONTRACE_LLM_PROVIDER", "openai-compatible")
-        api_key = os.environ.get("COMMONTRACE_LLM_API_KEY", "")
-        base_url = os.environ.get("COMMONTRACE_LLM_BASE_URL", "")
+        provider = os.environ.get("UNIMEM_LLM_PROVIDER", "openai-compatible")
+        api_key = os.environ.get("UNIMEM_LLM_API_KEY", "")
+        base_url = os.environ.get("UNIMEM_LLM_BASE_URL", "")
         return llm.Config(provider=provider, model=model, api_key=api_key, base_url=base_url or None,
-                          region=os.environ.get("COMMONTRACE_LLM_REGION") or os.environ.get("AWS_REGION") or None,
-                          project=os.environ.get("COMMONTRACE_LLM_PROJECT") or None,
-                          cache_namespace=os.environ.get("COMMONTRACE_LLM_CACHE_NAMESPACE") or None)
+                          region=os.environ.get("UNIMEM_LLM_REGION") or os.environ.get("AWS_REGION") or None,
+                          project=os.environ.get("UNIMEM_LLM_PROJECT") or None,
+                          cache_namespace=os.environ.get("UNIMEM_LLM_CACHE_NAMESPACE") or None)
 
 
 def grade_answer(
@@ -827,7 +827,7 @@ def grade_all(pending: list, workers: int, *, grade=None, rounds: int | None = N
     """
     from concurrent.futures import ThreadPoolExecutor
 
-    from commontrace import llm
+    from unimem import llm
 
     grade = grade or grade_answer
     rounds = GRADE_ROUNDS if rounds is None else rounds
@@ -900,7 +900,7 @@ def grade_model_context_completeness(
 def _embedder_choice(value: str) -> str:
     if value in ("auto", "none"):
         return value
-    from commontrace.conversation import embed
+    from unimem.conversation import embed
 
     try:
         return embed.canonical(value)
@@ -911,12 +911,12 @@ def _embedder_choice(value: str) -> str:
 def _reranker_choice(value: str) -> str:
     if value in ("auto", "none"):
         return value
-    from commontrace.exceptions import CommonTraceError
-    from commontrace.providers import validate_reranker
+    from unimem.exceptions import UniMemError
+    from unimem.providers import validate_reranker
 
     try:
         validate_reranker(value)
-    except CommonTraceError as exc:
+    except UniMemError as exc:
         raise argparse.ArgumentTypeError(str(exc)) from None
     return value
 
@@ -974,7 +974,7 @@ def run(args) -> dict:
     j_model = getattr(args, "judge_model", None) or def_j_model
     context_completeness_enabled = bool(getattr(args, "context_completeness", False))
     context_completeness_model = (getattr(args, "completeness_model", None) or j_model)
-    ans_model = getattr(args, "answer_model", None) or os.environ.get("COMMONTRACE_LLM_MODEL") or "claude-sonnet-5"
+    ans_model = getattr(args, "answer_model", None) or os.environ.get("UNIMEM_LLM_MODEL") or "claude-sonnet-5"
 
     judge_inst = None
     cache = None
@@ -992,7 +992,7 @@ def run(args) -> dict:
 
     answer_workers = max(1, int(getattr(args, "answer_workers", 1) or 1))
     pending_grades: list = []
-    memory_adapter = getattr(args, "memory_adapter", "commontrace")
+    memory_adapter = getattr(args, "memory_adapter", "unimem")
     if memory_adapter not in PROFILES:
         raise ValueError("unsupported memory adapter")
     opts = product_options(
@@ -1007,8 +1007,8 @@ def run(args) -> dict:
         adaptive_budget=bool(getattr(args, "adaptive_budget", False)),
         max_budget=max(budgets[0], 12_000),
     )
-    if getattr(opts, "adaptive_budget", False) and (strict_budget or getattr(args, "memory_adapter", "commontrace") != "commontrace"):
-        raise ValueError("--adaptive-budget sizes CommonTrace's own context; it cannot honour a strict cap "
+    if getattr(opts, "adaptive_budget", False) and (strict_budget or getattr(args, "memory_adapter", "unimem") != "unimem"):
+        raise ValueError("--adaptive-budget sizes UniMem's own context; it cannot honour a strict cap "
                          "or a vendor profile")
 
     # Cached prep: parse once, then every sweep with the same fingerprint reuses it.
@@ -1041,7 +1041,7 @@ def run(args) -> dict:
         provenance["evaluation"].update({
             "reader_prompt_sha256": question_digest({"prompt": ANSWER_PROMPT}),
             "judge_source_sha256": product_digest_for_judges(repository),
-            "completion_source_sha256": dataset_digest(os.path.join(repository, "commontrace", "llm.py")),
+            "completion_source_sha256": dataset_digest(os.path.join(repository, "unimem", "llm.py")),
             "reader": evaluation_config_binding(cfg_a),
             "judge": evaluation_config_binding(cfg_j),
             "generation": {"max_tokens": getattr(args, "max_output_tokens", 1536), "temperature": 0,
@@ -1066,9 +1066,9 @@ def run(args) -> dict:
 
     profile_config = None
     model_bindings = {}
-    if memory_adapter == "commontrace":
-        from commontrace import rerank_arm
-        from commontrace.conversation import embed
+    if memory_adapter == "unimem":
+        from unimem import rerank_arm
+        from unimem.conversation import embed
         embedding_names = [embed.MODELS[args.embedder][0]] if args.embedder in embed.MODELS else []
         if args.embedder == "auto":
             configured_embedder = embed.configured()
@@ -1319,7 +1319,7 @@ def run(args) -> dict:
                 "chunk_set": chunk_info,
             }
     for summary in results.values():
-        summary["retrieval_profile"] = profile_config or {"profile": "commontrace", "model_artifacts": model_bindings}
+        summary["retrieval_profile"] = profile_config or {"profile": "unimem", "model_artifacts": model_bindings}
     if getattr(args, "bootstrap", False):
         for summary in results.values():
             targets = summary.get("modes_detail", {summary["mode"]: summary})
@@ -1504,11 +1504,11 @@ def main(argv=None) -> int:
     p.add_argument("--data", required=True)
     p.add_argument(
         "--root",
-        default=os.path.join(tempfile.gettempdir(), "commontrace-conversation-benchmark"),
+        default=os.path.join(tempfile.gettempdir(), "unimem-conversation-benchmark"),
         help="store root, reused between runs so ingestion and embeddings are cached",
     )
     p.add_argument("--budget", default="1500", help="tokens; a comma list assembles each ranking at every budget")
-    p.add_argument("--memory-adapter", choices=PROFILES, default="commontrace",
+    p.add_argument("--memory-adapter", choices=PROFILES, default="unimem",
                    help="Optional local raw-source vendor profile (excludes managed APIs/LLM extraction)")
     p.add_argument("--embedder", default="auto", type=_embedder_choice,
                    help="auto, none, a local model (arctic-m, minilm, bge-small, e5-small, nomic) or "
@@ -1531,7 +1531,7 @@ def main(argv=None) -> int:
     p.add_argument("--limit", type=int, default=0)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--question-exclusions", help="JSON list of question IDs excluded before stratified sampling")
-    p.add_argument("--answer", action="store_true", help="answer and judge with COMMONTRACE_LLM_*")
+    p.add_argument("--answer", action="store_true", help="answer and judge with UNIMEM_LLM_*")
     p.add_argument("--context-completeness", action="store_true",
                    help="judge retrieved-context sufficiency (COMPLETE/PARTIAL/INSUFFICIENT), separate from answer accuracy")
     p.add_argument("--answer-workers", type=int, default=1,

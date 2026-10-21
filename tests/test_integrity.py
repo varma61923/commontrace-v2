@@ -5,7 +5,7 @@ import random
 
 import pytest
 
-from commontrace import experiment, integrity
+from unimem import experiment, integrity
 
 UTC = datetime.timezone.utc
 
@@ -303,13 +303,13 @@ class TestTheExperimentCommand:
         import subprocess
         import sys
 
-        from commontrace import frontmatter, paths, templates
+        from unimem import frontmatter, paths, templates
 
         root = str(tmp_path / "fleet")
         repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
         def cli(*argv):
-            return subprocess.run([sys.executable, "-m", "commontrace.cli", *argv],
+            return subprocess.run([sys.executable, "-m", "unimem.cli", *argv],
                                   capture_output=True, text=True, cwd=repo, check=False)
 
         assert cli("init", "--dest", root, "--agent-type", "support").returncode == 0
@@ -468,7 +468,7 @@ class TestThePlanCommand:
         import sys
 
         repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        return subprocess.run([sys.executable, "-m", "commontrace.cli", *argv],
+        return subprocess.run([sys.executable, "-m", "unimem.cli", *argv],
                               capture_output=True, text=True, cwd=repo, check=False)
 
     def test_it_runs_on_an_empty_store_and_assumes_the_worst(self, tmp_path):
@@ -510,14 +510,14 @@ class TestTheStoreOwnsItsExperimentSettings:
     def _store(tmp_path):
         import os
 
-        from commontrace import paths
+        from unimem import paths
 
         root = str(tmp_path / "fleet")
         os.makedirs(paths.memory_dir(root), exist_ok=True)
         return root
 
     def test_an_unconfigured_store_reports_the_defaults(self, tmp_path):
-        from commontrace import experiment, holdout_io
+        from unimem import experiment, holdout_io
 
         config = holdout_io.load_config(self._store(tmp_path))
         assert config.rate == experiment.DEFAULT_HOLDOUT_RATE
@@ -525,7 +525,7 @@ class TestTheStoreOwnsItsExperimentSettings:
         assert config.running
 
     def test_configuring_rotates_the_salt(self, tmp_path):
-        from commontrace import holdout_io
+        from unimem import holdout_io
 
         root = self._store(tmp_path)
         first = holdout_io.configure(root, rate=0.2)
@@ -534,13 +534,13 @@ class TestTheStoreOwnsItsExperimentSettings:
         assert holdout_io.load_config(root).salt == second.salt
 
     def test_the_salt_records_when_the_run_began(self, tmp_path):
-        from commontrace import holdout_io
+        from unimem import holdout_io
 
         config = holdout_io.configure(self._store(tmp_path), rate=0.5)
         assert config.salt.startswith("20") and "0.5" in config.salt
 
     def test_rate_zero_stops_the_experiment(self, tmp_path):
-        from commontrace import holdout_io
+        from unimem import holdout_io
 
         root = self._store(tmp_path)
         holdout_io.configure(root, rate=0.5)
@@ -548,13 +548,13 @@ class TestTheStoreOwnsItsExperimentSettings:
 
     @pytest.mark.parametrize("bad", [-0.1, 1.0, 1.5])
     def test_an_impossible_rate_is_refused(self, tmp_path, bad):
-        from commontrace import holdout_io
+        from unimem import holdout_io
 
         with pytest.raises(ValueError):
             holdout_io.configure(self._store(tmp_path), rate=bad)
 
     def test_a_corrupt_config_falls_back_rather_than_failing_retrieval(self, tmp_path):
-        from commontrace import holdout_io
+        from unimem import holdout_io
 
         root = self._store(tmp_path)
         with open(holdout_io.config_path(root), "w", encoding="utf-8") as fh:
@@ -565,8 +565,8 @@ class TestTheStoreOwnsItsExperimentSettings:
     def test_both_retrievers_read_the_same_configured_rate(self, tmp_path):
         import argparse
 
-        from commontrace import holdout_io
-        from commontrace.commands import query_cmd
+        from unimem import holdout_io
+        from unimem.commands import query_cmd
 
         root = self._store(tmp_path)
         config = holdout_io.configure(root, rate=0.42)
@@ -586,7 +586,7 @@ class TestAnalysisIsScopedToOneRandomization:
         import sys
 
         repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        return subprocess.run([sys.executable, "-m", "commontrace.cli", *argv],
+        return subprocess.run([sys.executable, "-m", "unimem.cli", *argv],
                               capture_output=True, text=True, cwd=repo, check=False)
 
     def _seeded(self, tmp_path, salt):
@@ -596,7 +596,7 @@ class TestAnalysisIsScopedToOneRandomization:
         return TestTheExperimentCommand._store(tmp_path, rows, outcomes)
 
     def test_an_earlier_run_is_not_pooled_into_the_current_one(self, tmp_path):
-        from commontrace import holdout_io
+        from unimem import holdout_io
 
         root, cli = self._seeded(tmp_path, "old-salt")
         holdout_io.configure(root, rate=0.5)
@@ -607,7 +607,7 @@ class TestAnalysisIsScopedToOneRandomization:
         assert "old-salt" in result.stderr
 
     def test_an_earlier_run_is_still_readable_by_name(self, tmp_path):
-        from commontrace import holdout_io
+        from unimem import holdout_io
 
         root, cli = self._seeded(tmp_path, "old-salt")
         holdout_io.configure(root, rate=0.5)
@@ -625,7 +625,7 @@ class TestAnalysisIsScopedToOneRandomization:
     def test_the_reported_holdout_rate_is_the_current_salts_not_a_blend(self, tmp_path):
         import json
 
-        from commontrace import holdout_io
+        from unimem import holdout_io
 
         old_rows = [a(occasion=f"old-{i}", injected=i % 2 == 0, succeeded=i % 3 == 0,
                       rate=0.1, salt="old-salt") for i in range(40)]
@@ -638,7 +638,7 @@ class TestAnalysisIsScopedToOneRandomization:
 
         import os
 
-        from commontrace import frontmatter, paths, templates
+        from unimem import frontmatter, paths, templates
 
         tdir = paths.traces_dir(root)
         for r in new_rows:
@@ -669,7 +669,7 @@ class TestAnOldLogStaysReadable:
         import json
         import os
 
-        from commontrace import holdout_io, paths
+        from unimem import holdout_io, paths
 
         root = str(tmp_path / "fleet")
         os.makedirs(paths.memory_dir(root), exist_ok=True)
@@ -684,7 +684,7 @@ class TestAnOldLogStaysReadable:
         import json
         import os
 
-        from commontrace import holdout_io, paths
+        from unimem import holdout_io, paths
 
         rows = [a(occasion=f"o{i}", injected=i % 2 == 0, succeeded=i % 3 == 0)
                 for i in range(40)]
@@ -709,7 +709,7 @@ class TestReadLogSurvivesANonFiniteRank:
         import json
         import os
 
-        from commontrace import holdout_io, paths
+        from unimem import holdout_io, paths
 
         root = str(tmp_path / "fleet")
         os.makedirs(paths.memory_dir(root), exist_ok=True)

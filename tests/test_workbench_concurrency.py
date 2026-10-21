@@ -7,8 +7,8 @@ import threading
 
 import pytest
 
-from commontrace import frontmatter, gateway, holdout_io, lesson_admission, lesson_io, paths, workbench
-from commontrace.cli import main
+from unimem import frontmatter, gateway, holdout_io, lesson_admission, lesson_io, paths, workbench
+from unimem.cli import main
 from tests.test_workbench import TOKEN, _lesson, call
 
 

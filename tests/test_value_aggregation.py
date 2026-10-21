@@ -4,7 +4,7 @@ import math
 
 import pytest
 
-from commontrace import experiment, integrity, value
+from unimem import experiment, integrity, value
 
 
 def _effect(slug, verdict, effect, n_injected=200, half_width=0.02):

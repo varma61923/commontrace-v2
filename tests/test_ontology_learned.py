@@ -3,7 +3,7 @@ switch, and a fallback that only speaks when the other evidence is undecided."""
 import json
 
 from benchmarks import train_ontology_typing
-from commontrace import ontology, ontology_classify, ontology_learned
+from unimem import ontology, ontology_classify, ontology_learned
 
 ONTO = ontology.Ontology.default()
 ROWS = [("Brannigan", "Brannigan approved the change.", "person"),
@@ -34,7 +34,7 @@ def test_the_learned_typer_is_a_fallback_and_can_be_switched_off(monkeypatch):
     found = ontology_classify.classify("Quorandel", "We met Quorandel at the offsite and she said yes.",
                                        onto=ONTO, methods=("keyword",))
     assert found.type == "person"
-    monkeypatch.setenv("COMMONTRACE_TYPING_MODEL", "off")
+    monkeypatch.setenv("UNIMEM_TYPING_MODEL", "off")
     off = ontology_classify.classify("Quorandel", "We met Quorandel at the offsite and she said yes.",
                                      onto=ONTO, methods=("keyword",))
     assert "learned" not in {s for s, _t, _c in off.evidence}

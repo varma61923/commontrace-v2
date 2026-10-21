@@ -1,10 +1,10 @@
-from commontrace import fact_embeddings, fact_store, fact_vector_projection, hierarchical, recall
+from unimem import fact_embeddings, fact_store, fact_vector_projection, hierarchical, recall
 
 
 def test_dense_recall_uses_projection_and_scores_only_pending_facts(tmp_path, monkeypatch):
     root = str(tmp_path)
     model = "recall-projection-test"
-    monkeypatch.setenv("COMMONTRACE_FACT_EMBEDDER", model)
+    monkeypatch.setenv("UNIMEM_FACT_EMBEDDER", model)
     fact_store.migrate(root)
     indexed, _ = hierarchical.add_fact(root, "current parser boundary guidance", scopes=["repo"])
     private, _ = hierarchical.add_fact(root, "private parser boundary guidance", scopes=["private"])
@@ -49,7 +49,7 @@ def test_dense_recall_uses_projection_and_scores_only_pending_facts(tmp_path, mo
 def test_dense_recall_keeps_exact_path_for_historical_queries(tmp_path, monkeypatch):
     root = str(tmp_path)
     configured_model = "recall-projection-history-test"
-    monkeypatch.setenv("COMMONTRACE_FACT_EMBEDDER", configured_model)
+    monkeypatch.setenv("UNIMEM_FACT_EMBEDDER", configured_model)
     fact_store.migrate(root)
     older, _ = hierarchical.add_fact(
         root, "earlier parser boundary guidance", valid_from="2026-01-01T00:00:00Z"
@@ -80,7 +80,7 @@ def test_dense_recall_keeps_exact_path_for_historical_queries(tmp_path, monkeypa
 def test_dense_recall_falls_back_when_projection_watermark_is_invalid(tmp_path, monkeypatch):
     root = str(tmp_path)
     configured_model = "recall-projection-invalid-test"
-    monkeypatch.setenv("COMMONTRACE_FACT_EMBEDDER", configured_model)
+    monkeypatch.setenv("UNIMEM_FACT_EMBEDDER", configured_model)
     fact_store.migrate(root)
     fact, _ = hierarchical.add_fact(root, "current parser boundary guidance")
     watermark = fact_vector_projection._watermark(configured_model, "lance")

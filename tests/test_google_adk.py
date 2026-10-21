@@ -3,9 +3,9 @@ import importlib
 import sys
 from types import ModuleType, SimpleNamespace
 
-from commontrace.client import MemoryClient
-from commontrace.memory_journal import Journal
-from commontrace.memory_record import MemoryRecord
+from unimem.client import MemoryClient
+from unimem.memory_journal import Journal
+from unimem.memory_record import MemoryRecord
 
 
 def _install_fake_genai_types(monkeypatch):
@@ -27,7 +27,7 @@ def _install_fake_genai_types(monkeypatch):
 
 
 def test_google_adk_adapter_import_is_lazy_and_has_no_store_side_effects(monkeypatch, tmp_path):
-    module_name = "commontrace.integrations.google_adk"
+    module_name = "unimem.integrations.google_adk"
     prior_module = sys.modules.pop(module_name, None)
     original_import = builtins.__import__
     before = {name for name in sys.modules if name == "google" or name.startswith("google.")}
@@ -51,7 +51,7 @@ def test_google_adk_adapter_import_is_lazy_and_has_no_store_side_effects(monkeyp
 
 def test_adk_callback_saves_and_retrieves_once_in_adk_user_scope(monkeypatch, tmp_path):
     Content, Part = _install_fake_genai_types(monkeypatch)
-    from commontrace.integrations.google_adk import before_model_callback
+    from unimem.integrations.google_adk import before_model_callback
 
     memory = MemoryClient(str(tmp_path), agent_id="adk-agent", context={"tenant": "acme"})
     alice_scope = {
@@ -125,7 +125,7 @@ def test_adk_callback_saves_and_retrieves_once_in_adk_user_scope(monkeypatch, tm
 
 def test_adk_callback_fails_open_when_memory_is_unavailable(monkeypatch, tmp_path):
     Content, Part = _install_fake_genai_types(monkeypatch)
-    from commontrace.integrations.google_adk import before_model_callback
+    from unimem.integrations.google_adk import before_model_callback
 
     def fail_turn(self, session_id, query, **kwargs):
         raise RuntimeError("memory store unavailable")

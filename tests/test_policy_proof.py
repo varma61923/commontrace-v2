@@ -5,7 +5,7 @@ from copy import deepcopy
 
 import pytest
 
-from commontrace import policy_proof as policy
+from unimem import policy_proof as policy
 
 
 def example():

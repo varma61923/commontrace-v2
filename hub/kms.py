@@ -7,7 +7,7 @@ from typing import Any, Protocol
 
 from hub.encryption import EncryptionError
 
-CONTEXT = {"purpose": "commontrace-hub-encryption-key"}
+CONTEXT = {"purpose": "unimem-hub-encryption-key"}
 
 
 class SubjectKeyService(Protocol):
@@ -23,7 +23,7 @@ class SubjectKeyService(Protocol):
 
 def reference_subject_vault(store_root: str, directory: str):
     """Filesystem reference for isolated deployments; production KMS may replace it."""
-    from commontrace.certified_erasure import SubjectVault
+    from unimem.certified_erasure import SubjectVault
 
     return SubjectVault(store_root, directory)
 
@@ -86,7 +86,7 @@ class TenantKeyProvider:
         try:
             blob = base64.b64decode(entry["ciphertext"], validate=True)
             result = (self.client or _client(self.region)).decrypt(CiphertextBlob=blob, KeyId=entry["key_id"],
-                EncryptionContext={"purpose": "commontrace-attested-tenant-key-v1", "tenant": tenant})
+                EncryptionContext={"purpose": "unimem-attested-tenant-key-v1", "tenant": tenant})
             key = result["Plaintext"]
         except Exception:
             raise RuntimeError("UniMem tenant KMS refused the attested data-key unwrap") from None

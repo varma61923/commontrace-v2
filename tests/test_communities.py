@@ -9,14 +9,14 @@ import sys
 import pytest
 import yaml
 
-from commontrace import communities, entity_store, hierarchical
+from unimem import communities, entity_store, hierarchical
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def cli(*argv: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [sys.executable, "-m", "commontrace.cli", *argv],
+        [sys.executable, "-m", "unimem.cli", *argv],
         capture_output=True,
         text=True,
         cwd=REPO_ROOT,
@@ -155,7 +155,7 @@ def _payload(result) -> dict:
 
 def test_mcp_community_members_round_trip(store):
     pytest.importorskip("mcp", reason="MCP SDK not installed")
-    from commontrace import mcp_server
+    from unimem import mcp_server
 
     _seed_two_clusters(store)
     groups = communities.build_communities(store)
@@ -170,7 +170,7 @@ def test_mcp_community_members_round_trip(store):
 
 def test_mcp_trace_lesson_round_trip(store):
     pytest.importorskip("mcp", reason="MCP SDK not installed")
-    from commontrace import mcp_server
+    from unimem import mcp_server
 
     _seed_two_clusters(store)
     server = mcp_server.build_server(store)

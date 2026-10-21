@@ -46,7 +46,7 @@ def test_typescript_generator_prevents_model_and_parameter_name_collisions(tmp_p
                             tmp_path / "sdk", package_version="2.3.4-rc.1")
     options = calls[0][calls[0].index("--additional-properties") + 1]
     assert calls[0][calls[0].index("--git-user-id") + 1] == "varma61923"
-    assert calls[0][calls[0].index("--git-repo-id") + 1] == "commontrace-v2"
+    assert calls[0][calls[0].index("--git-repo-id") + 1] == "unimem-v2"
     assert "npmVersion=2.3.4-rc.1" in options
     assert "prefixParameterInterfaces=true" in options
     assert "licenseName=AGPL-3.0-only" in options
@@ -63,7 +63,7 @@ def test_invalid_release_versions_are_rejected_before_downloading(tmp_path, monk
 
 
 def test_kotlin_transport_repair_removes_only_the_unreachable_pinned_branch(tmp_path):
-    source = tmp_path / "src/main/kotlin/io/commontrace/infrastructure/ApiClient.kt"
+    source = tmp_path / "src/main/kotlin/io/unimem/infrastructure/ApiClient.kt"
     source.parent.mkdir(parents=True)
     original = "before\nval body = response.body ?: return null\nafter\n"
     source.write_text(original)

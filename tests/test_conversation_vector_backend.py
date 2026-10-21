@@ -9,10 +9,10 @@ import uuid
 
 import pytest
 
-from commontrace.conversation import AsyncStore, ConversationError, Options, Store, embed, recall
-from commontrace.conversation.search import DenseCandidates
-from commontrace.conversation.store import db_path
-from commontrace.vector_store import PostgresVectorIndex, SQLiteVectorIndex
+from unimem.conversation import AsyncStore, ConversationError, Options, Store, embed, recall
+from unimem.conversation.search import DenseCandidates
+from unimem.conversation.store import db_path
+from unimem.vector_store import PostgresVectorIndex, SQLiteVectorIndex
 
 np = pytest.importorskip("numpy")
 
@@ -36,9 +36,9 @@ def encoder(monkeypatch):
 
 @pytest.fixture(params=["sqlite", "pgexact", "pghnsw"])
 def engine(request, tmp_path):
-    dsn = os.environ.get("COMMONTRACE_TEST_PGVECTOR_DSN")
+    dsn = os.environ.get("UNIMEM_TEST_PGVECTOR_DSN")
     if request.param != "sqlite" and not dsn:
-        pytest.skip("set COMMONTRACE_TEST_PGVECTOR_DSN to exercise real pgvector")
+        pytest.skip("set UNIMEM_TEST_PGVECTOR_DSN to exercise real pgvector")
     tenant = "conversation-test-" + uuid.uuid4().hex
     async def opening():
         common = {"tenant": tenant, "namespace": "memory", "model": embed.MODELS["minilm"][0], "dimension": 3}

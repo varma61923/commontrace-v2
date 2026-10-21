@@ -8,7 +8,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import func, select
 
-from commontrace import experiment, integrity, value
+from unimem import experiment, integrity, value
 from hub import commons, crud, plans
 from hub.abuse import make_rate_limiter
 from hub.db import session_scope

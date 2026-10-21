@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from commontrace import experiment, integrity, value
+from unimem import experiment, integrity, value
 
 DISJOINT = value.OccasionOverlap(shared_pairs=frozenset(), unique_injected_occasions=400)
 

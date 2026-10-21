@@ -14,7 +14,7 @@ import pytest
 def store(tmp_path):
     store = tmp_path / "store"
     store.mkdir()
-    from commontrace import paths
+    from unimem import paths
     os.makedirs(paths.lessons_dir(str(store)), exist_ok=True)
     os.makedirs(paths.traces_dir(str(store)), exist_ok=True)
     return str(store)
@@ -22,7 +22,7 @@ def store(tmp_path):
 
 class TestAgentLoop:
     def test_basic_run_completes_and_writes_trace(self, store):
-        from commontrace.agent_loop import AgentLoop
+        from unimem.agent_loop import AgentLoop
 
         loop = AgentLoop(root=store, dream_every=0)
         result = loop.run(prompt="Diagnose the slow database queries")
@@ -34,7 +34,7 @@ class TestAgentLoop:
         assert os.path.exists(result.trace_path), f"Trace not written: {result.trace_path}"
 
     def test_run_with_custom_executor(self, store):
-        from commontrace.agent_loop import AgentLoop
+        from unimem.agent_loop import AgentLoop
 
         call_count = {"n": 0}
 
@@ -50,8 +50,8 @@ class TestAgentLoop:
         assert "completed the task" in result.final_answer
 
     def test_run_updates_memory_blocks(self, store):
-        from commontrace import memory_blocks
-        from commontrace.agent_loop import AgentLoop
+        from unimem import memory_blocks
+        from unimem.agent_loop import AgentLoop
 
         memory_blocks.set_block(store, "persona", "You are a senior engineer.", actor="test")
 
@@ -69,8 +69,8 @@ class TestAgentLoop:
         assert "payments" in block.content
 
     def test_run_records_facts(self, store):
-        from commontrace import hierarchical
-        from commontrace.agent_loop import AgentLoop
+        from unimem import hierarchical
+        from unimem.agent_loop import AgentLoop
 
         def fact_recorder(context, tool_calls):
             return "Fact recorded.", [
@@ -87,7 +87,7 @@ class TestAgentLoop:
         assert any("100 connections" in f.statement for f in facts)
 
     def test_run_trace_contains_prompt_context(self, store):
-        from commontrace.agent_loop import AgentLoop
+        from unimem.agent_loop import AgentLoop
 
         prompt = "Investigate latency spike in payment processing pipeline"
         loop = AgentLoop(root=store, dream_every=0)
@@ -98,7 +98,7 @@ class TestAgentLoop:
         assert "payment processing" in content.lower() or "Agent" in content
 
     def test_max_turns_respected(self, store):
-        from commontrace.agent_loop import AgentLoop
+        from unimem.agent_loop import AgentLoop
 
         turn_count = {"n": 0}
 
@@ -115,7 +115,7 @@ class TestAgentLoop:
     def test_concurrent_dream_triggers_do_not_redirect_process_streams(self, store, monkeypatch):
         import time
 
-        from commontrace import agent_loop
+        from unimem import agent_loop
 
         # The previous in-process dream call replaced sys.stdout/stderr while it
         # ran. Keep the schedule concurrent and check every independent write.
@@ -151,7 +151,7 @@ class TestAgentLoop:
         assert len(calls) == 2
 
     def test_recalled_facts_and_lessons_use_safe_quoted_labels(self, store, monkeypatch):
-        from commontrace import agent_loop, frontmatter, hierarchical, lesson_cache, memory_ifc, retrieval, retrieval_io
+        from unimem import agent_loop, frontmatter, hierarchical, lesson_cache, memory_ifc, retrieval, retrieval_io
 
         labels = []
 

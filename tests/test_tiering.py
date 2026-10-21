@@ -7,8 +7,8 @@ import time
 
 import pytest
 
-from commontrace import hierarchical, safety, tiering
-from commontrace import nextwave_store as store
+from unimem import hierarchical, safety, tiering
+from unimem import nextwave_store as store
 
 
 def setup(root, *, namespace="robot-a"):
@@ -104,7 +104,7 @@ def test_embedding_generation_cutover_report_and_rollback(tmp_path, monkeypatch)
 
 
 def test_native_acl_predicate_matches_postfilter_and_readmits_hits(tmp_path):
-    from commontrace import vector_store
+    from unimem import vector_store
 
     root = str(tmp_path)
     a = hierarchical.append_facts(root, [{"statement": "Allowed calibration evidence.", "scopes": ["site:a"]}])[0][0]
@@ -133,7 +133,7 @@ def test_native_acl_predicate_matches_postfilter_and_readmits_hits(tmp_path):
 def test_cloud_adapter_roundtrip_and_cold_erasure(tmp_path, monkeypatch):
     import io
 
-    from commontrace import privacy_erasure
+    from unimem import privacy_erasure
 
     monkeypatch.setattr("os.fsync", lambda _: None)
 
@@ -261,9 +261,9 @@ def test_direct_managed_writes_require_residency_context(tmp_path, monkeypatch):
 def test_cli_gateway_and_lifecycle_hooks(tmp_path, monkeypatch, capsys):
     import json
 
-    from commontrace import agent_hooks, cli, gateway
-    from commontrace.client import MemoryClient
-    from commontrace.robotics.bridge import RobotBridge
+    from unimem import agent_hooks, cli, gateway
+    from unimem.client import MemoryClient
+    from unimem.robotics.bridge import RobotBridge
 
     monkeypatch.setattr("os.fsync", lambda _: None)
     root = str(tmp_path)

@@ -6,13 +6,13 @@ import os
 
 import pytest
 
-from commontrace import lesson_io, paths
-from commontrace.cli import main
+from unimem import lesson_io, paths
+from unimem.cli import main
 
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
-    monkeypatch.delenv("COMMONTRACE_ROOT", raising=False)
+    monkeypatch.delenv("UNIMEM_ROOT", raising=False)
     monkeypatch.chdir(tmp_path)
     return tmp_path
 
@@ -158,7 +158,7 @@ class TestTraceRoundTrip:
             if os.path.basename(p) != "README.md"
         )
         assert len(imported) == 1
-        from commontrace import trace_io
+        from unimem import trace_io
 
         inst, _body = trace_io.read(imported[0])
         assert inst["title"] == "Password reset email never arrived"

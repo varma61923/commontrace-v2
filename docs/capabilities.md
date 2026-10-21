@@ -15,7 +15,7 @@ This is UniMem's encoding inspired by
 [draft-niyikiza-oauth-attenuating-agent-tokens-01](https://www.ietf.org/archive/id/draft-niyikiza-oauth-attenuating-agent-tokens-01.html),
 published 15 June 2026 and expiring 17 December 2026. It is not JWT/AAT wire
 compatibility. Local chains use stdlib HMAC-SHA256. Cross-organization issuers use
-Ed25519 through `commontrace[security]`, with public issuer and holder keys pinned
+Ed25519 through `unimem[security]`, with public issuer and holder keys pinned
 by the receiving operator. Keys supplied by a token never establish trust.
 
 ## Enroll and delegate
@@ -31,10 +31,10 @@ Create a 32-byte private holder key with file mode `0600`; keep the client copy
 private. The operator can register it using JSON files:
 
 ```bash
-commontrace team register-capability-agent enrollment.json --dest /srv/unimem
-commontrace team grant grant.json --dest /srv/unimem
-commontrace team attenuate attenuation.json --dest /srv/unimem
-commontrace team revoke revocation.json --dest /srv/unimem
+unimem team register-capability-agent enrollment.json --dest /srv/unimem
+unimem team grant grant.json --dest /srv/unimem
+unimem team attenuate attenuation.json --dest /srv/unimem
+unimem team revoke revocation.json --dest /srv/unimem
 ```
 
 `enrollment.json` names `identity`, `principal`, `secret_file`, and `clearance`.
@@ -81,7 +81,7 @@ primary tenancy.
 Each HTTP request needs a fresh holder proof in addition to normal credentials:
 
 ```python
-from commontrace import capabilities, frontier_protocol
+from unimem import capabilities, frontier_protocol
 
 headers = capabilities.headers(
     token, key=holder_key, holder_algorithm="hmac-sha256",
@@ -152,7 +152,7 @@ namespace.
 
 ## Handoff bundles
 
-`commontrace team handoff` accepts `identities`, `recipient`, `context`, and an
+`unimem team handoff` accepts `identities`, `recipient`, `context`, and an
 optional `seconds` up to 300. MCP exposes `handoff_bundle` with the same fields.
 Only sources admitted to both sender and recipient enter the bundle. The sender
 needs an export request when delegated. The bundle carries IFC presentation,

@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from commontrace import frontmatter, hub_client, paths
+from unimem import frontmatter, hub_client, paths
 
 
 def test_lesson_sections_extracts_rule_and_how_to_apply():
@@ -24,13 +24,13 @@ def test_lesson_sections_handles_empty_body():
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
-    monkeypatch.delenv("COMMONTRACE_ROOT", raising=False)
+    monkeypatch.delenv("UNIMEM_ROOT", raising=False)
     monkeypatch.chdir(tmp_path)
     return tmp_path
 
 
 def test_iter_active_lesson_paths_skips_template_and_non_active(store):
-    from commontrace.cli import main
+    from unimem.cli import main
 
     assert main(["init", "--agent-type", "code", "--dest", str(store)]) == 0
     ldir = paths.lessons_dir(str(store))
@@ -409,7 +409,7 @@ def _write_captured_trace(
     tdir, filename, trace_id, title, context, solution,
     agent_type="code", agent_id="", tags=None, outcome=None, extra=None,
 ):
-    from commontrace import templates
+    from unimem import templates
 
     os.makedirs(tdir, exist_ok=True)
     fm = templates.trace_frontmatter(trace_id, title, agent_type, tags or [], outcome=outcome, agent_id=agent_id)

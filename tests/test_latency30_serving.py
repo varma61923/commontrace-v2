@@ -9,7 +9,7 @@ import threading
 
 import pytest
 
-from commontrace import frontmatter, gateway, lesson_cache, paths
+from unimem import frontmatter, gateway, lesson_cache, paths
 
 
 @pytest.fixture(autouse=True)

@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import os
 
-from commontrace import paths
+from unimem import paths
 
 
 class TestWarnIfImplicitCwdStoreMatchesResolveRootTruthiness:
     def test_an_empty_explicit_falls_through_like_none(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)
-        monkeypatch.delenv("COMMONTRACE_ROOT", raising=False)
+        monkeypatch.delenv("UNIMEM_ROOT", raising=False)
         monkeypatch.delenv("JUSTDOIT_ROOT", raising=False)
 
         resolved_empty = paths.resolve_root("")
@@ -30,7 +30,7 @@ class TestWarnIfImplicitCwdStoreMatchesResolveRootTruthiness:
 
     def test_an_existing_store_in_cwd_does_not_warn(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)
-        monkeypatch.delenv("COMMONTRACE_ROOT", raising=False)
+        monkeypatch.delenv("UNIMEM_ROOT", raising=False)
         monkeypatch.delenv("JUSTDOIT_ROOT", raising=False)
         os.makedirs(os.path.join(str(tmp_path), "memory"), exist_ok=True)
 

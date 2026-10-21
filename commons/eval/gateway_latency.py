@@ -23,13 +23,13 @@ import statistics
 import tempfile
 import time
 
-from commontrace import gateway, holdout_io
+from unimem import gateway, holdout_io
 
 BUCKET = 2000
 
 
 def measure(occasions: int, items: int, durable: bool) -> dict:
-    root = tempfile.mkdtemp(prefix="commontrace-lat-")
+    root = tempfile.mkdtemp(prefix="unimem-lat-")
     try:
         holdout_io.configure(root, rate=0.5, salt="latency")
         token = "t" * 32

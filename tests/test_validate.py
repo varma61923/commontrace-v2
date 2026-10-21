@@ -1,6 +1,6 @@
 import pytest
 
-from commontrace.validate import (
+from unimem.validate import (
     UnsupportedSchemaError,
     _check_type,
     assert_supported_schema,
@@ -13,14 +13,14 @@ class TestLoadSchema:
     def test_load_valid_trace_schema(self):
         schema = load_schema("trace.schema.json")
         assert isinstance(schema, dict)
-        assert schema.get("title") == "CommonTrace Trace"
+        assert schema.get("title") == "UniMem Trace"
         assert "required" in schema
         assert "properties" in schema
 
     def test_load_valid_lesson_schema(self):
         schema = load_schema("lesson.schema.json")
         assert isinstance(schema, dict)
-        assert schema.get("title") == "CommonTrace Lesson"
+        assert schema.get("title") == "UniMem Lesson"
         assert "required" in schema
         assert "properties" in schema
 

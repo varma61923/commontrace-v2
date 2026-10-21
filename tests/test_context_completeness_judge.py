@@ -4,7 +4,7 @@ import pytest
 
 from benchmarks import conversation_bench as bench
 from benchmarks.judges.context_completeness import ContextCompletenessJudge
-from commontrace import llm
+from unimem import llm
 
 
 def test_prompt_separates_retrieval_sufficiency_from_answer_quality():

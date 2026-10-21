@@ -27,7 +27,7 @@ class TestTheShippedStackServesAsANonBypassingRole:
         urls = [line for line in hub_block.splitlines() if "HUB_DATABASE_URL" in line]
         assert urls, "the hub service must configure HUB_DATABASE_URL"
         for line in urls:
-            assert "commontrace_app:" in line, (
+            assert "unimem_app:" in line, (
                 "the Hub must serve as the non-superuser runtime role; a "
                 f"HUB_DATABASE_URL naming the owner makes RLS inert: {line.strip()}"
             )
@@ -37,7 +37,7 @@ class TestTheShippedStackServesAsANonBypassingRole:
         urls = [line for line in migrate_block.splitlines() if "HUB_DATABASE_URL" in line]
         assert urls, "the migrate service must configure HUB_DATABASE_URL"
         for line in urls:
-            assert "commontrace:" in line and "commontrace_app:" not in line
+            assert "unimem:" in line and "unimem_app:" not in line
 
     def test_the_init_script_is_mounted_where_postgres_will_run_it(self):
         compose = self._compose()
@@ -50,7 +50,7 @@ class TestTheShippedStackServesAsANonBypassingRole:
 
     def test_the_runtime_role_gets_no_ddl_rights(self):
         sql = self._init_sql()
-        assert "GRANT USAGE ON SCHEMA public TO commontrace_app" in sql
+        assert "GRANT USAGE ON SCHEMA public TO unimem_app" in sql
         assert "GRANT CREATE ON SCHEMA" not in sql
         assert "GRANT ALL" not in sql
 
@@ -59,7 +59,7 @@ class TestTheShippedStackServesAsANonBypassingRole:
 
         compose = yaml.safe_load(self._compose())
         configmap = yaml.safe_load((self._ROOT / "deploy/k8s/configmap.yaml").read_text(encoding="utf-8"))
-        values = yaml.safe_load((self._ROOT / "deploy/helm/commontrace-hub/values.yaml").read_text(encoding="utf-8"))
+        values = yaml.safe_load((self._ROOT / "deploy/helm/unimem-hub/values.yaml").read_text(encoding="utf-8"))
         assert compose["services"]["hub"]["environment"]["HUB_REQUIRE_RLS"] == "true"
         assert configmap["data"]["HUB_REQUIRE_RLS"] == "true"
         assert values["config"]["HUB_REQUIRE_RLS"] == "true"
@@ -67,8 +67,8 @@ class TestTheShippedStackServesAsANonBypassingRole:
     def test_future_migrations_are_covered_by_default_privileges(self):
         sql = self._init_sql()
         assert "ALTER DEFAULT PRIVILEGES IN SCHEMA public" in sql
-        assert "ON TABLES TO commontrace_app" in sql
-        assert "ON SEQUENCES TO commontrace_app" in sql
+        assert "ON TABLES TO unimem_app" in sql
+        assert "ON SEQUENCES TO unimem_app" in sql
 
     def test_the_rate_limit_table_is_precreated_for_the_runtime_role(self):
         from hub.abuse import _RATE_LIMIT_DDL

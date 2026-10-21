@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 _ATTENTION_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "commontrace", "reference"
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "unimem", "reference"
 )
 if _ATTENTION_DIR not in sys.path:
     sys.path.insert(0, _ATTENTION_DIR)
@@ -33,14 +33,14 @@ def _import_attention():
 
 build_index, attn_query = _import_attention()
 
-from commontrace import (  # noqa: E402 -- must follow _import_attention() above
+from unimem import (  # noqa: E402 -- must follow _import_attention() above
     cli,
     evidence_io,
     frontmatter,
     overlap,
     trace_io,
 )
-from commontrace.commands import capture_cmd, init_cmd, pilot_cmd, query_cmd, serve_cmd, taxonomy_cmd  # noqa: E402
+from unimem.commands import capture_cmd, init_cmd, pilot_cmd, query_cmd, serve_cmd, taxonomy_cmd  # noqa: E402
 
 
 def test_build_index_safe_mtime_handles_deleted_or_missing_file(tmp_path):
@@ -56,7 +56,7 @@ def test_build_index_safe_mtime_handles_deleted_or_missing_file(tmp_path):
 
 
 def test_pilot_metrics_load_traces_ignores_unreadable_file(tmp_path):
-    from commontrace.reference import pilot_metrics
+    from unimem.reference import pilot_metrics
 
     tdir = tmp_path / "memory" / "traces"
     tdir.mkdir(parents=True)
@@ -150,7 +150,7 @@ def test_cli_catches_expanded_exceptions():
 
         p.set_defaults(func=fail_func)
 
-        with patch("commontrace.cli.build_parser", return_value=parser):
+        with patch("unimem.cli.build_parser", return_value=parser):
             ret = cli.main(["sub"])
             assert ret == 1
 
@@ -214,7 +214,7 @@ def test_pilot_cmd_trace_loading_and_reuse(tmp_path):
             raise AssertionError("trace glob should not be called when traces provided")
         return _real_glob(pattern, *args, **kwargs)
 
-    with patch("commontrace.evidence_io.glob.glob", side_effect=_selective_glob):
+    with patch("unimem.evidence_io.glob.glob", side_effect=_selective_glob):
         evidence = evidence_io.load_evidence(str(tmp_path), traces=all_instances)
     assert isinstance(evidence, list)
 
@@ -261,10 +261,10 @@ def test_query_cmd_importance_floor_flag(tmp_path):
     args = parser.parse_args(["query", "my task", "--include-importance-floor", "3", "--dest", str(tmp_path)])
     assert args.include_importance_floor == 3
 
-    with patch("commontrace.commands.query_cmd._has_candidates", return_value=True), \
-            patch("commontrace.commands.query_cmd.has_attention_deps", return_value=True), \
-            patch("commontrace.commands.query_cmd._index_is_unusable", return_value=""):
-        with patch("commontrace.commands.query_cmd.run_script", return_value=(0, "")) as mock_run:
+    with patch("unimem.commands.query_cmd._has_candidates", return_value=True), \
+            patch("unimem.commands.query_cmd.has_attention_deps", return_value=True), \
+            patch("unimem.commands.query_cmd._index_is_unusable", return_value=""):
+        with patch("unimem.commands.query_cmd.run_script", return_value=(0, "")) as mock_run:
             query_cmd.run(args)
             assert mock_run.called
             called_args = mock_run.call_args[0][2]
@@ -331,6 +331,6 @@ def test_frontmatter_new_file_permissions_follow_changed_umask(tmp_path):
         first.chmod(0o640)
         frontmatter.write(str(first), {"name": "updated"}, "body")
         assert first.stat().st_mode & 0o777 == 0o640
-        assert list(tmp_path.glob(".commontrace-umask-probe-*")) == []
+        assert list(tmp_path.glob(".unimem-umask-probe-*")) == []
     finally:
         os.umask(original_umask)

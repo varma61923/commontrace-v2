@@ -1,11 +1,11 @@
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: commontrace-hub
+  name: unimem-hub
   labels:
-    app: commontrace-hub
+    app: unimem-hub
 spec:
   minAvailable: 1
   selector:
     matchLabels:
-      app: commontrace-hub
+      app: unimem-hub

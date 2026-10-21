@@ -16,8 +16,8 @@ except ImportError:
     HAS_NUMPY = False
 
 
-from commontrace import frontmatter, paths, trace_io
-from commontrace.cli import main as cli_main
+from unimem import frontmatter, paths, trace_io
+from unimem.cli import main as cli_main
 
 
 @pytest.fixture

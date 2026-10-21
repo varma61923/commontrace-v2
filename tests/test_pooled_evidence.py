@@ -7,8 +7,8 @@ import random
 
 import pytest
 
-from commontrace import frontier_protocol as fp
-from commontrace import pooled_evidence as pool
+from unimem import frontier_protocol as fp
+from unimem import pooled_evidence as pool
 
 UNIT = fp.digest("public skill body")
 
@@ -126,8 +126,8 @@ def test_invalid_stats_rejected(field, value):
 
 def test_signed_contributions_privacy_budget_and_scope(tmp_path):
     pytest.importorskip("cryptography")
-    from commontrace import memory_authority, pooled_io
-    from commontrace import nextwave_store as store
+    from unimem import memory_authority, pooled_io
+    from unimem import nextwave_store as store
 
     receiver = str(tmp_path / "receiver")
     bundles = []
@@ -169,7 +169,7 @@ def test_signed_contributions_privacy_budget_and_scope(tmp_path):
 
 def test_cli_and_mcp_pool_surfaces(tmp_path):
     pytest.importorskip("mcp")
-    from commontrace.mcp_server import build_server
+    from unimem.mcp_server import build_server
     from tests.test_mcp_server import call, cli
 
     request = tmp_path / "budget.json"

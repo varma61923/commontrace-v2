@@ -29,7 +29,7 @@ WORKDIR /app
 
 COPY hub/ /app/hub/
 COPY protocol/ /app/protocol/
-COPY commontrace/ /app/commontrace/
+COPY unimem/ /app/unimem/
 
 # Checkouts may use a private umask; the non-root service must read packaged code.
 RUN chmod -R u=rwX,go=rX /app

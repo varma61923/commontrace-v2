@@ -6,7 +6,7 @@ import os
 
 import pytest
 
-from commontrace import agent_registry, embeddings, gateway, kg_similarity, marketplace
+from unimem import agent_registry, embeddings, gateway, kg_similarity, marketplace
 
 TOKEN = "t" * 40
 HEADERS = {"Host": "localhost:8787", "Authorization": "Bearer " + TOKEN}
@@ -91,7 +91,7 @@ def test_mmr_recipe_order_matches_the_quadratic_reference():
     import random
     from types import SimpleNamespace
 
-    from commontrace import search_recipes
+    from unimem import search_recipes
 
     rnd = random.Random(7)
     words = ["cache", "retry", "deploy", "redis", "queue", "token", "auth", "billing", "latency", "index"]
@@ -117,7 +117,7 @@ def test_mmr_recipe_order_matches_the_quadratic_reference():
 
 
 def test_scrub_text_matches_redact_secrets():
-    from commontrace import memory_guard
+    from unimem import memory_guard
 
     text = "deploy with api_key=sk-live-0123456789abcdefghijkl and continue"
     assert memory_guard.scrub_text(text) == memory_guard.redact_secrets(text)[0]

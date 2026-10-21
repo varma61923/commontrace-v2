@@ -4,9 +4,9 @@ import copy
 
 import pytest
 
-from commontrace import certified_erasure as erase
-from commontrace import frontier_protocol as fp
-from commontrace import hierarchical, incident
+from unimem import certified_erasure as erase
+from unimem import frontier_protocol as fp
+from unimem import hierarchical, incident
 
 pytest.importorskip("cryptography")
 
@@ -72,7 +72,7 @@ def test_cli_erasure_reaches_derived_lessons_rewrites_and_live_recall(tmp_path):
     import json
     import os
 
-    from commontrace import holdout_io, lesson_io, recall, retention
+    from unimem import holdout_io, lesson_io, recall, retention
     from tests.test_mcp_server import _write_lesson, cli
 
     root = str(tmp_path / "store")

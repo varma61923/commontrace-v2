@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import pytest
 
-from commontrace import contagion, hierarchical, memory_authority
-from commontrace import nextwave_store as store
+from unimem import contagion, hierarchical, memory_authority
+from unimem import nextwave_store as store
 
 
 def fact(root, text, *, sources=(), scopes=(), writer="root-a"):
@@ -57,7 +57,7 @@ def test_single_root_majority_is_one_source_and_reretrieval_rechecks_admission(t
 def test_retention_and_deletion_remove_read_graph_edges(tmp_path, monkeypatch):
     from datetime import datetime, timedelta
 
-    from commontrace import frontier_protocol as fp
+    from unimem import frontier_protocol as fp
 
     monkeypatch.setattr("os.fsync", lambda _: None)
     root = str(tmp_path)
@@ -75,7 +75,7 @@ def test_retention_and_deletion_remove_read_graph_edges(tmp_path, monkeypatch):
 def test_cli_and_gateway_independence_are_additive_and_read_graph_is_opt_in(tmp_path, monkeypatch, capsys):
     import json
 
-    from commontrace import cli, gateway
+    from unimem import cli, gateway
 
     monkeypatch.setattr("os.fsync", lambda _: None)
     root = str(tmp_path)
@@ -104,7 +104,7 @@ def test_mcp_contagion_omits_private_nodes(tmp_path, monkeypatch):
     import json
 
     pytest.importorskip("mcp")
-    from commontrace import mcp_server
+    from unimem import mcp_server
 
     monkeypatch.setattr("os.fsync", lambda _: None)
     root = str(tmp_path)

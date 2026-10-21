@@ -7,8 +7,8 @@ import random
 import pytest
 
 from benchmarks import causalmembench
-from commontrace import holdout_io
-from commontrace.measure import CausalMemory, HarmWatch
+from unimem import holdout_io
+from unimem.measure import CausalMemory, HarmWatch
 
 ITEMS = [{"id": "good", "memory": "check the idempotency key"}, {"id": "plain", "memory": "say hello"}]
 
@@ -54,9 +54,9 @@ def test_a_shared_watch_must_agree_on_graduation(tmp_path):
 
 
 def test_causalmembench_is_reproducible_and_scores_the_oracle_perfectly():
-    a = causalmembench.run(["correlational", "oracle", "commontrace@0.5+graduate"], seeds=1, occasions=600,
+    a = causalmembench.run(["correlational", "oracle", "unimem@0.5+graduate"], seeds=1, occasions=600,
                            lag=10, missing=0.0)
-    b = causalmembench.run(["correlational", "oracle", "commontrace@0.5+graduate"], seeds=1, occasions=600,
+    b = causalmembench.run(["correlational", "oracle", "unimem@0.5+graduate"], seeds=1, occasions=600,
                            lag=10, missing=0.0)
     assert a["results"] == b["results"]
     oracle = a["results"]["oracle"]
@@ -64,7 +64,7 @@ def test_causalmembench_is_reproducible_and_scores_the_oracle_perfectly():
     assert "CausalMemBench" in causalmembench.render(a)
 
 
-@pytest.mark.parametrize("spec", ["nope", "commontrace@2", "commontrace@x", "commontrace-0.3"])
+@pytest.mark.parametrize("spec", ["nope", "unimem@2", "unimem@x", "unimem-0.3"])
 def test_causalmembench_rejects_bad_policies(spec):
     with pytest.raises((ValueError, ImportError)):
         causalmembench.load_policy(spec)

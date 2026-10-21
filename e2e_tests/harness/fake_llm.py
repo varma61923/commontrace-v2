@@ -32,10 +32,10 @@ def fake_model(reply: dict):
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     env = {
-        "COMMONTRACE_LLM_PROVIDER": "openai-compatible",
-        "COMMONTRACE_LLM_BASE_URL": f"http://127.0.0.1:{server.server_address[1]}",
-        "COMMONTRACE_LLM_API_KEY": "test-key",
-        "COMMONTRACE_LLM_MODEL": "fake",
+        "UNIMEM_LLM_PROVIDER": "openai-compatible",
+        "UNIMEM_LLM_BASE_URL": f"http://127.0.0.1:{server.server_address[1]}",
+        "UNIMEM_LLM_API_KEY": "test-key",
+        "UNIMEM_LLM_MODEL": "fake",
     }
     try:
         yield env, prompts

@@ -20,12 +20,12 @@ UNKNOWN_KID_REFETCH_SECONDS = 60
 
 # How long a cached key set may stand in for an unreachable JWKS endpoint.
 # Bounded so that blocking the fetch cannot keep a rotated-out key trusted
-# indefinitely (the same ceiling commontrace/oauth.py applies locally).
+# indefinitely (the same ceiling unimem/oauth.py applies locally).
 MAX_STALE_JWKS_SECONDS = 24 * 3600
 
 _KTY_FOR_ALG_PREFIX = {"RS": "RSA", "ES": "EC"}
 
-logger = logging.getLogger("commontrace.hub.sso")
+logger = logging.getLogger("unimem.hub.sso")
 
 
 class IdentityError(Exception):
@@ -55,7 +55,7 @@ class IdentityProvider:
 def protected_resource_metadata(provider: IdentityProvider) -> dict:
     """RFC 9728 metadata consumed by remote MCP clients during OAuth sign-in.
 
-    CommonTrace is the resource server; the customer's configured OIDC issuer
+    UniMem is the resource server; the customer's configured OIDC issuer
     remains the authorization server and owns the interactive login and token
     issuance flow.
     """

@@ -307,8 +307,8 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from commontrace import experiment, harm, prereg, raw_export
-from commontrace.configuration import getenv as _configuration_getenv
+from unimem import experiment, harm, prereg, raw_export
+from unimem.configuration import getenv as _configuration_getenv
 from hub import abuse, alerts, audit, auth, commons, crud, events, outcomes, plans, rbac, retention
 from hub.billing import StripeError, StripeSettings, cancel_subscription
 from hub.config import HubConfig
@@ -861,7 +861,7 @@ async def commons_seed(
 
 
 async def kb_stats(session_factory=None) -> None:
-    """Is the CommonTrace Knowledge Base actually earning its query traffic?"""
+    """Is the UniMem Knowledge Base actually earning its query traffic?"""
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
         entries = (
@@ -1154,7 +1154,7 @@ async def export_assignments(
     print(f"# {result.summary}", file=sys.stderr)
     print(f"# digest: {result.digest}", file=sys.stderr)
     print(
-        "# Verify with commontrace.raw_export.verify(csv_text, digest), or "
+        "# Verify with unimem.raw_export.verify(csv_text, digest), or "
         "reimplement it:\n"
         "#   sha256 over the canonical rows, sorted, joined -- see raw_export.digest_of.",
         file=sys.stderr,

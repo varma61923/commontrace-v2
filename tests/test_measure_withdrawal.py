@@ -6,10 +6,10 @@ import random
 
 import pytest
 
-from commontrace import evidence, holdout_io, retrieval_io
-from commontrace import memory_adapters as ma
-from commontrace import memory_sources as ms
-from commontrace.measure import CausalMemory
+from unimem import evidence, holdout_io, retrieval_io
+from unimem import memory_adapters as ma
+from unimem import memory_sources as ms
+from unimem.measure import CausalMemory
 
 ITEMS = [{"id": "harm", "memory": "always retry three times"}, {"id": "ok", "memory": "check the idempotency key"}]
 

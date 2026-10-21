@@ -9,10 +9,10 @@ import types
 
 import pytest
 
-from commontrace import allocation, allocation_schedule, causal_gate, experiment, holdout_io, integrity
-from commontrace.causal_gate import Row
-from commontrace.cli import main
-from commontrace.commands import experiment_cmd
+from unimem import allocation, allocation_schedule, causal_gate, experiment, holdout_io, integrity
+from unimem.causal_gate import Row
+from unimem.cli import main
+from unimem.commands import experiment_cmd
 
 T0 = datetime.datetime(2026, 3, 1, 9, 0, tzinfo=datetime.timezone.utc)
 
@@ -386,7 +386,7 @@ def test_a_plain_assignment_without_context_logs_no_context(tmp_path, clock):
 
 
 def test_the_gateway_takes_a_context_and_refuses_a_bad_one(tmp_path):
-    from commontrace import gateway
+    from unimem import gateway
     from tests.test_gateway import ITEMS, TOKEN, _start_experiment, recall
 
     root = str(tmp_path)
@@ -401,7 +401,7 @@ def test_the_gateway_takes_a_context_and_refuses_a_bad_one(tmp_path):
 
 def test_mcp_retrieve_logs_the_agent_type_and_the_report_tool_answers(tmp_path):
     pytest.importorskip("mcp", reason="needs the MCP SDK")
-    from commontrace import mcp_server
+    from unimem import mcp_server
     from tests.test_mcp_server import _write_lesson, call, cli
 
     root = str(tmp_path / "store")

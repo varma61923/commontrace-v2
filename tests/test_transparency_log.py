@@ -5,8 +5,8 @@ import json
 
 import pytest
 
-from commontrace import frontier_protocol as fp
-from commontrace import transparency_log as log
+from unimem import frontier_protocol as fp
+from unimem import transparency_log as log
 
 
 def test_rfc_golden_vectors():
@@ -85,14 +85,14 @@ def test_reorder_fork_and_cross_store_signature(tmp_path):
     assert not log.verify(second, receipt)
     leaves = fp.rows(fp.filename(first, log.LEAVES))
     leaves.reverse()
-    from commontrace import _jsonl
+    from unimem import _jsonl
     _jsonl.write_rows(fp.filename(first, log.LEAVES), leaves)
     with pytest.raises(ValueError):
         log.head(first)
 
 
 def test_log_cli_and_mcp(tmp_path):
-    from commontrace.mcp_server import build_server
+    from unimem.mcp_server import build_server
     pytest.importorskip("mcp")
     from tests.test_mcp_server import call, cli
 
@@ -110,7 +110,7 @@ def test_optional_ed25519(tmp_path, monkeypatch, legacy_public_bytes):
     pytest.importorskip("cryptography.hazmat.primitives.asymmetric.ed25519")
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-    from commontrace import memory_authority
+    from unimem import memory_authority
     if legacy_public_bytes:
         monkeypatch.delattr(Ed25519PublicKey, "public_bytes_raw", raising=False)
     root = str(tmp_path)
@@ -137,7 +137,7 @@ def test_hub_transparency_signer_supports_legacy_crypto(monkeypatch):
 def test_rotations_preserve_old_logical_checkpoints_and_rewrites_fail(tmp_path):
     import copy
 
-    from commontrace import _jsonl
+    from unimem import _jsonl
 
     root, name = str(tmp_path), "rotation-regression.jsonl"
     for index in range(10):
@@ -195,7 +195,7 @@ def test_verified_cache_detects_edits_and_has_bounded_append_work(tmp_path, monk
 
 
 def test_read_only_state_and_returned_values_cannot_poison_cache(tmp_path):
-    from commontrace import lineage
+    from unimem import lineage
     absent = tmp_path / "absent"
     assert lineage.labels(str(absent), "old")["integrity"] == "unknown"
     assert not absent.exists()

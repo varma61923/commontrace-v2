@@ -5,9 +5,9 @@ import json
 
 import pytest
 
-from commontrace import api_schema, hierarchical, holdout_io, memory_control, recall
-from commontrace.client import MemoryClient
-from commontrace.gateway import Gateway
+from unimem import api_schema, hierarchical, holdout_io, memory_control, recall
+from unimem.client import MemoryClient
+from unimem.gateway import Gateway
 
 PLACES = ("amsterdam", "berlin", "chicago", "dublin", "everett", "frankfurt", "geneva", "helsinki",
           "istanbul", "jakarta", "kyoto", "lisbon")
@@ -141,9 +141,9 @@ def test_mcp_memory_recall_takes_adaptive_budget_and_reranker(facts, monkeypatch
     pytest.importorskip("mcp")
     import asyncio
 
-    from commontrace import mcp_server
+    from unimem import mcp_server
 
-    monkeypatch.setenv("COMMONTRACE_CONVERSATION_EMBEDDER", "none")
+    monkeypatch.setenv("UNIMEM_CONVERSATION_EMBEDDER", "none")
     server = mcp_server.build_server(facts)
 
     def call(**arguments):

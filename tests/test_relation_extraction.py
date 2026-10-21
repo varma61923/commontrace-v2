@@ -5,8 +5,8 @@ import os
 
 import pytest
 
-from commontrace import cli, graph, ingest, ontology, provenance
-from commontrace import relation_extraction as rx
+from unimem import cli, graph, ingest, ontology, provenance
+from unimem import relation_extraction as rx
 
 TEXT = ("Alice Smith works at Acme Corp since 2021. The Payments Service depends on Redis.\n"
         "Dr. Sarah Chen joined Globex Inc in March 2024. The billing-api does not depend on Kafka.\n"
@@ -140,7 +140,7 @@ def test_write_triples_uses_the_validated_graph_path(root):
 
 
 def test_an_untypable_subject_takes_its_type_from_the_relation_domain(root, monkeypatch):
-    monkeypatch.setenv("COMMONTRACE_TYPING_MODEL", "off")  # leave the name untypable by every other evidence
+    monkeypatch.setenv("UNIMEM_TYPING_MODEL", "off")  # leave the name untypable by every other evidence
     rx.ingest_text(root, "Zorvan Kade works at Acme Corp since 2021.", source="notes/team.md")
     node = graph.load_nodes(root)["person:zorvan_kade"]
     assert node.properties["type_inferred_from"] == "works_at"

@@ -6,8 +6,8 @@ import sys
 
 import pytest
 
-from commontrace import graph, hierarchical, recall
-from commontrace.conversation import Store
+from unimem import graph, hierarchical, recall
+from unimem.conversation import Store
 from tests.conftest import write_lesson
 
 
@@ -97,7 +97,7 @@ def test_truncate_prefers_sentence_boundary():
 
 
 def test_cli(store):
-    out = subprocess.run([sys.executable, "-m", "commontrace.cli", "recall", "postgres failover", "--json",  # nosec
+    out = subprocess.run([sys.executable, "-m", "unimem.cli", "recall", "postgres failover", "--json",  # nosec
                           "--budget", "400", "--dest", store], capture_output=True, text=True, check=False)
     assert out.returncode == 0, out.stderr
     data = json.loads(out.stdout)
@@ -108,9 +108,9 @@ def test_mcp_tool(store, monkeypatch):
     pytest.importorskip("mcp")
     import asyncio
 
-    from commontrace import mcp_server
+    from unimem import mcp_server
 
-    monkeypatch.setenv("COMMONTRACE_CONVERSATION_EMBEDDER", "none")
+    monkeypatch.setenv("UNIMEM_CONVERSATION_EMBEDDER", "none")
     server = mcp_server.build_server(store)
 
     def call(name, **arguments):

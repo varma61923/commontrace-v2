@@ -15,11 +15,11 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 
-from commontrace import capabilities as cap
-from commontrace import capability_io as io
-from commontrace import frontier_protocol as fp
-from commontrace import lineage, paths
-from commontrace.memory_record import MemoryRecord
+from unimem import capabilities as cap
+from unimem import capability_io as io
+from unimem import frontier_protocol as fp
+from unimem import lineage, paths
+from unimem.memory_record import MemoryRecord
 from hub import auth, crud, delegation
 from hub.db import session_scope
 from hub.memory_records import PostgresJournal

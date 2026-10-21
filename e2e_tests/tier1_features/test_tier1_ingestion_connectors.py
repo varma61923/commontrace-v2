@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from commontrace import failure_import
+from unimem import failure_import
 from e2e_tests.harness.cli_runner import require_milestone, run_cli
 from e2e_tests.harness.store_fixtures import (
     create_sample_code_repo,

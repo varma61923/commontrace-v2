@@ -33,7 +33,7 @@ def fixture(path, *, development=None, verified=False):
         manifest["selection"]["locomo"].update(excluded_ids=["q1"], question_exclusions_sha256="bound")
     report = {"answer_accuracy": None, "conditions": {},
               "comparisons": {"lexical-vs-dense": {}, "lexical-vs-graphiti-episodic": {}}}
-    for label, profile in (('<img src=x onerror=alert(1)>', {"profile": "commontrace"}),
+    for label, profile in (('<img src=x onerror=alert(1)>', {"profile": "unimem"}),
                            ("graphiti", {"profile": "graphiti-episodic"})):
         if verified and label == "graphiti":
             profile["group_namespace"] = "sha256-canonical-space-utf8"

@@ -7,10 +7,10 @@ for the benchmark run.
 from __future__ import annotations
 
 from benchmarks import conversation_bench
-from commontrace.conversation import Options
+from unimem.conversation import Options
 
 if not hasattr(Options(), "second_pass"):
-    raise SystemExit("this CommonTrace revision does not support Options.second_pass")
+    raise SystemExit("this UniMem revision does not support Options.second_pass")
 
 _product_options = conversation_bench.product_options
 

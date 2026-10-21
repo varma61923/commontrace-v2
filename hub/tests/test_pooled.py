@@ -8,8 +8,8 @@ from dataclasses import replace
 import pytest
 from sqlalchemy import select
 
-from commontrace import frontier_protocol as fp
-from commontrace import memory_authority, pooled_io
+from unimem import frontier_protocol as fp
+from unimem import memory_authority, pooled_io
 from hub import scopes
 from hub.db import session_scope
 from hub.models import PooledContribution

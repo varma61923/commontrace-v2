@@ -21,8 +21,8 @@ from typing import Any
 
 import pytest
 
-from commontrace.vector_snapshots import BuildLease, SnapshotConflict
-from commontrace.vector_store import PostgresVectorIndex, SQLiteVectorIndex, VectorRecord
+from unimem.vector_snapshots import BuildLease, SnapshotConflict
+from unimem.vector_store import PostgresVectorIndex, SQLiteVectorIndex, VectorRecord
 
 
 async def _opening(settings: dict[str, Any]) -> SQLiteVectorIndex | PostgresVectorIndex:
@@ -40,7 +40,7 @@ def _emit(value: object) -> None:
 async def _worker() -> None:
     request = json.loads(sys.stdin.readline())
     if request["role"] == "canonical-writer":
-        from commontrace.conversation import Store
+        from unimem.conversation import Store
 
         _emit({"ready": True})
         command = json.loads(await asyncio.to_thread(sys.stdin.readline))
@@ -122,9 +122,9 @@ def _child(settings: dict[str, Any], role: str, **kwargs: object) -> Iterator[su
 
 @pytest.fixture(params=["sqlite", "pgexact", "pghnsw"])
 def settings(request, tmp_path):
-    dsn = os.environ.get("COMMONTRACE_TEST_PGVECTOR_DSN")
+    dsn = os.environ.get("UNIMEM_TEST_PGVECTOR_DSN")
     if request.param != "sqlite" and not dsn:
-        pytest.skip("set COMMONTRACE_TEST_PGVECTOR_DSN to exercise real PostgreSQL processes")
+        pytest.skip("set UNIMEM_TEST_PGVECTOR_DSN to exercise real PostgreSQL processes")
     return {"engine": request.param, "path": str(tmp_path / "vectors.db"), "dsn": dsn,
             "tenant": "process-contract-" + uuid.uuid4().hex}
 
@@ -222,7 +222,7 @@ def test_crashed_builder_cannot_publish_after_lease_expiry(settings):
 
 
 def test_external_process_mutation_aborts_staged_canonical_build(settings, tmp_path, monkeypatch):
-    from commontrace.conversation import AsyncStore, ConversationError, Options, embed
+    from unimem.conversation import AsyncStore, ConversationError, Options, embed
 
     np = pytest.importorskip("numpy")
 

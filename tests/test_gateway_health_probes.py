@@ -2,7 +2,7 @@
 import json
 import os
 
-from commontrace import gateway, holdout_io, paths
+from unimem import gateway, holdout_io, paths
 
 TOKEN = "t" * 40
 
@@ -60,7 +60,7 @@ def test_probes_are_in_the_live_openapi_without_security(tmp_path):
 
 
 def test_conversation_recall_accepts_an_adaptive_budget(tmp_path, monkeypatch):
-    monkeypatch.setenv("COMMONTRACE_CONVERSATION_EMBEDDER", "none")
+    monkeypatch.setenv("UNIMEM_CONVERSATION_EMBEDDER", "none")
     _root, g = _gateway(tmp_path)
     auth = {"Authorization": f"Bearer {TOKEN}", "Host": "localhost:8787"}
 

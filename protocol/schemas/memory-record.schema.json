@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://commontrace.dev/schemas/memory-record.schema.json",
-  "title": "CommonTrace versioned memory envelope",
+  "$id": "https://unimem.dev/schemas/memory-record.schema.json",
+  "title": "UniMem versioned memory envelope",
   "description": "Optional additive envelope around existing memory payloads. No change to Trace or Lesson wire formats.",
   "type": "object",
   "required": ["id", "kind", "version", "payload", "status", "is_latest", "relations", "provenance", "scope", "confidence", "evidence"],

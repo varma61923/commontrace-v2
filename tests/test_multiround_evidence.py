@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from commontrace import fact_store, hierarchical, search_recipes
+from unimem import fact_store, hierarchical, search_recipes
 
 
 def seed(root, identities):

@@ -8,7 +8,7 @@ import sys
 
 import pytest
 
-from commontrace import mcp_server
+from unimem import mcp_server
 
 pytest.importorskip("mcp")
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -16,7 +16,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 def cli(*argv: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [sys.executable, "-m", "commontrace.cli", *argv],
+        [sys.executable, "-m", "unimem.cli", *argv],
         capture_output=True, text=True, cwd=REPO_ROOT, check=False,
     )
 
@@ -82,7 +82,7 @@ def test_mcp_facts(server):
 
 
 def test_mcp_graph(server):
-    from commontrace import graph
+    from unimem import graph
     store = server.name
     root = [t for t in asyncio.run(server.list_tools()) if t.name == "store_status"]
     out = call(server, "store_status")
@@ -113,7 +113,7 @@ def test_mcp_memory_writes_refuse_unsafe_content(server):
 
 
 def test_mcp_graph_query_hops_are_bounded(server, store):
-    from commontrace import graph
+    from unimem import graph
 
     for i in range(8):
         graph.add_edge(store, f"n{i}", f"n{i + 1}", "depends_on")
@@ -123,7 +123,7 @@ def test_mcp_graph_query_hops_are_bounded(server, store):
 
 
 def test_mcp_skills_are_listed_and_loaded_and_screened(server, store):
-    from commontrace import frontmatter
+    from unimem import frontmatter
 
     good = os.path.join(store, "skills", "rotate-keys", "SKILL.md")
     frontmatter.write(good, {"name": "rotate-keys", "description": "Rotate service keys safely."},

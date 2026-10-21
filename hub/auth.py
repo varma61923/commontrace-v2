@@ -213,7 +213,7 @@ def clear_auth_cache() -> None:
     _AUTH_CACHE.clear()
 
 
-AUTH_INVALIDATION_CHANNEL = "commontrace_auth_invalidate"
+AUTH_INVALIDATION_CHANNEL = "unimem_auth_invalidate"
 
 
 async def announce_auth_change(session: AsyncSession) -> None:

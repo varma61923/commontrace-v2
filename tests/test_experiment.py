@@ -5,8 +5,8 @@ import os
 import pytest
 import yaml
 
-from commontrace import experiment as ex
-from commontrace.cli import main
+from unimem import experiment as ex
+from unimem.cli import main
 
 
 class TestHoldoutAssignment:
@@ -222,7 +222,7 @@ class TestAnalyze:
             ex.analyze(rows, sequential=True, target_n_per_arm={"a": 0})
 
     def test_aipw_horizon_uses_the_fixed_per_lesson_target(self, monkeypatch):
-        from commontrace import aipw
+        from unimem import aipw
 
         horizons = []
 
@@ -403,7 +403,7 @@ class TestRender:
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
-    monkeypatch.delenv("COMMONTRACE_ROOT", raising=False)
+    monkeypatch.delenv("UNIMEM_ROOT", raising=False)
     monkeypatch.chdir(tmp_path)
     main(["init", "--agent-type", "code", "--dest", str(tmp_path)])
     return tmp_path
@@ -551,7 +551,7 @@ class TestMinimumDetectableEffectPower:
 
 class TestHoldoutLogDeduplication:
     def test_a_retried_occasion_is_counted_once(self, store, capsys):
-        from commontrace.commands.experiment_cmd import holdout_log_path
+        from unimem.commands.experiment_cmd import holdout_log_path
 
         main(["init", "--agent-type", "code", "--dest", str(store)])
         log = holdout_log_path(str(store))
@@ -576,7 +576,7 @@ class TestHoldoutLogDeduplication:
         assert total_arms == 40
 
     def test_the_collapse_is_reported_not_silent(self, store, capsys):
-        from commontrace.commands.experiment_cmd import holdout_log_path
+        from unimem.commands.experiment_cmd import holdout_log_path
 
         main(["init", "--agent-type", "code", "--dest", str(store)])
         log = holdout_log_path(str(store))
@@ -602,8 +602,8 @@ class TestSemanticPathRunsTheExperiment:
 
     @pytest.fixture
     def semantic(self, monkeypatch, store):
-        from commontrace import frontmatter, paths
-        from commontrace.commands import query_cmd
+        from unimem import frontmatter, paths
+        from unimem.commands import query_cmd
 
         # The semantic ranking is synthetic; its sources must be real eligible
         # lessons. Missing/stale index IDs are no longer allowed to bypass review.
@@ -624,7 +624,7 @@ class TestSemanticPathRunsTheExperiment:
         return query_cmd
 
     def test_arms_are_logged_on_the_semantic_path(self, store, semantic, capsys):
-        from commontrace.commands.experiment_cmd import holdout_log_path
+        from unimem.commands.experiment_cmd import holdout_log_path
 
         main(["init", "--agent-type", "code", "--dest", str(store)])
         capsys.readouterr()
@@ -650,7 +650,7 @@ class TestSemanticPathRunsTheExperiment:
         assert "cosine=" not in out.replace("# ", "")
 
     def test_header_lines_are_not_mistaken_for_lessons(self, store, semantic, capsys):
-        from commontrace.commands.experiment_cmd import holdout_log_path
+        from unimem.commands.experiment_cmd import holdout_log_path
 
         main(["init", "--agent-type", "code", "--dest", str(store)])
         capsys.readouterr()
@@ -671,7 +671,7 @@ class TestSemanticPathRunsTheExperiment:
     def test_without_experiment_the_output_is_screened_and_otherwise_unchanged(self, store, semantic, capsys,
                                                                                  monkeypatch):
         calls = []
-        from commontrace.commands import query_cmd
+        from unimem.commands import query_cmd
         monkeypatch.setattr(
             query_cmd, "run_script",
             lambda root, rel, args, hint, capture=False: (calls.append(capture), (0, self.SEMANTIC_STDOUT))[1],
@@ -687,8 +687,8 @@ class TestSemanticPathRunsTheExperiment:
                                                                                        capsys):
         import os
 
-        from commontrace import frontmatter, paths
-        from commontrace.commands.experiment_cmd import holdout_log_path
+        from unimem import frontmatter, paths
+        from unimem.commands.experiment_cmd import holdout_log_path
         main(["init", "--agent-type", "code", "--dest", str(store)])
         frontmatter.write(os.path.join(paths.lessons_dir(str(store)), "lesson_alpha.md"),
                           {"name": "lesson_alpha", "status": "active", "description": "refunds"},
@@ -703,7 +703,7 @@ class TestSemanticPathRunsTheExperiment:
         assert logged == {"lesson_beta", "lesson_gamma"}
 
     def test_the_agent_type_filter_reaches_the_semantic_script(self, store, monkeypatch):
-        from commontrace.commands import query_cmd
+        from unimem.commands import query_cmd
 
         seen: dict = {}
 

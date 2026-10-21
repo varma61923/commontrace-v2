@@ -13,7 +13,7 @@ Re-observing an object within 1 cm (frame units; `PLACEMENT_TOLERANCE`) of its l
 admissible placement reinforces that placement's fact rather than minting a new
 one, so facts grow with moves, not sightings; an invalidated placement is never
 reinforced. Fleet-rate spatial memory should use the SQLite fact store
-(`commontrace init` or `commontrace fact` migration): updates and `where_is` then
+(`unimem init` or `unimem fact` migration): updates and `where_is` then
 stay roughly constant-time as history grows, whereas the JSONL fact backend
 rewrites its file on every new placement. Pass
 `correction_of` for a correction to the same owned object. `where_was` resolves

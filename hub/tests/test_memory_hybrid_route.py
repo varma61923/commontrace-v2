@@ -6,10 +6,10 @@ from dataclasses import replace
 import pytest
 import pytest_asyncio
 
-from commontrace.fact_evidence import FactEvidence, claim_revision
-from commontrace.hierarchical import AtomicFact
-from commontrace.memory_record import MemoryRecord, atomic_fact_record
-from commontrace.vector_store import PostgresVectorIndex, SQLiteVectorIndex
+from unimem.fact_evidence import FactEvidence, claim_revision
+from unimem.hierarchical import AtomicFact
+from unimem.memory_record import MemoryRecord, atomic_fact_record
+from unimem.vector_store import PostgresVectorIndex, SQLiteVectorIndex
 from hub.memory_records import PostgresJournal
 from hub.tests.test_rest import _app, _client, _key, _org_with_key
 

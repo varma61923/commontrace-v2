@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from commontrace import frontmatter
+from unimem import frontmatter
 
 
 def _locked_read_modify_write(path: str, field: str, value: str, sleep_seconds: float) -> None:

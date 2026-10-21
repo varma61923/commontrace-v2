@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from commontrace import _jsonl, hierarchical, observations
+from unimem import _jsonl, hierarchical, observations
 
 NOW = "2026-10-04T00:00:00+00:00"
 

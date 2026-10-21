@@ -1,7 +1,7 @@
 """Real persisted recall must distinguish an object from its unrecorded identifier."""
-from commontrace.conversation import Options, Store, recall
-from commontrace.conversation.coverage import assess
-from commontrace.recall import Item, pack
+from unimem.conversation import Options, Store, recall
+from unimem.conversation.coverage import assess
+from unimem.recall import Item, pack
 
 
 def test_identifier_requires_evidence_and_keeps_citable_context(tmp_path):

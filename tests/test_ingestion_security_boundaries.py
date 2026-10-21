@@ -6,9 +6,9 @@ import zipfile
 
 import pytest
 
-from commontrace import sql_guard
-from commontrace.ingest import Chunk, _read_text, catalog, multimodal
-from commontrace.ingest.pipeline import TextChunker
+from unimem import sql_guard
+from unimem.ingest import Chunk, _read_text, catalog, multimodal
+from unimem.ingest.pipeline import TextChunker
 
 
 def test_chunker_streams_long_paragraph_without_losing_content():
@@ -68,7 +68,7 @@ def test_reader_uses_pinned_parent_when_path_is_swapped(tmp_path, monkeypatch):
 
 
 def test_actual_read_bound_is_enforced_even_if_size_is_stale(tmp_path, monkeypatch):
-    from commontrace import ingest
+    from unimem import ingest
     source = tmp_path / 'note.txt'
     source.write_bytes(b'abcde')
     monkeypatch.setattr(ingest, 'MAX_TEXT_FILE_BYTES', 4)
@@ -239,7 +239,7 @@ def test_python310_authorizer_preserves_safe_analytics(database, monkeypatch):
 
 
 def test_role_tag_cleanup_handles_unclosed_and_nested_blocks():
-    from commontrace.ingest import sanitize_contextualizer_text
+    from unimem.ingest import sanitize_contextualizer_text
     assert sanitize_contextualizer_text('<system>' * 8000 + 'document text') == 'document text'
     assert sanitize_contextualizer_text('safe <SYSTEM>a<system>b</system>c</SYSTEM> tail') == 'safe tail'
     assert sanitize_contextualizer_text('before <developer>private</developer> after') == 'before after'
@@ -249,7 +249,7 @@ def test_fingerprint_preserves_formulas_and_refuses_growth():
     import hashlib
     import io
 
-    from commontrace.fingerprints import stream_fingerprint
+    from unimem.fingerprints import stream_fingerprint
     data = b'abcdefghij' * 20
     assert stream_fingerprint(io.BytesIO(data), len(data)) == 'sha256:' + hashlib.sha256(data).hexdigest()
     expected_sample = hashlib.sha256(str(len(data)).encode() + data[:10] + data[-10:]).hexdigest()
@@ -261,7 +261,7 @@ def test_fingerprint_preserves_formulas_and_refuses_growth():
 
 
 def test_ledger_rejects_substituted_symlink_and_size_before_hash(tmp_path):
-    from commontrace.ingest.pipeline import Ledger
+    from unimem.ingest.pipeline import Ledger
     source = tmp_path / 'source.txt'
     source.write_text('content')
     ledger = Ledger(str(tmp_path))
@@ -279,7 +279,7 @@ def test_ledger_rejects_substituted_symlink_and_size_before_hash(tmp_path):
 
 
 def test_deep_json_lines_are_skipped_without_crashing(tmp_path):
-    from commontrace.ingest import IngestionResult, _failure_turns
+    from unimem.ingest import IngestionResult, _failure_turns
     source = tmp_path / 'turns.jsonl'
     source.write_text('[' * 2000 + '0' + ']' * 2000 + '\n' + json.dumps({'status': 'ERROR', 'content': 'recoverable failure'}) + '\n')
     result = IngestionResult(str(source), 'transcript')
@@ -390,7 +390,7 @@ def test_sql_rejects_unbounded_requested_row_count_before_connect(database, monk
 
 
 def test_ledger_detects_same_size_edit_with_restored_mtime(tmp_path):
-    from commontrace.ingest.pipeline import Ledger
+    from unimem.ingest.pipeline import Ledger
     source = tmp_path / 'source.txt'
     source.write_text('first')
     ledger = Ledger(str(tmp_path))
@@ -404,7 +404,7 @@ def test_ledger_detects_same_size_edit_with_restored_mtime(tmp_path):
 
 
 def test_ledger_note_keeps_identity_of_loaded_generation(tmp_path):
-    from commontrace.ingest.pipeline import Ledger
+    from unimem.ingest.pipeline import Ledger
     source = tmp_path / 'source.txt'
     source.write_text('first')
     ledger = Ledger(str(tmp_path))

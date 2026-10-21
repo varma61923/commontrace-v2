@@ -4,7 +4,7 @@ import hashlib
 
 import pytest
 
-from commontrace import hierarchical, kv_capsules, privacy_erasure
+from unimem import hierarchical, kv_capsules, privacy_erasure
 
 
 def seed(root: str):
@@ -44,8 +44,8 @@ def test_retraction_evicts_every_tier_and_erasure_receipt_lists_capsule_tiers(tm
 
 
 def test_erasure_events_publish_g20_and_model_upgrade_never_serves_stale_kv(tmp_path):
-    from commontrace import change_stream
-    from commontrace import frontier_protocol as fp
+    from unimem import change_stream
+    from unimem import frontier_protocol as fp
 
     root = str(tmp_path)
     memory = seed(root)

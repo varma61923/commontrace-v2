@@ -18,7 +18,7 @@ from hub.db import session_scope
 from hub.encryption import NULL_CIPHER, EncryptionError, EnvelopeCipher
 from hub.models import Connector, ConnectorDelivery, PendingOutcome
 
-logger = logging.getLogger("commontrace.hub.connectors")
+logger = logging.getLogger("unimem.hub.connectors")
 
 _UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 _NAME_MAX = 100

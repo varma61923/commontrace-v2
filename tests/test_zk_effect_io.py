@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from commontrace import hierarchical, holdout_io, memory_authority, privacy_erasure, zk_effect
-from commontrace import zk_effect_io as io
+from unimem import hierarchical, holdout_io, memory_authority, privacy_erasure, zk_effect
+from unimem import zk_effect_io as io
 
 
 def setup(root):
@@ -116,7 +116,7 @@ def test_external_pin_and_tampered_public_statement_are_checked(tmp_path):
 
 
 def test_partial_registration_and_missing_commitment_receipt_recover_without_rearming(tmp_path, monkeypatch):
-    from commontrace import nextwave_store
+    from unimem import nextwave_store
 
     root = str(tmp_path)
     fact = hierarchical.append_facts(root, [{"statement": "A reviewed procedure."}])[0][0]
@@ -142,7 +142,7 @@ def test_partial_registration_and_missing_commitment_receipt_recover_without_rea
 
 
 def test_cli_uses_real_managed_cohort_and_explicit_witness_disclosure(tmp_path, capsys):
-    from commontrace.cli import main
+    from unimem.cli import main
 
     root = str(tmp_path)
     _, entries, _ = setup(root)

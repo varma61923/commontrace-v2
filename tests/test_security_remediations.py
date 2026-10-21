@@ -5,8 +5,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from commontrace import frontmatter, hub_client, paths, reliability, retrieval, validate
-from commontrace.commands import _shellout, sync_cmd
+from unimem import frontmatter, hub_client, paths, reliability, retrieval, validate
+from unimem.commands import _shellout, sync_cmd
 
 
 class TestHubClientPathTraversalProtection:
@@ -160,7 +160,7 @@ class TestSubprocessScriptLookupIsolation:
         assert resolved is None, f"Expected None, but resolved untrusted CWD script: {resolved}"
 
     def test_find_reference_script_finds_script_in_repo_root(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("COMMONTRACE_ALLOW_STORE_SCRIPTS", "1")
+        monkeypatch.setenv("UNIMEM_ALLOW_STORE_SCRIPTS", "1")
         clean_root = tmp_path / "repo_root"
         clean_root.mkdir()
         script_path = clean_root / "benchmark" / "my_script.py"
@@ -185,7 +185,7 @@ class TestSubprocessScriptLookupIsolation:
         assert os.path.basename(resolved) == "measure_performance.py"
 
     def test_find_reference_script_ignores_store_root_by_default(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("COMMONTRACE_ALLOW_STORE_SCRIPTS", raising=False)
+        monkeypatch.delenv("UNIMEM_ALLOW_STORE_SCRIPTS", raising=False)
         clean_root = tmp_path / "repo_root"
         clean_root.mkdir()
         script_path = clean_root / "benchmark" / "my_script.py"
@@ -198,7 +198,7 @@ class TestSubprocessScriptLookupIsolation:
         assert resolved is None
 
     def test_opted_in_store_copy_wins_over_an_existing_packaged_copy(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("COMMONTRACE_ALLOW_STORE_SCRIPTS", "1")
+        monkeypatch.setenv("UNIMEM_ALLOW_STORE_SCRIPTS", "1")
         repo_root = tmp_path / "repo_root"
         script_path = repo_root / "benchmark" / "measure_performance.py"
         script_path.parent.mkdir(parents=True, exist_ok=True)
@@ -316,12 +316,12 @@ class TestSyncApiKeyHandling:
         sync_cmd.add_parser(subparsers)
 
         help_text = subparsers.choices["sync"].format_help()
-        assert "COMMONTRACE_HUB_API_KEY" in help_text
+        assert "UNIMEM_HUB_API_KEY" in help_text
         assert "process table" in help_text or "environment variable" in help_text
 
     def test_sync_pull_prints_guidance_without_api_key(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.delenv("COMMONTRACE_HUB_API_KEY", raising=False)
-        monkeypatch.delenv("COMMONTRACE_HUB_URL", raising=False)
+        monkeypatch.delenv("UNIMEM_HUB_API_KEY", raising=False)
+        monkeypatch.delenv("UNIMEM_HUB_URL", raising=False)
 
         parser = argparse.ArgumentParser()
         subparsers = parser.add_subparsers(dest="cmd")
@@ -333,12 +333,12 @@ class TestSyncApiKeyHandling:
 
         captured = capsys.readouterr()
         output = captured.out + captured.err
-        assert "COMMONTRACE_HUB_API_KEY" in output
-        assert "COMMONTRACE_HUB_URL" in output
+        assert "UNIMEM_HUB_API_KEY" in output
+        assert "UNIMEM_HUB_URL" in output
 
     def test_sync_push_prints_guidance_without_api_key(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.delenv("COMMONTRACE_HUB_API_KEY", raising=False)
-        monkeypatch.delenv("COMMONTRACE_HUB_URL", raising=False)
+        monkeypatch.delenv("UNIMEM_HUB_API_KEY", raising=False)
+        monkeypatch.delenv("UNIMEM_HUB_URL", raising=False)
 
         parser = argparse.ArgumentParser()
         subparsers = parser.add_subparsers(dest="cmd")
@@ -350,5 +350,5 @@ class TestSyncApiKeyHandling:
 
         captured = capsys.readouterr()
         output = captured.out + captured.err
-        assert "COMMONTRACE_HUB_API_KEY" in output
-        assert "COMMONTRACE_HUB_URL" in output
+        assert "UNIMEM_HUB_API_KEY" in output
+        assert "UNIMEM_HUB_URL" in output

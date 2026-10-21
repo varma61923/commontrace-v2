@@ -11,7 +11,7 @@ import argparse
 import json
 import tempfile
 
-from commontrace import hierarchical, search_recipes
+from unimem import hierarchical, search_recipes
 
 
 def _alpha(index: int) -> str:
@@ -24,7 +24,7 @@ def _alpha(index: int) -> str:
 
 
 def _seed(root: str, count: int, target_rank: int) -> tuple[list[str], str]:
-    from commontrace import fact_store
+    from unimem import fact_store
 
     fact_store.migrate(root)
     conflicts: list = []
@@ -89,7 +89,7 @@ def main() -> int:
     if not args.candidate_cap < args.target_rank <= min(args.current_cap, args.facts):
         parser.error("target rank must be beyond the candidate cap and within the current cap")
 
-    with tempfile.TemporaryDirectory(prefix="commontrace-f3-cap-") as root:
+    with tempfile.TemporaryDirectory(prefix="unimem-f3-cap-") as root:
         ids, target = _seed(root, args.facts, args.target_rank)
         baseline = _search(root, ids, target, args.current_cap)
         candidate = _search(root, ids, target, args.candidate_cap)

@@ -1,6 +1,6 @@
-# Postgres for the CommonTrace Hub on Google Cloud: private IP only, TLS required, regional high
+# Postgres for the UniMem Hub on Google Cloud: private IP only, TLS required, regional high
 # availability, CMEK, and point-in-time recovery. It creates no Hub workload and no ingress; see
-# deploy/helm/commontrace-hub. `terraform apply` creates billable resources: plan first.
+# deploy/helm/unimem-hub. `terraform apply` creates billable resources: plan first.
 
 resource "google_sql_database_instance" "this" {
   name                = var.name
@@ -56,7 +56,7 @@ resource "google_sql_database_instance" "this" {
 }
 
 resource "google_sql_database" "hub" {
-  name     = "commontrace_hub"
+  name     = "unimem_hub"
   instance = google_sql_database_instance.this.name
 }
 

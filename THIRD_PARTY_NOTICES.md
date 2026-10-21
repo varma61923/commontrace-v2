@@ -1,10 +1,10 @@
 # Third-party notices
 
-CommonTrace is licensed under AGPL-3.0-only. Parts of it are adapted from the permissively licensed projects listed below. Apache-2.0 and MIT code may be included in an AGPL-3.0 work. Each license's conditions are met by keeping the notices below. Files containing adapted code also say so in their headers.
+UniMem is licensed under AGPL-3.0-only. Parts of it are adapted from the permissively licensed projects listed below. Apache-2.0 and MIT code may be included in an AGPL-3.0 work. Each license's conditions are met by keeping the notices below. Files containing adapted code also say so in their headers.
 
 Techniques that are only cited in docstrings (re-implemented from papers or public descriptions, with no code carried over) are not listed here.
 
-The optional `commontrace[crdt]` extra depends on the upstream Automerge Python
+The optional `unimem[crdt]` extra depends on the upstream Automerge Python
 bindings (MIT, pinned development release) and `cryptography`; neither project's
 implementation code is copied into this repository. No Automerge wire format or
 cross-language interoperability claim is made without matching fixture tests.
@@ -16,13 +16,13 @@ cross-language interoperability claim is made without matching fixture tests.
 - **Project:** https://github.com/mem0ai/mem0
 - **License:** Apache License 2.0 (full text in [`LICENSES/Apache-2.0.txt`](LICENSES/Apache-2.0.txt))
 - **Copyright:** Copyright 2023 Taranjeet Singh (as stated in the Mem0 LICENSE)
-- **Used in:** `commontrace/hierarchical.py`. The entity-candidate extraction heuristics are adapted and modified from `mem0/utils/entity_extraction.py`.
+- **Used in:** `unimem/hierarchical.py`. The entity-candidate extraction heuristics are adapted and modified from `mem0/utils/entity_extraction.py`.
 
 ## Hindsight
 
 - **Project:** https://github.com/vectorize-io/hindsight
 - **License:** MIT
-- **Used in:** `commontrace/defense.py`. The memory-defense pattern catalogue, the policy actions and the fingerprinted previews are adapted and modified from `hindsight_api/extensions/memory_defense.py`.
+- **Used in:** `unimem/defense.py`. The memory-defense pattern catalogue, the policy actions and the fingerprinted previews are adapted and modified from `hindsight_api/extensions/memory_defense.py`.
 
 ```
 MIT License
@@ -52,7 +52,7 @@ SOFTWARE.
 
 - **Project:** https://github.com/topoteretes/cognee
 - **License:** Apache License 2.0 (full text in [`LICENSES/Apache-2.0.txt`](LICENSES/Apache-2.0.txt))
-- **Used in:** `commontrace/sql_guard.py`. The single-statement and read-only checks for model-written SQL are adapted and modified from `cognee/modules/tools/text_to_sql/sql_guard.py`.
+- **Used in:** `unimem/sql_guard.py`. The single-statement and read-only checks for model-written SQL are adapted and modified from `cognee/modules/tools/text_to_sql/sql_guard.py`.
 - **NOTICE (reproduced as Apache-2.0 §4(d) requires):**
 
   > topoteretes - cognee
@@ -76,4 +76,4 @@ SOFTWARE.
 
 `benchmarks/judges/beam.py` and `benchmarks/judges/longmemeval.py` reproduce evaluation prompts verbatim from the benchmarks' own repositories so that scores stay comparable. Each file header names the source repository and the pinned commit.
 
-No benchmark *datasets* are distributed with CommonTrace. LoCoMo (snap-research/locomo) is licensed CC BY-NC 4.0 and must not be bundled into a commercial distribution.
+No benchmark *datasets* are distributed with UniMem. LoCoMo (snap-research/locomo) is licensed CC BY-NC 4.0 and must not be bundled into a commercial distribution.

@@ -16,8 +16,8 @@ except ImportError:
     HAS_NUMPY = False
 
 
-from commontrace import frontmatter, paths
-from commontrace.commands import lesson_cmd, trace_cmd
+from unimem import frontmatter, paths
+from unimem.commands import lesson_cmd, trace_cmd
 
 
 def _ensure_mock_st(monkeypatch):
@@ -262,7 +262,7 @@ class TestUtf8BomHandling:
     def test_attention_build_index_iter_active_lessons_handles_bom(self, tmp_path, monkeypatch):
         _ensure_mock_st(monkeypatch)
         sys.path.insert(
-            0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "commontrace", "reference")
+            0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "unimem", "reference")
         )
         import build_index
 
@@ -296,7 +296,7 @@ class TestUtf8BomHandling:
     def test_attention_query_load_importances_handles_bom(self, tmp_path, monkeypatch):
         _ensure_mock_st(monkeypatch)
         sys.path.insert(
-            0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "commontrace", "reference")
+            0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "unimem", "reference")
         )
         import query
 
@@ -328,7 +328,7 @@ class TestAtomicIndexGeneration:
     ):
         _ensure_mock_st(monkeypatch)
         sys.path.insert(
-            0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "commontrace", "reference")
+            0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "unimem", "reference")
         )
         import build_index
         monkeypatch.setattr(build_index, "SentenceTransformer", _FakeEncoder)
@@ -385,7 +385,7 @@ class TestCacheInvalidationValidatesModelAndDimension:
     def _setup(self, tmp_path, monkeypatch):
         _ensure_mock_st(monkeypatch)
         sys.path.insert(
-            0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "commontrace", "reference")
+            0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "unimem", "reference")
         )
         import build_index
 
@@ -472,7 +472,7 @@ class TestSlugDelimiterInjectionIsRejected:
     def test_build_index_skips_a_lesson_whose_name_contains_a_pipe(self, tmp_path, monkeypatch, capsys):
         _ensure_mock_st(monkeypatch)
         sys.path.insert(
-            0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "commontrace", "reference")
+            0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "unimem", "reference")
         )
         import build_index
 
@@ -493,7 +493,7 @@ class TestSlugDelimiterInjectionIsRejected:
     def test_build_index_still_indexes_a_well_formed_slug(self, tmp_path, monkeypatch):
         _ensure_mock_st(monkeypatch)
         sys.path.insert(
-            0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "commontrace", "reference")
+            0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "unimem", "reference")
         )
         import build_index
 
@@ -510,7 +510,7 @@ class TestSlugDelimiterInjectionIsRejected:
     def test_query_load_importances_excludes_a_pipe_delimited_name(self, tmp_path, monkeypatch):
         _ensure_mock_st(monkeypatch)
         sys.path.insert(
-            0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "commontrace", "reference")
+            0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "unimem", "reference")
         )
         import query
 
@@ -529,7 +529,7 @@ class TestEmptyActiveLessonStoreBuildsAnEmptyIndex:
     def test_build_index_writes_an_empty_index_instead_of_erroring(self, tmp_path, monkeypatch):
         _ensure_mock_st(monkeypatch)
         sys.path.insert(
-            0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "commontrace", "reference")
+            0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "unimem", "reference")
         )
         import build_index
 
@@ -554,7 +554,7 @@ class TestEmptyActiveLessonStoreBuildsAnEmptyIndex:
     def test_query_against_an_empty_index_reports_no_results_not_an_error(self, tmp_path, monkeypatch):
         _ensure_mock_st(monkeypatch)
         sys.path.insert(
-            0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "commontrace", "reference")
+            0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "unimem", "reference")
         )
         import query
 
@@ -585,7 +585,7 @@ class TestTimestampsAreUtcAware:
     def test_index_npz_timestamp_carries_a_utc_offset(self, tmp_path, monkeypatch):
         _ensure_mock_st(monkeypatch)
         sys.path.insert(
-            0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "commontrace", "reference")
+            0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "unimem", "reference")
         )
         import build_index
 
@@ -624,7 +624,7 @@ class TestCorruptedIndexHandling:
     ):
         _ensure_mock_st(monkeypatch)
         sys.path.insert(
-            0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "commontrace", "reference")
+            0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "unimem", "reference")
         )
         import query
 
@@ -650,7 +650,7 @@ class TestCorruptedIndexHandling:
     ):
         _ensure_mock_st(monkeypatch)
         sys.path.insert(
-            0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "commontrace", "reference")
+            0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "unimem", "reference")
         )
         import query
 

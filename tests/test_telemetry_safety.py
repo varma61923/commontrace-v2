@@ -7,11 +7,11 @@ from typing import Any
 
 import pytest
 
-from commontrace import telemetry
+from unimem import telemetry
 
 
 def formatted(extra: dict[str, Any]) -> str:
-    record = logging.LogRecord("commontrace.boundary", logging.INFO, "", 0, "event", (), None)
+    record = logging.LogRecord("unimem.boundary", logging.INFO, "", 0, "event", (), None)
     record.__dict__.update(extra)
     return telemetry.JsonFormatter().format(record)
 
@@ -47,7 +47,7 @@ def test_application_object_representation_is_scanned() -> None:
 
 
 def test_pii_policy_applies_to_structured_log_leaves(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("COMMONTRACE_REDACT_PII", "1")
+    monkeypatch.setenv("UNIMEM_REDACT_PII", "1")
     wire = formatted({"payload": {"address": "agent@example.com", "source": "192.0.2.4"}})
     assert "agent@example.com" not in wire and "192.0.2.4" not in wire
 

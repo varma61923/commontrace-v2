@@ -27,7 +27,7 @@ def test_installer_copies_source_without_generated_caches_or_deployment_state(tm
         ".mypy_cache/cache", ".pytest_cache/cache", ".ruff_cache/cache", "node_modules/package/index.js",
         "sdk/generated/typescript/client.ts", "sdk/rust/target/binary",
     )
-    retained = ("README.md", "commontrace/runtime.py", "deploy/terraform/aws/main.tf",
+    retained = ("README.md", "unimem/runtime.py", "deploy/terraform/aws/main.tf",
                 "deploy/terraform/aws/example.tfvars.example", "deploy/terraform/aws/.terraform.lock.hcl",
                 "distribution/jetbrains/src/source.kt")
     for name in generated + retained:

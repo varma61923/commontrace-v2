@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from commontrace._stem import stem
+from unimem._stem import stem
 
 EXPECTED = [
     ("caresses", "caress"), ("ponies", "poni"), ("ties", "ti"), ("caress", "caress"),

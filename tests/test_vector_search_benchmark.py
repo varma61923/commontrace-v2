@@ -10,7 +10,7 @@ import sys
 import pytest
 
 from benchmarks.vector_search import measure
-from commontrace import vector_scoring
+from unimem import vector_scoring
 
 
 def test_benchmark_emits_both_engines_and_workloads_without_artifacts(tmp_path):

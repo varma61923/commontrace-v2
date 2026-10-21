@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from commontrace import corpus_bin, frontmatter, gateway, lesson_cache, paths, retrieval
+from unimem import corpus_bin, frontmatter, gateway, lesson_cache, paths, retrieval
 
 
 @pytest.fixture(autouse=True)
@@ -82,7 +82,7 @@ def test_persisted_metadata_and_binary_index_refresh_in_a_new_process(tmp_path, 
     replace_preserving_stamp(path, "asteroids", "elephants", replacement=replacement)
     script = """
 import json,sys
-from commontrace import lesson_cache,retrieval
+from unimem import lesson_cache,retrieval
 rows,terms=lesson_cache.load_active_with_terms(sys.argv[1])
 scoped=lesson_cache.filter_eligible(rows,scope='container:alpha')
 ranked=retrieval.rank_lessons('elephants',rows,floor=0.0,term_cache=terms)

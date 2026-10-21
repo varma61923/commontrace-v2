@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from commontrace import cli, entities, entity_resolution, graph, kg_similarity, provenance
+from unimem import cli, entities, entity_resolution, graph, kg_similarity, provenance
 
 
 @pytest.fixture
@@ -119,7 +119,7 @@ def test_embedding_with_context_and_one_merge_per_entity(root):
 
 
 def test_compatibility_rules(root):
-    from commontrace import ontology
+    from unimem import ontology
 
     onto = ontology._from_mapping({"entity_types": {"database": {"parent": "service"}}}, "test")
     assert entity_resolution.compatible(onto, "database", "service")
@@ -163,7 +163,7 @@ def test_tiered_minhash_threshold_is_explicit_and_observable(tmp_path):
 def test_tiered_lsh_shortlist_preserves_every_default_minhash_match():
     from itertools import combinations
 
-    from commontrace.overlap import estimate_jaccard
+    from unimem.overlap import estimate_jaccard
 
     names = [
         "International Business Machine",
@@ -179,7 +179,7 @@ def test_tiered_lsh_shortlist_preserves_every_default_minhash_match():
     candidates = entity_resolution._tiered_minhash_pairs(
         surfaces, entropy_threshold=2.0, minhash_threshold=0.8
     )
-    from commontrace import overlap
+    from unimem import overlap
 
     eligible = [i for i, surface in enumerate(surfaces) if surface.entropy >= 2.0]
     exhaustive, accepted_from_shortlist = set(), set()

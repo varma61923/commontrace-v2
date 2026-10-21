@@ -6,9 +6,9 @@ import sys
 
 import pytest
 
-from commontrace import entity_store, hierarchical
-from commontrace.conversation import Options, Store, recall
-from commontrace.conversation import search as conv_search
+from unimem import entity_store, hierarchical
+from unimem.conversation import Options, Store, recall
+from unimem.conversation import search as conv_search
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LEXICAL = Options(embedder=None)
@@ -16,7 +16,7 @@ LEXICAL = Options(embedder=None)
 
 def cli(*argv: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [sys.executable, "-m", "commontrace.cli", *argv],
+        [sys.executable, "-m", "unimem.cli", *argv],
         capture_output=True,
         text=True,
         cwd=REPO_ROOT,

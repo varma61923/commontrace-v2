@@ -9,12 +9,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from commontrace import retrieval  # noqa: E402
+from unimem import retrieval  # noqa: E402
 
-CORPUS = Path(os.environ.get("COMMONTRACE_EVAL_CORPUS", "corpus.jsonl"))  # bring your own corpus
+CORPUS = Path(os.environ.get("UNIMEM_EVAL_CORPUS", "corpus.jsonl"))  # bring your own corpus
 PROBE_SETS = {  # bring your own probes
-    "probes-v1": Path(os.environ.get("COMMONTRACE_EVAL_PROBES_V1", "probes-v1.jsonl")),
-    "probes-v2": Path(os.environ.get("COMMONTRACE_EVAL_PROBES_V2", "probes-v2.jsonl")),
+    "probes-v1": Path(os.environ.get("UNIMEM_EVAL_PROBES_V1", "probes-v1.jsonl")),
+    "probes-v2": Path(os.environ.get("UNIMEM_EVAL_PROBES_V2", "probes-v2.jsonl")),
 }
 
 MODEL_NAME = "multi-qa-mpnet-base-dot-v1"
@@ -53,7 +53,7 @@ def _require_attention():
         from sentence_transformers import SentenceTransformer
     except ImportError as exc:
         print(f"[skip] needs the attention extra (numpy + sentence-transformers): {exc}")
-        print("       pip install 'commontrace[attention]'")
+        print("       pip install 'unimem[attention]'")
         return None
     try:
         return SentenceTransformer(MODEL_NAME)
@@ -153,7 +153,7 @@ def main() -> int:
     print()
     if net > 0:
         print("Fusion is ahead on held-out data. Before shipping it, note that a")
-        print("scorer change is an INVALIDATES event (commontrace/integrity.py:")
+        print("scorer change is an INVALIDATES event (unimem/integrity.py:")
         print("check_scorer_drift) -- it must ship under a NEW scorer id, and every")
         print("running experiment restarts. Confirm the margin justifies that.")
     else:

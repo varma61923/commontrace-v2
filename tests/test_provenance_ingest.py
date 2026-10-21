@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import os
 
-from commontrace import graph, provenance
-from commontrace.ingest import (
+from unimem import graph, provenance
+from unimem.ingest import (
     IngestionPipeline,
     ingest_fact_triples,
     preview_ingest,
@@ -64,7 +64,7 @@ def test_triples_path(tmp_path):
     assert not res.errors
     nodes = graph.load_nodes(root)
     assert "service:api" in nodes
-    from commontrace import hierarchical
+    from unimem import hierarchical
     facts = hierarchical.load_facts(root)
     assert len(facts) >= 2
     prov = provenance.list_provenance(root, "service:api->service:db:depends_on")

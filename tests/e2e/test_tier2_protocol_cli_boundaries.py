@@ -89,10 +89,10 @@ def test_boundary_oserror_clean_exit_code_1(cli_runner: Callable[..., CLIResult]
     res = cli_runner(["lesson", "validate", "/dev/null/impossible_file.md", "--dest", str(isolated_store)])
     assert res.exit_code == 1
     assert "Traceback" not in res.stderr
-    assert "[commontrace] error:" in res.stderr
+    assert "[unimem] error:" in res.stderr
 
 
-def test_boundary_bare_commontrace_exits_code_2(cli_runner: Callable[..., CLIResult]) -> None:
+def test_boundary_bare_unimem_exits_code_2(cli_runner: Callable[..., CLIResult]) -> None:
     res = cli_runner([])
     assert res.exit_code == 2
     assert "the following arguments are required: command" in res.stderr or "usage:" in res.stderr
@@ -154,7 +154,7 @@ def test_boundary_negative_tokens_rejected(
 def test_boundary_warn_chars_threshold(
     isolated_store: Path,
 ) -> None:
-    from commontrace.commands._validators import WARN_CHARS, check_text_size
+    from unimem.commands._validators import WARN_CHARS, check_text_size
 
     text_300k = "B" * (WARN_CHARS + 1000)
     fields = {"description": text_300k}
@@ -162,7 +162,7 @@ def test_boundary_warn_chars_threshold(
 
 
 def test_boundary_refuse_chars_threshold() -> None:
-    from commontrace.commands._validators import REFUSE_CHARS, check_text_size
+    from unimem.commands._validators import REFUSE_CHARS, check_text_size
 
     text_over_1mb = "C" * (REFUSE_CHARS + 1)
     fields = {"description": text_over_1mb}

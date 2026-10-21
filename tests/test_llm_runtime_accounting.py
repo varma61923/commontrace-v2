@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from commontrace import llm, session_ledger
-from commontrace.commands import session_ledger_cmd
-from commontrace.llm_runtime import Budget, LLMRuntime
+from unimem import llm, session_ledger
+from unimem.commands import session_ledger_cmd
+from unimem.llm_runtime import Budget, LLMRuntime
 
 
 def test_cached_completion_is_historical_usage_not_fresh_spend(tmp_path, monkeypatch):
-    monkeypatch.setenv("COMMONTRACE_LLM_CACHE", "1")
-    monkeypatch.setenv("COMMONTRACE_LLM_CACHE_PATH", str(tmp_path / "llm-cache.db"))
+    monkeypatch.setenv("UNIMEM_LLM_CACHE", "1")
+    monkeypatch.setenv("UNIMEM_LLM_CACHE_PATH", str(tmp_path / "llm-cache.db"))
     calls = []
 
     def provider(_config, _prompt, _caller):
@@ -39,8 +39,8 @@ def test_cached_completion_is_historical_usage_not_fresh_spend(tmp_path, monkeyp
 
 
 def test_cached_completion_without_historical_price_keeps_current_spend_known(tmp_path, monkeypatch):
-    monkeypatch.setenv("COMMONTRACE_LLM_CACHE", "1")
-    monkeypatch.setenv("COMMONTRACE_LLM_CACHE_PATH", str(tmp_path / "llm-cache.db"))
+    monkeypatch.setenv("UNIMEM_LLM_CACHE", "1")
+    monkeypatch.setenv("UNIMEM_LLM_CACHE_PATH", str(tmp_path / "llm-cache.db"))
     monkeypatch.setattr(llm, "_provider_call", lambda *_args: ("answer", {"prompt_tokens": 10, "completion_tokens": 5}))
     monkeypatch.setattr(llm, "cost_usd", lambda _usage, _model: None)
     route = llm.Config("ollama", "unpriced-local-model", "")

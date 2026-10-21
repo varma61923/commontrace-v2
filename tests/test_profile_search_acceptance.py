@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 
-from commontrace import fact_store
-from commontrace.client import MemoryClient
-from commontrace.gateway import Gateway
-from commontrace.memory_journal import Journal
-from commontrace.memory_record import MemoryRecord
+from unimem import fact_store
+from unimem.client import MemoryClient
+from unimem.gateway import Gateway
+from unimem.memory_journal import Journal
+from unimem.memory_record import MemoryRecord
 
 TOKEN = "p" * 40
 

@@ -14,7 +14,7 @@ from fractions import Fraction
 
 import pytest
 
-from commontrace import experiment, graph, integrity, lesson_cache, retrieval
+from unimem import experiment, graph, integrity, lesson_cache, retrieval
 
 
 @pytest.fixture(params=[17, 103, 619])

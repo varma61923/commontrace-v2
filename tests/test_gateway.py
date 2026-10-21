@@ -10,8 +10,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from commontrace import gateway, holdout_io, outcome_detect, paths, retrieval_io
-from commontrace.cli import main
+from unimem import gateway, holdout_io, outcome_detect, paths, retrieval_io
+from unimem.cli import main
 
 TOKEN = "t" * 40
 AUTH = {"Authorization": f"Bearer {TOKEN}", "Host": "localhost:8787"}
@@ -94,7 +94,7 @@ def test_an_internal_error_never_leaks_a_traceback(gw, monkeypatch):
 
 def test_openapi_describes_exactly_the_routes_that_exist(gw):
     _, doc = call(gw, "GET", "/v1/openapi.json", headers={})
-    from commontrace.gateway_contract import EXTRA_PATHS
+    from unimem.gateway_contract import EXTRA_PATHS
 
     documented = {(m.upper(), p) for p, ops in doc["paths"].items() for m in ops if p not in EXTRA_PATHS}
     assert documented == set(gw.routes)
@@ -322,7 +322,7 @@ def test_store_mode_ranks_this_stores_lessons_and_randomizes_them(root):
 
 
 def test_store_mode_reuses_the_ranking_index_until_a_lesson_changes(root, monkeypatch):
-    from commontrace import frontmatter, retrieval
+    from unimem import frontmatter, retrieval
     _store_with_lesson(root)
     _start_experiment(root)
     g = gateway.Gateway(root, token=TOKEN)
@@ -555,7 +555,7 @@ def test_concurrent_robots_each_get_a_consistent_answer_and_nothing_is_lost(serv
 
 
 def test_conversation_routes_remember_and_recall(gw, monkeypatch):
-    monkeypatch.setenv("COMMONTRACE_CONVERSATION_EMBEDDER", "none")
+    monkeypatch.setenv("UNIMEM_CONVERSATION_EMBEDDER", "none")
     status, added = call(gw, "POST", "/v1/conversation/add", {
         "space": "robot-7", "session": "shift-1", "session_at": "2023-05-08 09:00",
         "messages": [{"speaker": "operator", "text": "The conveyor jammed yesterday at bay 4."}]})

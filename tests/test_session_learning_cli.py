@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from commontrace import llm, session_learning, session_ledger
-from commontrace.cli import main
-from commontrace.llm_runtime import Budget, LLMRuntime
+from unimem import llm, session_learning, session_ledger
+from unimem.cli import main
+from unimem.llm_runtime import Budget, LLMRuntime
 
 
 def test_runtime_learn_semantic_segmentation_is_opt_in(tmp_path, monkeypatch, capsys):

@@ -4,7 +4,7 @@ import datetime
 
 import pytest
 
-from commontrace import dosage, receipts, retrieval
+from unimem import dosage, receipts, retrieval
 
 
 def _candidate(slug: str, chars: int = 100, **kwargs) -> dosage.Candidate:

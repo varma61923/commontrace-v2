@@ -34,7 +34,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import set_committed_value
 
-from commontrace import (
+from unimem import (
     decay,
     distill,
     experiment,
@@ -45,8 +45,8 @@ from commontrace import (
     revision,
     value,
 )
-from commontrace.fingerprints import amend_request_hash as _amend_request_hash
-from commontrace.fingerprints import contribute_request_hash as _contribute_request_hash
+from unimem.fingerprints import amend_request_hash as _amend_request_hash
+from unimem.fingerprints import contribute_request_hash as _contribute_request_hash
 from hub import audit, commons, commons_cache, delegation, outcomes, plans
 from hub import search as hub_search
 from hub.abuse import (
@@ -76,7 +76,7 @@ from hub.schema_validation import validate_trace
 AUDIT_ACTOR_UNKNOWN = "unknown"
 
 
-logger = logging.getLogger("commontrace.hub.crud")
+logger = logging.getLogger("unimem.hub.crud")
 
 
 class IdempotencyKeyConflict(ValueError):
@@ -805,11 +805,11 @@ async def contribute_trace(
     valid_from: str | datetime | None = None,
     valid_until: str | datetime | None = None,
 ) -> dict:
-    from commontrace import capabilities
+    from unimem import capabilities
 
     idempotency_key = delegation.idempotency(idempotency_key)
     if capabilities.CURRENT.get() is not None:
-        from commontrace import capability_io
+        from unimem import capability_io
 
         scopes = capability_io.inherit_labels(delegation.ROOT.get(), scopes or [])
         capability_io.before_write(delegation.ROOT.get(), {"scopes": scopes, "memory_type": "general"},
@@ -2006,7 +2006,7 @@ async def causal_evidence(session: AsyncSession, org_id: str) -> dict:
 
 
 async def _attach_evidence(session: AsyncSession, org_id: str, result: dict) -> None:
-    from commontrace import capabilities
+    from unimem import capabilities
 
     if capabilities.CURRENT.get() is not None:
         return  # Fleet-wide nuisance estimates are not scoped evidence for a restricted leaf capability.
@@ -2274,7 +2274,7 @@ async def value_delivered(
         signature_reason = (
             "HUB_LEDGER_SIGNING_KEY is not configured on this deployment: the "
             "ledger above is hash-chained (internally consistent, checkable "
-            "with commontrace.value.verify_ledger) but not cryptographically "
+            "with unimem.value.verify_ledger) but not cryptographically "
             "signed by the issuer, so a party with write access to the "
             "underlying store could still fabricate a whole replacement chain "
             "that verifies just as cleanly. See hub/DEPLOYMENT.md."
@@ -3295,7 +3295,7 @@ async def export_commons(
     }
 
     if config.commons_signing_key:
-        from commontrace.commons_integrity import sign_record
+        from unimem.commons_integrity import sign_record
 
         key = config.commons_signing_key.encode("utf-8")
         result["entries"] = [sign_record(entry, key, key_id=config.commons_signing_key_id)
@@ -3434,7 +3434,7 @@ def _commons_note(
     if n_failures == 0:
         return (
             "No recurring failures submitted. Capture them with "
-            "`commontrace capture --repeated-error` for this to have input."
+            "`unimem capture --repeated-error` for this to have input."
         )
     if n_failures < 20:
         return (

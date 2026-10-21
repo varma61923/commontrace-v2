@@ -7,8 +7,8 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from starlette.responses import JSONResponse
 
-from commontrace import frontier_protocol as fp
-from commontrace import pooled_evidence
+from unimem import frontier_protocol as fp
+from unimem import pooled_evidence
 from hub import transparency
 from hub.db import session_scope
 from hub.models import PooledContribution

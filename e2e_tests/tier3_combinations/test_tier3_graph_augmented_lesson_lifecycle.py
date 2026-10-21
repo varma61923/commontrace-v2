@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 
-from commontrace import frontmatter, graph, retrieval
+from unimem import frontmatter, graph, retrieval
 
 
 def test_t3_graph_boost_lesson_retrieval_lifecycle(isolated_store: str):

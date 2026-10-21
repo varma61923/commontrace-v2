@@ -1,5 +1,5 @@
-from commontrace import fact_store, hierarchical
-from commontrace.privacy_erasure import purge_fact
+from unimem import fact_store, hierarchical
+from unimem.privacy_erasure import purge_fact
 
 
 def test_hard_fact_erasure_cascades_history_and_vectors(tmp_path):
@@ -17,9 +17,9 @@ def test_hard_erasure_removes_dense_candidates_and_control_revisions(tmp_path):
     import asyncio
     import sqlite3
 
-    from commontrace import memory_control
-    from commontrace.fact_vector_projection import index_path
-    from commontrace.vector_store import SQLiteVectorIndex, VectorRecord
+    from unimem import memory_control
+    from unimem.fact_vector_projection import index_path
+    from unimem.vector_store import SQLiteVectorIndex, VectorRecord
 
     root = str(tmp_path)
     fact_store.migrate(root)
@@ -38,5 +38,5 @@ def test_hard_erasure_removes_dense_candidates_and_control_revisions(tmp_path):
     asyncio.run(seed())
     purge_fact(root, fact.id, reason="erase all materializations")
     with sqlite3.connect(index_path(root)) as db:
-        assert db.execute("SELECT count(*) FROM commontrace_vectors").fetchone()[0] == 0
+        assert db.execute("SELECT count(*) FROM unimem_vectors").fetchone()[0] == 0
     assert not list((tmp_path / "memory" / "controls" / "mental-model").glob("*.md"))

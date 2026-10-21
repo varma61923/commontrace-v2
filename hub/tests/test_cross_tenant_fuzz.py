@@ -8,7 +8,7 @@ import pytest
 import pytest_asyncio
 from starlette.applications import Starlette
 
-from commontrace import frontier_protocol as fp
+from unimem import frontier_protocol as fp
 from hub import alerts as alerts_module
 from hub import auth, console, events, incidents, rbac
 from hub.db import session_scope

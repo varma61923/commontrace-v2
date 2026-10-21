@@ -6,7 +6,7 @@ import random
 
 import pytest
 
-from commontrace import aipw, eprocess, experiment, holdout_io, value
+from unimem import aipw, eprocess, experiment, holdout_io, value
 
 
 def test_seeded_joint_peeking_with_dependent_memories():
@@ -74,8 +74,8 @@ def test_propensities_and_predictable_covariates_are_used():
 
 
 def test_signed_era_ledger_and_cli(tmp_path):
-    from commontrace import integrity
-    from commontrace.mcp_server import build_server
+    from unimem import integrity
+    from unimem.mcp_server import build_server
     pytest.importorskip("mcp")
     from tests.test_mcp_server import call, cli
 

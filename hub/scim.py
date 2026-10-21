@@ -17,7 +17,7 @@ from hub.crud import _is_uuid
 from hub.db import session_scope
 from hub.models import Organization, ScimGroup, ScimGroupMembership, User
 
-logger = logging.getLogger("commontrace.hub")
+logger = logging.getLogger("unimem.hub")
 
 SCIM_USER_SCHEMA = "urn:ietf:params:scim:schemas:core:2.0:User"
 SCIM_GROUP_SCHEMA = "urn:ietf:params:scim:schemas:core:2.0:Group"

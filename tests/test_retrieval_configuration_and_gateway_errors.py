@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from commontrace import gateway, retrieval, retrieval_io
+from unimem import gateway, retrieval, retrieval_io
 
 
 @pytest.fixture
@@ -65,7 +65,7 @@ def test_gateway_unexpected_failure_logs_cause_but_keeps_response_private(root, 
         raise RuntimeError("private store failure")
 
     app.routes[("GET", "/v1/health")] = (fail, {"auth": False})
-    with caplog.at_level(logging.ERROR, logger="commontrace.gateway"):
+    with caplog.at_level(logging.ERROR, logger="unimem.gateway"):
         reply = app.handle("GET", "/v1/health")
     assert reply.status == 500
     assert json.loads(reply.body)["error"]["message"] == "RuntimeError"

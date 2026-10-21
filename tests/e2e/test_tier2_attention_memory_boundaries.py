@@ -32,7 +32,7 @@ class DummyEmbeddingModel:
 
 
 def test_boundary_chunk_size_one() -> None:
-    from commontrace.reference.measure_performance import compute_semantic_duplicates
+    from unimem.reference.measure_performance import compute_semantic_duplicates
 
     n = 6
     dim = 16
@@ -52,7 +52,7 @@ def test_boundary_chunk_size_one() -> None:
 
 
 def test_boundary_chunk_size_exceeds_total_items() -> None:
-    from commontrace.reference.measure_performance import compute_semantic_duplicates
+    from unimem.reference.measure_performance import compute_semantic_duplicates
 
     n = 5
     dim = 8
@@ -69,7 +69,7 @@ def test_boundary_chunk_size_exceeds_total_items() -> None:
 
 
 def test_boundary_identical_all_elements() -> None:
-    from commontrace.reference.measure_performance import compute_semantic_duplicates
+    from unimem.reference.measure_performance import compute_semantic_duplicates
 
     n = 5
     dim = 10
@@ -86,7 +86,7 @@ def test_boundary_identical_all_elements() -> None:
 
 
 def test_boundary_strictly_orthogonal_embeddings() -> None:
-    from commontrace.reference.measure_performance import compute_semantic_duplicates
+    from unimem.reference.measure_performance import compute_semantic_duplicates
 
     embs = np.eye(4, dtype=np.float32)
     slugs = ["b0", "b1", "b2", "b3"]
@@ -97,7 +97,7 @@ def test_boundary_strictly_orthogonal_embeddings() -> None:
 
 
 def test_boundary_threshold_epsilon_above_one() -> None:
-    from commontrace.reference.measure_performance import compute_semantic_duplicates
+    from unimem.reference.measure_performance import compute_semantic_duplicates
 
     rng = np.random.default_rng(303)
     embs = rng.standard_normal((4, 8), dtype=np.float32)
@@ -114,7 +114,7 @@ def test_boundary_corrupt_index_npz_recovery(
     monkeypatch: pytest.MonkeyPatch,
     lesson_factory: Callable[..., Path],
 ) -> None:
-    from commontrace.reference import build_index
+    from unimem.reference import build_index
 
     monkeypatch.setattr(build_index, "SentenceTransformer", DummyEmbeddingModel)
 
@@ -144,7 +144,7 @@ def test_boundary_non_markdown_and_templates_ignored(
     monkeypatch: pytest.MonkeyPatch,
     lesson_factory: Callable[..., Path],
 ) -> None:
-    from commontrace.reference import build_index
+    from unimem.reference import build_index
 
     monkeypatch.setattr(build_index, "SentenceTransformer", DummyEmbeddingModel)
 
@@ -175,7 +175,7 @@ def test_boundary_zero_lessons_creates_valid_empty_index(
     isolated_store: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from commontrace.reference import build_index
+    from unimem.reference import build_index
 
     monkeypatch.setattr(build_index, "SentenceTransformer", DummyEmbeddingModel)
 
@@ -198,7 +198,7 @@ def test_boundary_partial_deletion_of_indexed_files(
     monkeypatch: pytest.MonkeyPatch,
     lesson_factory: Callable[..., Path],
 ) -> None:
-    from commontrace.reference import build_index
+    from unimem.reference import build_index
 
     monkeypatch.setattr(build_index, "SentenceTransformer", DummyEmbeddingModel)
 
@@ -227,7 +227,7 @@ def test_boundary_mtime_unchanged_skips_encoding(
     monkeypatch: pytest.MonkeyPatch,
     lesson_factory: Callable[..., Path],
 ) -> None:
-    from commontrace.reference import build_index
+    from unimem.reference import build_index
 
     monkeypatch.setattr(build_index, "SentenceTransformer", DummyEmbeddingModel)
 
@@ -247,7 +247,7 @@ def test_boundary_mtime_unchanged_skips_encoding(
 def test_boundary_missing_importances_key_fallback(
     isolated_store: Path,
 ) -> None:
-    from commontrace.reference.query import load_importances_from_index
+    from unimem.reference.query import load_importances_from_index
 
     attention_dir = isolated_store / "memory" / "attention"
     attention_dir.mkdir(parents=True, exist_ok=True)
@@ -267,7 +267,7 @@ def test_boundary_missing_importances_key_fallback(
 def test_boundary_corrupt_importance_values(
     isolated_store: Path,
 ) -> None:
-    from commontrace.reference.query import load_importances_from_index
+    from unimem.reference.query import load_importances_from_index
 
     attention_dir = isolated_store / "memory" / "attention"
     attention_dir.mkdir(parents=True, exist_ok=True)
@@ -293,7 +293,7 @@ def test_boundary_corrupt_importance_values(
 def test_boundary_status_filtering_in_fast_loader(
     isolated_store: Path,
 ) -> None:
-    from commontrace.reference.query import load_importances_from_index
+    from unimem.reference.query import load_importances_from_index
 
     attention_dir = isolated_store / "memory" / "attention"
     attention_dir.mkdir(parents=True, exist_ok=True)
@@ -345,7 +345,7 @@ def test_boundary_cosine_similarity_computation() -> None:
 
 
 def test_boundary_zero_tokens_and_whitespace_only() -> None:
-    from commontrace.reference.measure_performance import compute_lexical_duplicates
+    from unimem.reference.measure_performance import compute_lexical_duplicates
 
     lessons = {
         "l1": {"description": "   \n\t   ", "applies_when": "   "},
@@ -358,7 +358,7 @@ def test_boundary_zero_tokens_and_whitespace_only() -> None:
 
 
 def test_boundary_single_shared_token_below_threshold() -> None:
-    from commontrace.reference.measure_performance import compute_lexical_duplicates
+    from unimem.reference.measure_performance import compute_lexical_duplicates
 
     lessons = {
         "l1": {
@@ -376,7 +376,7 @@ def test_boundary_single_shared_token_below_threshold() -> None:
 
 
 def test_boundary_identical_wording_detected() -> None:
-    from commontrace.reference.measure_performance import compute_lexical_duplicates
+    from unimem.reference.measure_performance import compute_lexical_duplicates
 
     text = "thorough system integration testing and boundary verification protocol"
     lessons = {
@@ -392,7 +392,7 @@ def test_boundary_identical_wording_detected() -> None:
 
 
 def test_boundary_degenerate_threshold_zero() -> None:
-    from commontrace.reference.measure_performance import compute_lexical_duplicates
+    from unimem.reference.measure_performance import compute_lexical_duplicates
 
     lessons = {
         "doc_1": {"description": "first unique document testing", "applies_when": "when ready"},
@@ -405,7 +405,7 @@ def test_boundary_degenerate_threshold_zero() -> None:
 
 
 def test_boundary_disjoint_vocabularies_zero_pairs() -> None:
-    from commontrace.reference.measure_performance import compute_lexical_duplicates
+    from unimem.reference.measure_performance import compute_lexical_duplicates
 
     lessons = {
         "science": {"description": "quantum mechanics astrophysics particle physics", "applies_when": "laboratory"},

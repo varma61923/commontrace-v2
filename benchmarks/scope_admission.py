@@ -15,7 +15,7 @@ import statistics
 import time
 from collections.abc import Callable
 
-from commontrace import memory_control
+from unimem import memory_control
 
 
 def original_matches(labels: list[str], context: list[str], *, governed: bool = True) -> bool:

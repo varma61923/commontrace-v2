@@ -6,8 +6,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from commontrace import fact_store, hierarchical, query_plan, search_recipes, temporal_intent
-from commontrace.conversation import Store
+from unimem import fact_store, hierarchical, query_plan, search_recipes, temporal_intent
+from unimem.conversation import Store
 
 NOW = datetime(2026, 10, 13, 12, tzinfo=timezone.utc)
 

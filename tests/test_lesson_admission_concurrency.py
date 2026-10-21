@@ -6,8 +6,8 @@ from typing import Any
 
 import pytest
 
-from commontrace import frontmatter, lesson_cache, recall, retrieval_io
-from commontrace.commands import query_cmd
+from unimem import frontmatter, lesson_cache, recall, retrieval_io
+from unimem.commands import query_cmd
 
 
 @pytest.mark.parametrize("change", [

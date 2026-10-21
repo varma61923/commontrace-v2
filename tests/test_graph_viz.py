@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from commontrace import graph
-from commontrace.graph_viz import render_html
+from unimem import graph
+from unimem.graph_viz import render_html
 
 
 @pytest.fixture

@@ -3,10 +3,10 @@ import os
 
 import pytest
 
-from commontrace import frontmatter, holdout_io, integrity, paths, retrieval, retrieval_io
-from commontrace.cli import main
-from commontrace.commands import query_cmd
-from commontrace.commands.experiment_cmd import holdout_log_path
+from unimem import frontmatter, holdout_io, integrity, paths, retrieval, retrieval_io
+from unimem.cli import main
+from unimem.commands import query_cmd
+from unimem.commands.experiment_cmd import holdout_log_path
 
 N = 40
 
@@ -45,8 +45,8 @@ def test_the_override_is_cut_to_the_budget_and_the_rest_is_named(store, capsys):
     assert main(["query", "refund", "--dest", store]) == 0
     out = capsys.readouterr().out
     assert _listed(out) == [f"l{i:02d}" for i in range(10)]
-    assert "[commontrace] not injected:" in out and "count budget reached" in out
-    assert "[commontrace] budget: 10/10 lessons" in out and f"{N - 10} not injected" in out
+    assert "[unimem] not injected:" in out and "count budget reached" in out
+    assert "[unimem] budget: 10/10 lessons" in out and f"{N - 10} not injected" in out
 
 
 def test_lessons_past_a_full_budget_are_not_read(store, monkeypatch, capsys):

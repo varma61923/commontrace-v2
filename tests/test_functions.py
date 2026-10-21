@@ -3,9 +3,9 @@ import os
 
 import pytest
 
-from commontrace import experiment, functions, holdout_io, paths
-from commontrace.cli import main
-from commontrace.commands import experiment_cmd
+from unimem import experiment, functions, holdout_io, paths
+from unimem.cli import main
+from unimem.commands import experiment_cmd
 
 KITS = functions.builtin_kits()
 
@@ -158,7 +158,7 @@ def test_show_prints_the_regulated_notice_only_where_it_applies():
 
 @pytest.mark.parametrize("key", ["support", "sales", "robotics"])
 def test_a_demo_report_is_sound_not_merely_significant(tmp_path, key):
-    from commontrace import integrity
+    from unimem import integrity
 
     root = str(tmp_path)
     functions.seed_demo(root, KITS[key], occasions=600)

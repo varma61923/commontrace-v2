@@ -32,8 +32,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from typing import Literal
 
-from commontrace import _jsonl, fact_index, hierarchical, lesson_cache, retrieval
-from commontrace.fact_evidence import EvidenceResolver, bind_evidence, claim_revision
+from unimem import _jsonl, fact_index, hierarchical, lesson_cache, retrieval
+from unimem.fact_evidence import EvidenceResolver, bind_evidence, claim_revision
 
 Scorer = Literal["overlap-v1", "bm25-v1"]
 Variant = Literal["cold-baseline", "incremental"]
@@ -348,7 +348,7 @@ def measure(*, facts: int = 500, trials: int = 3) -> dict[str, object]:
     cold: list[float] = []
     fixture_hashes: list[str] = []
     try:
-        with tempfile.TemporaryDirectory(prefix="commontrace-fact-mutation-") as directory:
+        with tempfile.TemporaryDirectory(prefix="unimem-fact-mutation-") as directory:
             for trial in range(trials):
                 variants: tuple[Variant, ...] = ("cold-baseline", "incremental") if trial % 2 == 0 \
                     else ("incremental", "cold-baseline")

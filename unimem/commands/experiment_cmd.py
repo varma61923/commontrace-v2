@@ -1,0 +1,647 @@
+from __future__ import annotations
+
+import argparse
+import datetime
+import glob
+import json
+import os
+import statistics
+import sys
+
+from unimem import (
+    approval,
+    evidence_io,
+    experiment,
+    frontmatter,
+    holdout_io,
+    integrity,
+    paths,
+    trace_io,
+    value,
+)
+from unimem.commands._format import read_or_warn
+
+holdout_log_path = holdout_io.holdout_log_path
+
+
+def add_parser(subparsers: argparse._SubParsersAction) -> None:
+    p = subparsers.add_parser(
+        "experiment",
+        help="Measure whether injecting lessons CAUSES better outcomes, via randomized holdout.",
+    )
+    p.add_argument("--min-arm", type=int, default=experiment.DEFAULT_MIN_ARM)
+    p.add_argument("--evidence", choices=("effects", "e-values"), default="effects",
+                   help="Export predictable AIPW e-values and signed per-era evidence ledger entries.")
+    p.add_argument(
+        "--detect", type=float, default=experiment.DEFAULT_PRACTICAL_EFFECT,
+        help="The smallest effect worth calling a result (default 0.10). A null from a "
+             "design that could not have detected this is reported as UNDERPOWERED, not "
+             "as 'no measurable effect' -- clearing --min-arm is a floor on running the "
+             "test, not evidence the test could see anything.",
+    )
+    p.add_argument(
+        "--configure", action="store_true",
+        help="Set this store's holdout rate, so EVERY retriever uses it -- `unimem "
+             "query` and the MCP `retrieve` tool alike. Changing the rate starts a fresh "
+             "randomization (see below); it does not reinterpret the assignments already "
+             "made.",
+    )
+    p.add_argument(
+        "--rate", type=float, default=None,
+        help="With --configure: the fraction of eligible lessons to withhold. 0 stops the "
+             "experiment. Use `--plan` first to find out what rate your occasion budget "
+             "can actually answer with.",
+    )
+    p.add_argument(
+        "--note", default="",
+        help="With --configure: why this experiment was started, recorded alongside it.",
+    )
+    p.add_argument(
+        "--plan", action="store_true",
+        help="Design the experiment instead of analysing one: how many occasions and what "
+             "holdout rate are needed to detect --detect. Run this BEFORE the pilot.",
+    )
+    p.add_argument(
+        "--occasions", type=int, default=None,
+        help="With --plan: how many occasions you expect in the window. Answers 'what "
+             "rate do I need', which is the question a pilot actually has.",
+    )
+    p.add_argument(
+        "--baseline", type=float, default=None,
+        help="With --plan: the success rate you expect without the memory. Defaults to "
+             "this store's own observed rate when there is one, else 0.5 (the most "
+             "pessimistic, so a plan built on no data does not understate the sample).",
+    )
+    p.add_argument(
+        "--holdout-rate", type=float, default=experiment.DEFAULT_HOLDOUT_RATE,
+        help="With --plan: the rate you intend to run at.",
+    )
+    p.add_argument("--alpha", type=float, default=0.05, help="False discovery rate.")
+    p.add_argument(
+        "--fixed-horizon", action="store_true",
+        help="Analyse this as ONE look at a finished run, against a fixed threshold. "
+             "Only honest if nobody has acted on an earlier look -- no lesson retired, "
+             "no CI gate checked, no report read and the run stopped because of it. "
+             "By default every analysis is treated as one look at a running experiment "
+             "and judged against a boundary valid at every sample size, the same one "
+             "the MCP tools and the Hub use, so every surface gives the same verdict.",
+    )
+    p.add_argument("--json", action="store_true")
+    p.add_argument(
+        "--strict", action="store_true",
+        help="Exit non-zero if any lesson significantly HURTS outcomes.",
+    )
+    p.add_argument(
+        "--value-per-occasion", type=float, default=None,
+        help="What one resolved occasion is worth to you. Adds a value section: the "
+             "causal effect turned into a count of occasions, times your rate. The "
+             "count is measured; the rate is yours and is never stored.",
+    )
+    p.add_argument(
+        "--salt", default=None,
+        help="Analyse a specific randomization instead of the current one. Every run the "
+             "store has ever done is in the log; the default is the one configured now, "
+             "because pooling two is not a bigger experiment, it is a broken one.",
+    )
+    p.add_argument(
+        "--by", choices=("agent_type", "agent_id"), default=None,
+        help="Exploratory subgroup reading: each lesson's randomized effect per agent type or "
+             "agent, plus a test of whether the effect differs between them (flags a lesson "
+             "that helps one context and hurts another). Pre-treatment fields only.",
+    )
+    p.add_argument(
+        "--covariates", default=None, metavar="FILE",
+        help="With --by omitted: JSONL {occasion_id, group} subgroups you supply. They must "
+             "be fixed before the lesson could act (a customer tier, a robot model), never "
+             "something recorded after the task.",
+    )
+    p.add_argument(
+        "--draft-revisions", action="store_true",
+        help="With --by/--covariates: for each CROSSING lesson, write a review-status revision whose "
+             "applies_when keeps only the subgroups where it significantly helps.",
+    )
+    p.add_argument(
+        "--interactions", action="store_true",
+        help="Exploratory factorial reading: for lessons eligible on the same occasions, does one change "
+             "the other's effect (SYNERGY / INTERFERENCE)? Uses their independent randomizations.",
+    )
+    p.add_argument("--dest", default=None)
+    p.set_defaults(func=run)
+
+    from unimem.commands.nextwave import add_experiment
+
+    add_experiment(p)
+
+
+def _outcomes_by_occasion(root: str) -> dict[str, bool]:
+    out: dict[str, bool] = dict(holdout_io.read_outcomes(root))
+
+    for path in sorted(glob.glob(os.path.join(paths.episodes_dir(root), "*.md"))):
+        if "template" in os.path.basename(path):
+            continue
+        result = read_or_warn(frontmatter.read, path)
+        if result is None:
+            continue
+        fm, _ = result
+        verdict = str(fm.get("verdict", "")).upper()
+        if verdict == "CONFORM":
+            out[str(fm.get("name", ""))] = True
+        elif verdict in ("ABANDON", "ARBITRATION"):
+            out[str(fm.get("name", ""))] = False
+
+    for path in sorted(glob.glob(os.path.join(paths.traces_dir(root), "*.md"))):
+        if os.path.basename(path) == "README.md":
+            continue
+        result = read_or_warn(trace_io.read, path)
+        if result is None:
+            continue
+        inst, _ = result
+        outcome = inst.get("outcome") or {}
+        resolved = outcome.get("resolved")
+        if outcome.get("repeated_error") is True:
+            resolved = False
+        if isinstance(resolved, bool):
+            out[str(inst.get("id", ""))] = resolved
+
+    return out
+
+
+def _load(root: str) -> tuple[list[integrity.Assignment], float, int]:
+    records, corrupt = holdout_io.read_log(root)
+    if not records:
+        return [], experiment.DEFAULT_HOLDOUT_RATE, corrupt
+
+    outcomes = _outcomes_by_occasion(root)
+    rows = [
+        integrity.Assignment(
+            lesson=rec.lesson,
+            occasion_id=rec.occasion_id,
+            injected=rec.injected,
+            rate=rec.rate,
+            salt=rec.salt,
+            succeeded=outcomes.get(rec.occasion_id),
+            at=rec.at,
+            revision=rec.revision,
+            relevance=rec.relevance,
+            rank=rec.rank,
+            scorer=rec.scorer,
+            floor=rec.floor,
+            schedule=rec.schedule,
+            context=rec.context,
+        )
+        for rec in records
+    ]
+    rate = sum(r.rate for r in rows) / len(rows)
+    return rows, rate, corrupt
+
+
+def scope_to_current_salt(
+    root: str, all_rows: list[integrity.Assignment], salt: str | None = None,
+) -> tuple[list[integrity.Assignment], str, int]:
+    """Scope assignment rows to one randomization, matching what the Hub does in SQL."""
+    config = holdout_io.load_config(root)
+    wanted_salt = salt if salt is not None else config.salt
+    rows = [r for r in all_rows if r.salt == wanted_salt]
+    return rows, wanted_salt, len(all_rows) - len(rows)
+
+
+def _observations(rows: list[integrity.Assignment],
+                  schedules: list | None = None) -> list[experiment.HoldoutObservation]:
+    """Resolved assignments as observations. `schedules` marks rows made under adaptive
+    allocation when the rows themselves carry no schedule tag (a proof package's CSV)."""
+    unique, _ = integrity.normalize(rows)
+    # Assignment order, so the propensity-weighted estimator (used when a lesson's rate
+    # changed) reads the same sequence from the live log and from a proof package's CSV.
+    epoch = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
+    ordered = sorted(unique, key=lambda r: (_aware(r.at) if r.at is not None else epoch, r.occasion_id))
+    return [
+        experiment.HoldoutObservation(
+            lesson_slug=r.lesson,
+            occasion_id=r.occasion_id,
+            injected=r.injected,
+            succeeded=bool(r.succeeded),
+            rate=r.rate,
+            scheduled=bool(r.schedule) or _in_schedule(r, schedules),
+        )
+        for r in ordered if r.succeeded is not None
+    ]
+
+
+def _in_schedule(row: integrity.Assignment, schedules: list | None) -> bool:
+    if not schedules or row.at is None:
+        return False
+    from unimem import allocation
+
+    return allocation.in_force(schedules, row.salt, _aware(row.at)) is not None
+
+
+def _aware(moment: datetime.datetime) -> datetime.datetime:
+    return moment if moment.tzinfo is not None else moment.replace(tzinfo=datetime.timezone.utc)
+
+
+def _relevance_sensitivity(rows: list[integrity.Assignment], args) -> dict[str, dict]:
+    scored = [r for r in rows if r.relevance is not None and r.succeeded is not None]
+    if len(scored) < 2 * args.min_arm:
+        return {}
+
+    by_lesson: dict[str, list[integrity.Assignment]] = {}
+    for r in scored:
+        by_lesson.setdefault(r.lesson, []).append(r)
+
+    strong: list[experiment.HoldoutObservation] = []
+    for group in by_lesson.values():
+        if len(group) < 2:
+            continue
+        cutoff = statistics.median([r.relevance for r in group])
+        strong.extend(
+            experiment.HoldoutObservation(
+                lesson_slug=r.lesson,
+                occasion_id=r.occasion_id,
+                injected=r.injected,
+                succeeded=bool(r.succeeded),
+            )
+            for r in group if r.relevance is not None and r.relevance >= cutoff
+        )
+    if not strong:
+        return {}
+
+    restricted = experiment.analyze(
+        strong, min_arm=args.min_arm, alpha=args.alpha, detectable=args.detect,
+        sequential=not getattr(args, "fixed_horizon", False))
+    return {e.lesson_slug: {
+        "verdict": e.verdict, "effect": e.effect,
+        "n_injected": e.n_injected, "n_withheld": e.n_withheld,
+    } for e in restricted}
+
+
+def _render_sensitivity(
+    effects: list, sensitivity: dict[str, dict],
+) -> str:
+    if not sensitivity:
+        return ""
+    flipped = []
+    for e in effects:
+        alt = sensitivity.get(e.lesson_slug)
+        if alt and alt["verdict"] != e.verdict:
+            flipped.append((e, alt))
+    if not flipped:
+        return (
+            "_Relevance sensitivity: every verdict above is unchanged when the estimate "
+            "is restricted to the occasions each lesson matched most strongly._"
+        )
+    lines = [
+        "### Relevance sensitivity",
+        "",
+        "Restricted to the strongest half of each lesson's matches -- the occasions it "
+        "was most clearly about -- these verdicts change:",
+        "",
+        "| Lesson | All matches | Strongest matches only | n (inj/withheld) |",
+        "|---|---|---|---|",
+    ]
+    for e, alt in flipped:
+        lines.append(
+            f"| `{e.lesson_slug}` | {e.verdict} | {alt['verdict']} | "
+            f"{alt['n_injected']}/{alt['n_withheld']} |"
+        )
+    lines += [
+        "",
+        "A verdict that depends on which matches are counted is a verdict about "
+        "retrieval as much as about the lesson. The treatment being measured is "
+        "\"inject when retrieved\", so what counts as retrieved is part of it: see "
+        "`unimem retrieval --floor`.",
+    ]
+    return "\n".join(lines)
+
+
+def _revisions_under_test(rows: list[integrity.Assignment]) -> dict[str, list[str]]:
+    out: dict[str, list[str]] = {}
+    for r in rows:
+        if r.revision and r.revision not in out.setdefault(r.lesson, []):
+            out[r.lesson].append(r.revision)
+    return dict(sorted(out.items()))
+
+
+def _observed_baseline(root: str) -> float | None:
+    outcomes = list(_outcomes_by_occasion(root).values())
+    if len(outcomes) < 20:
+        return None
+    return sum(1 for ok in outcomes if ok) / len(outcomes)
+
+
+def _run_configure(args: argparse.Namespace, root: str) -> int:
+    if args.rate is None:
+        current = holdout_io.load_config(root)
+        print(_render_config(current, root))
+        return 0
+    if args.rate < approval.AUTO_APPROVE_MIN_HOLDOUT:
+        held = [str(fm.get("name")) for fm in evidence_io.load_active_lessons(root) if fm.get("auto_approved")]
+        if held:
+            print(
+                f"[unimem] refusing: {len(held)} active lesson(s) were auto-approved on the "
+                f"condition that the holdout stays at {approval.AUTO_APPROVE_MIN_HOLDOUT:.0%} or more "
+                f"({', '.join(sorted(held)[:5])}{', ...' if len(held) > 5 else ''}).\n"
+                "  Reject or re-approve them by hand first.",
+                file=sys.stderr,
+            )
+            return 1
+    try:
+        config = holdout_io.configure(
+            root, rate=args.rate, detect=args.detect, note=args.note)
+    except ValueError as exc:
+        print(f"[unimem] {exc}", file=sys.stderr)
+        return 1
+
+    if not config.running:
+        print("[unimem] holdout stopped. Retrieval injects every matching lesson "
+              "from now on, and nothing further is measured.\n"
+              "  Assignments already recorded are untouched; `unimem experiment` "
+              "still reports on them.")
+        return 0
+
+    print(f"[unimem] holdout set to {config.rate:.0%} for this store.")
+    print(f"  Salt: {config.salt}")
+    print()
+    print("  This starts a FRESH randomization. Assignment is a hash of (lesson, "
+          "occasion, salt)\n"
+          "  compared against the rate, so a new rate re-randomizes every occasion --\n"
+          "  the assignments before and after are two different experiments, and pooling\n"
+          "  them would let one occasion sit in both arms. Rotating the salt makes that\n"
+          "  explicit: `unimem experiment` reports on this run, and names the\n"
+          "  earlier one as a prior experiment rather than mixing them.")
+    print()
+    print("  Every retriever now uses it -- `unimem query --experiment` and the MCP\n"
+          "  `retrieve` tool alike. That share of your work runs without its memory while\n"
+          "  the experiment is live; that is the price of a causal answer.")
+    return 0
+
+
+def _render_config(config: holdout_io.ExperimentConfig, root: str) -> str:
+    if not config.running:
+        return (
+            "[unimem] no holdout is configured for this store, so nothing here is "
+            "causal.\n"
+            "  Start one with:  unimem experiment --configure --rate 0.5\n"
+            "  Size it first with:  unimem experiment --plan --occasions <n>"
+        )
+    lines = [
+        f"[unimem] holdout running at {config.rate:.0%} (salt {config.salt}).",
+        f"  Target effect: {config.detect:.0%}. Started: {config.started_at[:19] or 'unknown'}.",
+    ]
+    if config.note:
+        lines.append(f"  Note: {config.note}")
+    rows, _rate, _corrupt = _load(root)
+    current = [r for r in rows if r.salt == config.salt]
+    lines.append(f"  {len(current)} assignment(s) under this randomization"
+                 + (f", {len(rows) - len(current)} from earlier ones."
+                    if len(rows) != len(current) else "."))
+    return "\n".join(lines)
+
+
+def _run_plan(args: argparse.Namespace, root: str) -> int:
+    observed = _observed_baseline(root)
+    baseline = args.baseline if args.baseline is not None else (observed or 0.5)
+    if not 0 < baseline < 1 or not 0 < args.detect < 1:
+        print("[unimem] --baseline and --detect must be strictly between 0 and 1.",
+              file=sys.stderr)
+        return 1
+    if not 0.0 < args.holdout_rate < 1.0:
+        print(f"[unimem] --holdout-rate must be in (0.0, 1.0), got {args.holdout_rate}. "
+              "A stopped experiment (rate 0) has no design to plan.",
+              file=sys.stderr)
+        return 1
+    design = experiment.plan(
+        effect=args.detect, baseline=baseline, rate=args.holdout_rate,
+        occasions_budget=args.occasions,
+    )
+    if args.json:
+        import dataclasses
+
+        print(json.dumps(dataclasses.asdict(design), indent=2))
+        return 0
+    print(experiment.render_plan(design))
+    if args.baseline is None:
+        print()
+        print(
+            f"_Baseline {baseline:.0%} "
+            + (f"from this store's own {len(_outcomes_by_occasion(root))} recorded outcome(s)._"
+               if observed is not None else
+               "assumed: fewer than 20 recorded outcomes here to read one from. 50% is the "
+               "most pessimistic assumption, so this will not understate the sample._")
+        )
+    return 1 if design.verdict == "infeasible" else 0
+
+
+def run(args: argparse.Namespace) -> int:
+    root = paths.resolve_root(args.dest)
+    if args.configure:
+        return _run_configure(args, root)
+    if args.plan:
+        return _run_plan(args, root)
+    all_rows, rate, n_corrupt = _load(root)
+    rows, wanted_salt, other = scope_to_current_salt(root, all_rows, args.salt)
+    if args.evidence == "e-values":
+        from unimem import eprocess
+
+        result = eprocess.report(rows)
+        value.record_evidence(root, rows)
+        print(json.dumps({"e_values": result, "e_bh": "arbitrary dependence at a joint stopping time",
+                          "assumptions": "exact logged propensities, predictable models, conditional directional null",
+                          "billing_evidence": "experiment.analyze and integrity.audit remain authoritative"}, indent=2))
+        return 0
+    if all_rows and not rows:
+        print(
+            f"[unimem] {len(all_rows)} assignment(s) recorded, but none under the "
+            f"current randomization (salt {wanted_salt!r}).\n"
+            "  They belong to earlier experiments. Analysing them together would pool "
+            "two randomizations\n"
+            "  into one comparison, so they are not mixed in. To read an earlier run: "
+            "`unimem experiment --salt <salt>`.\n"
+            "  Salts present: "
+            + ", ".join(sorted({r.salt for r in all_rows if r.salt})),
+            file=sys.stderr,
+        )
+        return 0
+    n_lines = len(rows)
+    report = integrity.audit(rows, min_arm=args.min_arm)
+    obs = _observations(rows)
+    n_no_outcome = report.n_assignments - report.n_resolved
+    n_duplicate = report.n_duplicates
+    if n_corrupt:
+        print(
+            f"[unimem] WARNING: {n_corrupt} unparseable line(s) in the holdout log.\n"
+            "  Each is a lost observation from one arm, which biases the effect size\n"
+            "  rather than just reducing n. Treat the numbers below as unreliable\n"
+            "  until this is explained -- writes are locked, so something else\n"
+            "  wrote to memory/holdout_log.jsonl.",
+            file=sys.stderr,
+        )
+
+    if n_lines == 0:
+        print(
+            "[unimem] no holdout assignments recorded yet.\n\n"
+            "  Every lesson-value number available without this is CORRELATIONAL: a\n"
+            "  lesson is retrieved because the situation matched it, so the occasions\n"
+            "  where it fired differ systematically from the ones where it didn't.\n"
+            "  That bias does not shrink with more data.\n\n"
+            "  To start measuring cause instead, retrieve with:\n"
+            "    unimem query \"<task>\" --experiment --occasion-id <id>\n"
+            "  then record the outcome for that same <id> as an episode or a trace.",
+            file=sys.stderr,
+        )
+        return 0
+
+    if not obs:
+        print(
+            f"[unimem] {n_lines} holdout assignment(s) recorded, but none have a matching\n"
+            "  outcome yet, so nothing can be measured.\n"
+            "  The `--occasion-id` passed to `query` must match the episode `name` or the\n"
+            "  trace `id` that records how the task turned out.",
+            file=sys.stderr,
+        )
+        return 0
+
+    if getattr(args, "interactions", False):
+        return _run_interactions(args, obs, report)
+    if getattr(args, "by", None) or getattr(args, "covariates", None):
+        return _run_subgroups(args, root, obs, report)
+    if getattr(args, "draft_revisions", False):
+        print("[unimem] --draft-revisions needs --by or --covariates.", file=sys.stderr)
+        return 2
+
+    effects = experiment.analyze(
+        obs, min_arm=args.min_arm, alpha=args.alpha, detectable=args.detect,
+        sequential=not args.fixed_horizon)
+    sensitivity = _relevance_sensitivity(rows, args)
+    summary = experiment.ExperimentSummary(
+        n_observations=len(obs),
+        n_lessons=len({o.lesson_slug for o in obs}),
+        holdout_rate=sum(r.rate for r in rows) / len(rows),
+        effects=effects,
+    )
+
+    revisions = _revisions_under_test(rows)
+
+    if args.json:
+        import dataclasses
+
+        print(json.dumps({
+            **dataclasses.asdict(summary),
+            "integrity": dataclasses.asdict(report),
+            "value": dataclasses.asdict(
+                value.compute(effects, report, value_per_occasion=args.value_per_occasion)),
+            "revisions_under_test": revisions,
+            "relevance_sensitivity": sensitivity,
+        }, indent=2, default=str))
+    else:
+        print(integrity.render(report))
+        if other:
+            print()
+            print(f"_Scoped to the current randomization (salt `{wanted_salt}`). "
+                  f"{other} assignment(s) from earlier experiments are excluded — "
+                  "pooling two randomizations is not a bigger sample, it lets one "
+                  "occasion sit in both arms. Read an earlier run with "
+                  "`--salt <salt>`._")
+        print()
+        print("---")
+        print()
+        print(experiment.render(summary, alpha=args.alpha))
+        sensitivity_block = _render_sensitivity(effects, sensitivity)
+        if sensitivity_block:
+            print()
+            print(sensitivity_block)
+        worth = value.compute(effects, report, value_per_occasion=args.value_per_occasion)
+        print()
+        print("---")
+        print()
+        print(value.render(worth))
+        if revisions:
+            print()
+            print("_Revision under test — the exact lesson text each effect above is "
+                  "about. A lesson edited after this ran is no longer the lesson these "
+                  "numbers describe; `unimem lesson history <slug>` shows what "
+                  "changed._")
+            print()
+            for slug, revs in revisions.items():
+                mark = "" if len(revs) == 1 else "  ← CHANGED MID-RUN, see the validity section"
+                print(f"- `{slug}` @ {', '.join(revs)}{mark}")
+        if n_no_outcome:
+            print(
+                f"\n_{n_no_outcome} assignment(s) skipped: no recorded outcome for that occasion yet._"
+            )
+        if n_duplicate:
+            print(
+                f"\n_{n_duplicate} duplicate assignment(s) collapsed: the same lesson was logged "
+                "more than once for one occasion (a retry). Counting them would inflate the arms._"
+            )
+
+    if args.strict:
+        if not report.readable:
+            print(
+                "\n[unimem] --strict: the experiment's validity is COMPROMISED, so "
+                "no verdict below can be trusted:\n"
+                + "\n".join(f"  - {f.headline}" for f in report.blocking),
+                file=sys.stderr,
+            )
+            return 1
+        hurts = [e for e in effects if e.verdict == experiment.VERDICT_HURTS]
+        if hurts:
+            print(
+                f"\n[unimem] --strict: {len(hurts)} lesson(s) significantly hurt outcomes: "
+                + ", ".join(e.lesson_slug for e in hurts),
+                file=sys.stderr,
+            )
+            return 1
+    return 0
+
+
+def _run_interactions(args, obs, report) -> int:
+    from unimem import interactions
+
+    if report.verdict == integrity.VERDICT_COMPROMISED:
+        print("[unimem] the experiment's audit is COMPROMISED; interaction readings from it would be "
+              "unreliable. Run `unimem experiment` for the reasons.", file=sys.stderr)
+        return 1
+    results = interactions.analyze(obs, alpha=args.alpha)
+    if args.json:
+        print(json.dumps({"exploratory": True, "reading": "fixed-horizon",
+                          "pairs": [p.as_dict() for p in results]}, indent=2))
+    else:
+        print(interactions.render(results))
+    if args.strict and any(p.flag == interactions.FLAG_INTERFERENCE for p in results):
+        return 1
+    return 0
+
+
+def _run_subgroups(args, root, obs, report) -> int:
+    from unimem import heterogeneity
+
+    if args.by and args.covariates:
+        print("[unimem] use --by or --covariates, not both.", file=sys.stderr)
+        return 2
+    if report.verdict == integrity.VERDICT_COMPROMISED:
+        print("[unimem] the experiment's audit is COMPROMISED; subgroup effects from it would be "
+              "as unreliable as the overall ones. Run `unimem experiment` for the reasons.",
+              file=sys.stderr)
+        return 1
+    try:
+        groups = (heterogeneity.occasion_groups_from_file(args.covariates) if args.covariates
+                  else heterogeneity.occasion_groups_from_traces(root, args.by))
+        results = heterogeneity.analyze(obs, groups, min_arm=args.min_arm, alpha=args.alpha)
+    except (OSError, ValueError) as exc:
+        print(f"[unimem] subgroup analysis refused: {exc}", file=sys.stderr)
+        return 2
+    label = args.by or "covariates"
+    drafted = []
+    if getattr(args, "draft_revisions", False):
+        drafted = [d for d in (heterogeneity.draft_narrowing(root, h, label) for h in results) if d]
+    if args.json:
+        print(json.dumps({"by": label, "exploratory": True, "reading": "fixed-horizon",
+                          "labelled_occasions": len(groups),
+                          "lessons": [h.as_dict() for h in results], "drafted": drafted}, indent=2))
+    else:
+        print(heterogeneity.render(results, label))
+        for path in drafted:
+            print(f"[unimem] drafted {path} (status=review); approve it to replace the broad version.")
+    if args.strict and any(h.flag == heterogeneity.FLAG_CROSSING for h in results):
+        return 1
+    return 0

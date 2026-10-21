@@ -21,8 +21,8 @@ shared local lock domain; separate replicas need an external coordination layer.
 ## Work through a conflict
 
 ```sh
-commontrace team isolation '{"level":"serializable","scopes":["tenant:warehouse"]}' --dest ./store
-commontrace team read '{"identities":["fact-example"],"context":["tenant:warehouse"]}' --dest ./store
+unimem team isolation '{"level":"serializable","scopes":["tenant:warehouse"]}' --dest ./store
+unimem team read '{"identities":["fact-example"],"context":["tenant:warehouse"]}' --dest ./store
 ```
 
 Use a real fact ID in the read command. `team read` returns admitted facts and a
@@ -32,7 +32,7 @@ existing fact's hash. It distinguishes changes even when timestamps coincide.
 Fetching a guessed private ID is refused before returning a body or version.
 
 ```python
-from commontrace.client import MemoryClient
+from unimem.client import MemoryClient
 
 memory = MemoryClient("./store", context={"tenant": "warehouse"})
 snapshot = memory.team_read(["fact-example"])
@@ -63,7 +63,7 @@ was disabled. Protected hazards are not superseded.
 ## Exclusive work and privacy erasure
 
 ```sh
-commontrace team lease '{"work_item":"inspect-gripper","seconds":60,"context":["tenant:warehouse"]}' --dest ./store
+unimem team lease '{"work_item":"inspect-gripper","seconds":60,"context":["tenant:warehouse"]}' --dest ./store
 ```
 
 In a `sequenced` space, pass the returned lease to `MemoryClient.batch(lease=...)`

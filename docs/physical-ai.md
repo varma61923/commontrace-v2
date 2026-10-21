@@ -6,13 +6,13 @@ sensors, emergency stops and human escalation remain in the robot control stack.
 A minimal Python integration needs a running gateway and its bearer token:
 
 ```python
-from commontrace.robotics.bridge import HTTPGateway, RobotBridge
-from commontrace.robotics.edge import OutcomeQueue
+from unimem.robotics.bridge import HTTPGateway, RobotBridge
+from unimem.robotics.edge import OutcomeQueue
 
 robot = RobotBridge(
     HTTPGateway("http://127.0.0.1:8787", token),
     embodiment="parallel-jaw", site="depot", skill="grasp", robot="robot7",
-    outcome_queue=OutcomeQueue("/var/lib/commontrace-edge"),
+    outcome_queue=OutcomeQueue("/var/lib/unimem-edge"),
 )
 context = robot.start("episode-42", "Recover the dropped object")
 # Planner consumes context["deliver"], then executes through its normal controls.
@@ -37,7 +37,7 @@ only when the returned `allowed` value is true; the shield itself never sends
 motor commands.
 
 For ROS 2, install rclpy/std_msgs through your ROS distribution and the
-`robotics` extra. Build `commontrace_interfaces` to enable the bounded asking
+`robotics` extra. Build `unimem_interfaces` to enable the bounded asking
 and STL shield services; pass `on_shield=shield_service_handler(store_root)` to
 `create_node` to expose the action-verdict service to the planner.
 `create_node` subscribes to configurable task-start, task-end
@@ -49,7 +49,7 @@ raises into the executor (which would stop the node). CI injects a mock
 rclpy-compatible node and exercises recall, outcome and scene callbacks.
 
 `frontier robot-ingest` accepts `format`, `path`, `environment` and `robot`.
-LeRobot JSONL metadata needs no tensor stack; MCAP requires `commontrace[mcap]`.
+LeRobot JSONL metadata needs no tensor stack; MCAP requires `unimem[mcap]`.
 MCAP reads only bounded JSON episode channels. Episode summaries and sensor
 readings become governed traces; SHA256 media references preserve addresses.
 Raw image/audio/video decoding and conversion to a training dataset stay at the

@@ -3,7 +3,7 @@ import time
 import pytest
 
 from commons.eval import signal_ari as sa
-from commontrace import failure_signals as fs
+from unimem import failure_signals as fs
 
 
 def test_ari_is_one_for_the_same_partition_under_any_naming_and_near_zero_for_unrelated_ones():
@@ -54,7 +54,7 @@ def test_a_thousand_failures_cluster_in_seconds():
 
 
 def test_a_zero_threshold_is_one_signal_not_a_crash(tmp_path, monkeypatch):
-    from commontrace.cli import main
+    from unimem.cli import main
     monkeypatch.chdir(tmp_path)
     main(["init", "--agent-type", "support", "--dest", str(tmp_path)])
     sa._write(str(tmp_path), sa.generate(1)[:6])

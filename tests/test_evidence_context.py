@@ -9,16 +9,16 @@ from pathlib import Path
 
 import pytest
 
-from commontrace import frontmatter, graph, hierarchical, lesson_admission, recall
-from commontrace.conversation import Store
-from commontrace.evidence_context import explain_fact
-from commontrace.fact_evidence import EvidenceError, EvidenceResolver, FactEvidence, bind_evidence, claim_revision
+from unimem import frontmatter, graph, hierarchical, lesson_admission, recall
+from unimem.conversation import Store
+from unimem.evidence_context import explain_fact
+from unimem.fact_evidence import EvidenceError, EvidenceResolver, FactEvidence, bind_evidence, claim_revision
 
 
 @pytest.fixture(params=["jsonl", "sqlite"])
 def root(tmp_path: Path, request) -> str:
     if request.param == "sqlite":
-        from commontrace import fact_store
+        from unimem import fact_store
         fact_store.migrate(str(tmp_path))
     return str(tmp_path)
 
@@ -32,7 +32,7 @@ def add(root, statement, *, sources=None, scopes=None, refute=False):
 
 
 def cli(root, *arguments):
-    return subprocess.run([sys.executable, "-m", "commontrace.cli", *arguments, "--dest", root],
+    return subprocess.run([sys.executable, "-m", "unimem.cli", *arguments, "--dest", root],
                           text=True, capture_output=True, check=False)
 
 
@@ -334,7 +334,7 @@ def test_scope_change_after_ranking_does_not_leak_a_formerly_public_fact(root, m
 def test_lesson_revocation_after_ranking_withholds_fact_even_with_unchanged_fact_generation(
     root, monkeypatch, evidence_budget,
 ):
-    from commontrace import fact_index
+    from unimem import fact_index
 
     path = Path(root, "memory", "lessons", "lesson_lumen.md")
     path.parent.mkdir(parents=True)
@@ -374,7 +374,7 @@ def test_cli_explanation_and_expanded_recall_use_production_sources(root):
 
 def test_real_mcp_explain_and_memory_recall_transport_new_options(root):
     pytest.importorskip("mcp")
-    from commontrace import mcp_server
+    from unimem import mcp_server
     assert cli(root, "init", "--agent-type", "coding").returncode == 0
     premise = add(root, "The instrument logged the timeout as 5 seconds", scopes=["payments"])
     target = add(root, "Lumen timeout is 5 seconds", sources=[premise], scopes=["payments"])

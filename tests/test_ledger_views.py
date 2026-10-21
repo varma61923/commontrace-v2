@@ -2,7 +2,7 @@
 import json
 import os
 
-from commontrace import gateway, holdout_io, lesson_io, paths, release, templates
+from unimem import gateway, holdout_io, lesson_io, paths, release, templates
 
 TOKEN = "l" * 40
 
@@ -59,7 +59,7 @@ def test_ledger_endpoints(tmp_path):
 
     status, plan = _get(gw, "/v1/ledger/design?baseline=0.5&effect=0.1&rate=0.2&daily=100")
     assert status == 200 and plan["occasions_needed"] > plan["n_per_arm"] and plan["days_needed"] > 0
-    assert plan["command"] == "commontrace experiment --configure --rate 0.2"
+    assert plan["command"] == "unimem experiment --configure --rate 0.2"
     assert _get(gw, "/v1/ledger/design?rate=2")[0] == 400
     assert _get(gw, "/v1/ledger/design?effect=abc")[0] == 400
 

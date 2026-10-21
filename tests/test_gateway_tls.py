@@ -7,7 +7,7 @@ import urllib.request
 
 import pytest
 
-from commontrace import gateway
+from unimem import gateway
 
 pytestmark = pytest.mark.skipif(shutil.which("openssl") is None, reason="needs the openssl binary for a test cert")
 

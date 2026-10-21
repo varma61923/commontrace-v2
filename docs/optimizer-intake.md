@@ -62,14 +62,14 @@ candidate's declared `harm_scorer` and `harm_score`. An uncalibrated trial is
 refused. The reference score is operator-supplied; it is not a learned guarantee.
 
 ```sh
-commontrace skill optimize intake '{"proposal":{"base_artifact":"release-v1","delta":"Verify checksum.","optimizer":"reflector","claimed_validation_score":0.99,"parent":null}}' --dest ./store
+unimem skill optimize intake '{"proposal":{"base_artifact":"release-v1","delta":"Verify checksum.","optimizer":"reflector","claimed_validation_score":0.99,"parent":null}}' --dest ./store
 ```
 
 This returns a `delta:<hash>` unit and its prepublished allocation schedule. Once
 the schedule is effective, the application obtains each occasion's actual arm:
 
 ```python
-from commontrace import holdout_io, optimizer_io
+from unimem import holdout_io, optimizer_io
 
 catalog = optimizer_io.expose(
     "./store", [candidate_id], "release-occasion-1", segment="default"
@@ -87,8 +87,8 @@ controls. A canonical harm alarm withdraws a bullet even when the reflector's
 claimed score was high. G8 records observed source reads for delivered edits.
 
 ```sh
-commontrace skill optimize status '{"identity":"delta:<returned-hash>"}' --dest ./store
-commontrace skill optimize frontier '{"segment":"default"}' --dest ./store
+unimem skill optimize status '{"identity":"delta:<returned-hash>"}' --dest ./store
+unimem skill optimize frontier '{"segment":"default"}' --dest ./store
 ```
 
 `status` returns reflection-ready negative evidence, a minimum detectable effect,
