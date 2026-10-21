@@ -90,7 +90,6 @@ hub/.env
 !unimem/distillation_worker.py
 !unimem/dosage.py
 !unimem/embeddings.py
-!unimem/onnx_text.py
 !unimem/entities.py
 !unimem/entity_store.py
 !unimem/eprocess.py

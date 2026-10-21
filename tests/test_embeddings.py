@@ -147,7 +147,7 @@ def test_fastembed_uses_bounded_cpu_batches_and_query_document_apis(monkeypatch,
             calls.append(("passage", list(texts), batch_size, parallel))
             return iter([[3.0, 4.0] for _ in texts])
 
-    monkeypatch.setattr("unimem.onnx_text.TextEmbedding", FakeTextEmbedding)
+    monkeypatch.setattr("unimem.embeddings._OnnxText", FakeTextEmbedding)
     monkeypatch.setenv("FASTEMBED_CACHE_PATH", str(tmp_path))
     provider = embeddings.provider("fastembed:BAAI/bge-small-en-v1.5", local_files_only=True)
 
@@ -175,7 +175,7 @@ def test_fastembed_cache_miss_is_cache_only_and_does_not_touch_network(monkeypat
                 raise AssertionError("a cache miss must not retry through the download path")
             raise FileNotFoundError("model missing from cache")
 
-    monkeypatch.setattr("unimem.onnx_text.TextEmbedding", CacheOnlyMiss)
+    monkeypatch.setattr("unimem.embeddings._OnnxText", CacheOnlyMiss)
     monkeypatch.setenv("UNIMEM_OFFLINE", "1")
     provider = embeddings.provider("fastembed:BAAI/bge-small-en-v1.5")
 
@@ -188,7 +188,7 @@ def test_missing_native_runtime_names_the_installable_extra(monkeypatch):
     def missing(**_kwargs):
         raise ImportError("onnxruntime is not installed")
 
-    monkeypatch.setattr("unimem.onnx_text.TextEmbedding", missing)
+    monkeypatch.setattr("unimem.embeddings._OnnxText", missing)
     provider = embeddings.provider("fastembed:BAAI/bge-small-en-v1.5", local_files_only=True)
     with pytest.raises(embeddings.EmbeddingError, match=r"pip install 'unimem\[fastembed\]'"):
         provider.embed(["question"], query=True)
@@ -213,7 +213,7 @@ def test_fastembed_projection_identity_binds_model_revision_version_and_dimensio
             self.query_embed = query_embed
             self.passage_embed = query_embed
 
-    monkeypatch.setattr("unimem.onnx_text.TextEmbedding", FakeTextEmbedding)
+    monkeypatch.setattr("unimem.embeddings._OnnxText", FakeTextEmbedding)
     monkeypatch.setattr("importlib.metadata.version", lambda package: "2.0.0")
 
     small = embeddings.provider("fastembed:BAAI/bge-small-en-v1.5")

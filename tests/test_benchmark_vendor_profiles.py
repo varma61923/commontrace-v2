@@ -309,7 +309,7 @@ def test_fastembed_model_binding_is_cache_only_and_tracks_artifacts(tmp_path, mo
 
         passage_embed = query_embed
 
-    monkeypatch.setattr("unimem.onnx_text.TextEmbedding", FakeTextEmbedding)
+    monkeypatch.setattr("unimem.embeddings._OnnxText", FakeTextEmbedding)
     monkeypatch.setattr("importlib.metadata.version", lambda package: "2.0.0")
     tag = "fastembed:BAAI/bge-small-en-v1.5"
 

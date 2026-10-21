@@ -27,12 +27,14 @@ offline mode. Texts are truncated to ``MAX_CHARS`` before they leave the host.
 """
 from __future__ import annotations
 
+import json
 import math
 import os
 import re
 import tempfile
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 from unimem.configuration import getenv as _configuration_getenv
@@ -217,6 +219,99 @@ class _Local:
         return [_normalize(v) for v in vectors]
 
 
+# The same quantized artifacts used by FastEmbed's BGE v1.5 text providers.
+# Pin snapshots so cache-only servers never need a mutable branch lookup.
+_ONNX_MODELS = {
+    "BAAI/bge-small-en-v1.5": (
+        "qdrant/bge-small-en-v1.5-onnx-q", "aa8f8b060edb00e03bfdd08813a2949946c8ba55", 384,
+    ),
+    "BAAI/bge-base-en-v1.5": (
+        "qdrant/bge-base-en-v1.5-onnx-q", "199291fdd1aa89faf9c20b722dc72ad5e17aa0d0", 768,
+    ),
+}
+_ONNX_MODEL_FILES = ("model_optimized.onnx", "config.json", "tokenizer.json",
+               "tokenizer_config.json", "special_tokens_map.json")
+
+
+class _OnnxText:
+    """BGE v1.5 CLS embeddings with bounded CPU inference and cache-only loading."""
+
+    def __init__(self, *, model_name: str, cache_dir: str | None = None,
+                 threads: int = 2, local_files_only: bool = False):
+        import onnxruntime as ort
+        from huggingface_hub import snapshot_download
+        from tokenizers import AddedToken, Tokenizer
+
+        if model_name not in _ONNX_MODELS:
+            raise ValueError(f"unsupported CPU ONNX text model: {model_name}")
+        if type(threads) is not int or not 1 <= threads <= 2:
+            raise ValueError("CPU ONNX text inference requires one or two threads")
+        repository, revision, self.embedding_size = _ONNX_MODELS[model_name]
+        self.artifact_directory = Path(snapshot_download(
+            repo_id=repository, revision=revision,
+            cache_dir=cache_dir or str(Path(tempfile.gettempdir()) / "fastembed_cache"),
+            allow_patterns=list(_ONNX_MODEL_FILES), local_files_only=local_files_only,
+        ))
+        for name in _ONNX_MODEL_FILES:
+            if not (self.artifact_directory / name).is_file():
+                raise FileNotFoundError(f"cached text model is missing {name}")
+
+        config = self._json("config.json")
+        tokenizer_config = self._json("tokenizer_config.json")
+        self._tokenizer = Tokenizer.from_file(str(self.artifact_directory / "tokenizer.json"))
+        limits = [512]
+        for key in ("model_max_length", "max_length"):
+            limit = tokenizer_config.get(key)
+            if type(limit) is int and limit > 0:
+                limits.append(limit)
+        self._tokenizer.enable_truncation(max_length=min(limits))
+        if not self._tokenizer.padding:
+            self._tokenizer.enable_padding(pad_id=config.get("pad_token_id", 0),
+                                           pad_token=tokenizer_config.get("pad_token", "[PAD]"))
+        for token in self._json("special_tokens_map.json").values():
+            self._tokenizer.add_special_tokens([AddedToken(**token) if isinstance(token, dict) else token])
+
+        options = ort.SessionOptions()
+        options.intra_op_num_threads = threads
+        options.inter_op_num_threads = threads
+        options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        self._session = ort.InferenceSession(
+            str(self.artifact_directory / "model_optimized.onnx"),
+            sess_options=options, providers=["CPUExecutionProvider"],
+        )
+        self._inputs = {node.name for node in self._session.get_inputs()}
+        if "input_ids" not in self._inputs or self._inputs - {"input_ids", "attention_mask", "token_type_ids"}:
+            raise ValueError("unsupported CPU ONNX text model inputs")
+
+    def _json(self, filename: str) -> dict:
+        with (self.artifact_directory / filename).open(encoding="utf-8") as handle:
+            return json.load(handle)
+
+    def passage_embed(self, texts: list[str], *, batch_size: int = 64, parallel=None):
+        import numpy as np
+
+        if type(batch_size) is not int or not 1 <= batch_size <= 64 or parallel is not None:
+            raise ValueError("CPU ONNX text batches must be bounded to 64 with no worker processes")
+        for start in range(0, len(texts), batch_size):
+            encoded = self._tokenizer.encode_batch(texts[start:start + batch_size])
+            ids = np.asarray([row.ids for row in encoded], dtype=np.int64)
+            inputs = {"input_ids": ids}
+            if "attention_mask" in self._inputs:
+                inputs["attention_mask"] = np.asarray([row.attention_mask for row in encoded], dtype=np.int64)
+            if "token_type_ids" in self._inputs:
+                inputs["token_type_ids"] = np.zeros_like(ids)
+            output = self._session.run(None, inputs)[0]
+            # These BGE v1.5 models use CLS pooling for both queries and passages.
+            vectors = output[:, 0] if output.ndim == 3 else output
+            if vectors.shape != (len(encoded), self.embedding_size) or not np.isfinite(vectors).all():
+                raise ValueError("invalid CPU ONNX text embedding output")
+            norms = np.maximum(np.linalg.norm(vectors, ord=2, axis=1, keepdims=True), 1e-12)
+            yield from vectors / norms
+
+    def query_embed(self, texts: list[str], *, batch_size: int = 64, parallel=None):
+        yield from self.passage_embed(texts, batch_size=batch_size, parallel=parallel)
+
+
 class _FastEmbed:
     """Optional bounded CPU provider; server callers must use its local cache."""
 
@@ -234,18 +329,11 @@ class _FastEmbed:
         if self._model is None:
             from unimem import offline
 
-            try:
-                from unimem.onnx_text import TextEmbedding
-            except ImportError as exc:
-                raise EmbeddingError(
-                    "FastEmbed embeddings need the optional dependency: "
-                    "pip install 'unimem[fastembed]'"
-                ) from exc
             cache_only = self.local_files_only or offline.enabled()
             try:
                 # The text adapter resolves only pinned ONNX snapshots and
                 # never retries a cache-only load through a download path.
-                self._model = TextEmbedding(
+                self._model = _OnnxText(
                     model_name=self.spec.model,
                     cache_dir=self._cache_dir,
                     threads=2,

@@ -12,7 +12,7 @@ ort = pytest.importorskip("onnxruntime")
 tokenizers = pytest.importorskip("tokenizers")
 hub = pytest.importorskip("huggingface_hub")
 
-from unimem import embeddings, onnx_text  # noqa: E402
+from unimem import embeddings  # noqa: E402
 
 MODEL = "BAAI/bge-small-en-v1.5"
 
@@ -73,15 +73,15 @@ def test_real_cpu_inference_keeps_vectors_ordered_normalized_and_bounded(graph_c
     options = engine._session.get_session_options()
     assert options.intra_op_num_threads == options.inter_op_num_threads == 2
     assert downloads == [{
-        "repo_id": onnx_text.MODELS[MODEL][0], "revision": onnx_text.MODELS[MODEL][1],
-        "cache_dir": downloads[0]["cache_dir"], "allow_patterns": list(onnx_text.MODEL_FILES),
+        "repo_id": embeddings._ONNX_MODELS[MODEL][0], "revision": embeddings._ONNX_MODELS[MODEL][1],
+        "cache_dir": downloads[0]["cache_dir"], "allow_patterns": list(embeddings._ONNX_MODEL_FILES),
         "local_files_only": True,
     }]
 
 
 def test_tokenization_clips_to_512_and_sets_masks_and_segment_ids(graph_cache):
     graph_cache()
-    engine = onnx_text.TextEmbedding(model_name=MODEL, local_files_only=True)
+    engine = embeddings._OnnxText(model_name=MODEL, local_files_only=True)
     actual = engine._session
     calls = []
 
@@ -103,7 +103,7 @@ def test_tokenization_clips_to_512_and_sets_masks_and_segment_ids(graph_cache):
 @pytest.mark.parametrize("kwargs", [{"dimension": 385}, {"nonfinite": True}])
 def test_corrupt_graph_output_is_rejected(graph_cache, kwargs):
     graph_cache(**kwargs)
-    engine = onnx_text.TextEmbedding(model_name=MODEL, local_files_only=True)
+    engine = embeddings._OnnxText(model_name=MODEL, local_files_only=True)
     with pytest.raises(ValueError, match="invalid CPU ONNX"):
         list(engine.query_embed(["alpha"]))
 
@@ -112,7 +112,7 @@ def test_a_partial_cached_snapshot_fails_closed(graph_cache, tmp_path):
     graph_cache()
     (tmp_path / "tokenizer.json").unlink()
     with pytest.raises(FileNotFoundError, match="tokenizer.json"):
-        onnx_text.TextEmbedding(model_name=MODEL, local_files_only=True)
+        embeddings._OnnxText(model_name=MODEL, local_files_only=True)
 
 
 @pytest.mark.parametrize("offline", [False, True])
