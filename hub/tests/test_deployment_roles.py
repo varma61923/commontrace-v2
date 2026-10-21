@@ -64,6 +64,16 @@ class TestTheShippedStackServesAsANonBypassingRole:
         assert configmap["data"]["HUB_REQUIRE_RLS"] == "true"
         assert values["config"]["HUB_REQUIRE_RLS"] == "true"
 
+    def test_multi_replica_profiles_refuse_to_run_without_a_shared_api_key_pepper(self):
+        import yaml
+
+        configmap = yaml.safe_load((self._ROOT / "deploy/k8s/configmap.yaml").read_text(encoding="utf-8"))
+        values = yaml.safe_load((self._ROOT / "deploy/helm/unimem-hub/values.yaml").read_text(encoding="utf-8"))
+        secret = (self._ROOT / "deploy/k8s/secret.example.yaml").read_text(encoding="utf-8")
+        assert configmap["data"]["HUB_REQUIRE_API_KEY_PEPPER"] == "true"
+        assert values["config"]["HUB_REQUIRE_API_KEY_PEPPER"] == "true"
+        assert "HUB_API_KEY_PEPPER:" in secret
+
     def test_future_migrations_are_covered_by_default_privileges(self):
         sql = self._init_sql()
         assert "ALTER DEFAULT PRIVILEGES IN SCHEMA public" in sql

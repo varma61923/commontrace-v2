@@ -1581,6 +1581,12 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
             "set HUB_RATE_LIMIT_BACKEND=postgres for shared enforcement"
         )
     if not auth.pepper_configured():
+        if config.require_api_key_pepper:
+            raise RuntimeError(
+                "refusing to start: HUB_REQUIRE_API_KEY_PEPPER is set, but HUB_API_KEY_PEPPER "
+                "(or HUB_API_KEY_PEPPER_FILE) is not. Without one shared pepper every replica "
+                "hashes API keys differently and each request falls back to an Argon2 scan."
+            )
         logger.warning(
             "HUB_API_KEY_PEPPER is not set: this process uses a random pepper, so stored key "
             "HMACs stop matching after a restart and differ between replicas, and every such "

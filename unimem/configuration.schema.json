@@ -248,6 +248,7 @@
     "HUB_READ_RATE_LIMIT_BURST": "server.read_rate_limit_burst",
     "HUB_READ_RATE_LIMIT_PER_MINUTE": "server.read_rate_limit_per_minute",
     "HUB_REQUEST_TIMEOUT_SECONDS": "server.request_timeout_seconds",
+    "HUB_REQUIRE_API_KEY_PEPPER": "server.require_api_key_pepper",
     "HUB_REQUIRE_RLS": "server.require_rls",
     "HUB_REST_API_ENABLED": "server.rest_api_enabled",
     "HUB_SIGNUP_ENABLED": "server.signup_enabled",
@@ -1411,6 +1412,14 @@
               ]
             },
             "request_timeout_seconds": {
+              "type": [
+                "string",
+                "boolean",
+                "integer",
+                "number"
+              ]
+            },
+            "require_api_key_pepper": {
               "type": [
                 "string",
                 "boolean",

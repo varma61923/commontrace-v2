@@ -16,6 +16,7 @@ config:
   HUB_DB_POOL_SIZE: "10"
   HUB_DB_MAX_OVERFLOW: "5"
   HUB_REQUIRE_RLS: "true"
+  HUB_REQUIRE_API_KEY_PEPPER: "true"     # existingSecret must hold HUB_API_KEY_PEPPER
   HUB_DATA_REGION: ""                    # e.g. eu or us; reported by /disclosure
   HUB_AUTH_CACHE_SECONDS: ""             # 0-60; revocations reach every replica by NOTIFY (hub/.env.example)
 

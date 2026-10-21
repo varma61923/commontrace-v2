@@ -192,6 +192,8 @@ class HubConfig:
 
     require_rls: bool = False
 
+    require_api_key_pepper: bool = False
+
     allow_insecure_http: bool = False
 
     commons_enabled: bool = True
@@ -310,6 +312,7 @@ class HubConfig:
             allow_insecure_http=_env_bool("HUB_ALLOW_INSECURE_HTTP", False),
             allow_rls_bypass=_env_bool("HUB_ALLOW_RLS_BYPASS", False),
             require_rls=_env_bool("HUB_REQUIRE_RLS", False),
+            require_api_key_pepper=_env_bool("HUB_REQUIRE_API_KEY_PEPPER", False),
             auth_cache_seconds=_env_int_in_range("HUB_AUTH_CACHE_SECONDS", 0, 0, 60),
             encryption_key=encryption_key,
             encryption_key_previous=encryption_key_previous,

@@ -51,6 +51,7 @@ class TestConfigRefusesNonsenseAtStartup:
 
     @pytest.mark.parametrize("name", [
         "HUB_REQUIRE_RLS",
+        "HUB_REQUIRE_API_KEY_PEPPER",
         "HUB_ALLOW_RLS_BYPASS",
         "HUB_ALLOW_INSECURE_HTTP",
     ])

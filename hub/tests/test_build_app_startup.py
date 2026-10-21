@@ -37,6 +37,16 @@ class TestTheProductionAppBoots:
             build_app(config, session_factory)
         assert "HUB_API_KEY_PEPPER" not in caplog.text
 
+    async def test_a_required_pepper_that_is_missing_refuses_to_start(self, config, session_factory, monkeypatch):
+        from hub import auth
+
+        strict = dataclasses.replace(config, require_api_key_pepper=True)
+        monkeypatch.setattr(auth, "_pepper_env", "")
+        with pytest.raises(RuntimeError, match="HUB_REQUIRE_API_KEY_PEPPER"):
+            build_app(strict, session_factory)
+        monkeypatch.setattr(auth, "_pepper_env", "a-shared-pepper")
+        assert build_app(strict, session_factory) is not None
+
     async def test_build_app_returns_an_app_at_all(self, config, session_factory):
         app = build_app(config, session_factory)
         assert app is not None
