@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Callable
@@ -96,25 +97,44 @@ class JWKSCache:
         self._clock = clock
         self._cached: dict[str, tuple[float, dict]] = {}
         self._retry_not_before: dict[str, float] = {}
+        # Verification runs in worker threads; without this every request that
+        # arrives as the TTL lapses (or the IdP is down) makes its own blocking
+        # fetch. One thread refetches while the others wait and reuse its result.
+        self._refetch_lock = threading.Lock()
+
+    def _fresh(self, jwks_uri: str, now: float, window: float) -> tuple[float, dict] | None:
+        cached = self._cached.get(jwks_uri)
+        if cached is not None and (
+            now - cached[0] < window or now < self._retry_not_before.get(jwks_uri, now)
+        ):
+            return cached
+        return None
 
     def get(self, jwks_uri: str) -> dict:
         now = self._clock()
-        cached = self._cached.get(jwks_uri)
-        if cached is not None and (
-            now - cached[0] < self._ttl or now < self._retry_not_before.get(jwks_uri, now)
-        ):
-            return cached[1]
-        return self._refetch(jwks_uri, now, cached)
+        fresh = self._fresh(jwks_uri, now, self._ttl)
+        if fresh is not None:
+            return fresh[1]
+        with self._refetch_lock:
+            fresh = self._fresh(jwks_uri, now, self._ttl)
+            if fresh is not None:
+                return fresh[1]
+            return self._refetch(jwks_uri, now, self._cached.get(jwks_uri))
 
     def refresh_for_unknown_kid(self, jwks_uri: str) -> dict | None:
         now = self._clock()
-        cached = self._cached.get(jwks_uri)
-        if cached is not None and (
-            now - cached[0] < UNKNOWN_KID_REFETCH_SECONDS
-            or now < self._retry_not_before.get(jwks_uri, now)
-        ):
+        if self._fresh(jwks_uri, now, UNKNOWN_KID_REFETCH_SECONDS) is not None:
             return None
-        return self._refetch(jwks_uri, now, cached)
+        seen = self._cached.get(jwks_uri)
+        with self._refetch_lock:
+            current = self._cached.get(jwks_uri)
+            if current is not seen and current is not None:
+                # Another thread refreshed while this one waited: its document is
+                # the fresh one this caller wanted.
+                return current[1]
+            if self._fresh(jwks_uri, now, UNKNOWN_KID_REFETCH_SECONDS) is not None:
+                return None
+            return self._refetch(jwks_uri, now, current)
 
     def _refetch(self, jwks_uri: str, now: float, cached: tuple[float, dict] | None) -> dict:
         """Fetch a fresh document; on failure keep serving the last good one.

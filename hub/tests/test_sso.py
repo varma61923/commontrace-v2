@@ -227,6 +227,35 @@ class TestJWKSCache:
         cache.get("uri")
         assert len(calls) == 2
 
+    def test_concurrent_requests_at_expiry_share_one_fetch(self):
+        import threading
+        import time as _time
+        from concurrent.futures import ThreadPoolExecutor
+
+        calls = []
+        lock = threading.Lock()
+
+        def slow_fetch(uri):
+            with lock:
+                calls.append(uri)
+            _time.sleep(0.2)
+            return {"keys": [], "n": len(calls)}
+
+        cache = sso.JWKSCache(slow_fetch, ttl_seconds=3600, clock=lambda: 0.0)
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            documents = list(pool.map(lambda _: cache.get("uri"), range(16)))
+        assert len(calls) == 1
+        assert all(document == documents[0] for document in documents)
+
+        refreshed = []
+        cache = sso.JWKSCache(slow_fetch, ttl_seconds=3600, clock=lambda: 1000.0)
+        cache._cached["uri"] = (0.0, {"keys": [], "stale": True})
+        calls.clear()
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            refreshed = list(pool.map(lambda _: cache.refresh_for_unknown_kid("uri"), range(8)))
+        assert len(calls) == 1
+        assert all(document is not None and "stale" not in document for document in refreshed)
+
     def test_different_uris_are_cached_independently(self):
         calls = []
 
