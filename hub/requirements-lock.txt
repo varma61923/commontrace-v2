@@ -59,7 +59,8 @@ argon2-cffi==25.1.0
 argon2-cffi-bindings==26.1.0
 asyncpg==0.32.0
 attrs==26.1.0
-certifi==2026.7.22
+# Remove compromised emSign certificate roots (GHSA-6q48-6c7w-9gw2).
+certifi==2026.10.19
 cffi==2.1.1
 click==8.5.0
 cryptography==50.0.2
