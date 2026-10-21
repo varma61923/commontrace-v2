@@ -39,5 +39,7 @@ def test_compose_local_profile_shares_one_store_and_publishes_on_loopback_only()
         assert all(port.startswith("127.0.0.1:") for port in service["ports"])
         assert service["read_only"] is True and service["cap_drop"] == ["ALL"]
     assert "--allow-insecure-http" in services["mcp"]["command"]
+    mcp_probe = services["mcp"]["healthcheck"]["test"][-1]
+    assert "8421" in mcp_probe and "'/mcp'" in mcp_probe and "status==401" in mcp_probe
     for name in ("db", "migrate", "hub"):
         assert "profiles" not in services[name]  # `docker compose up` is unchanged
