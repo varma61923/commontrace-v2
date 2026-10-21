@@ -184,6 +184,44 @@ def test_caps(store):
     assert entry["memory_ids"][-1] == f"mem-{entity_store.MAX_IDS_PER_ENTITY + 4:04d}"
 
 
+def test_link_memories_matches_sequential_linking_with_one_save(store, monkeypatch):
+    pairs = [
+        ("m1", "CheckoutFlow needs review by Alice Johnson."),
+        ("m2", "CheckoutFlow now calls PaymentGateway."),
+        ("", "ignored: no memory id"),
+        ("m3", "   "),
+        ("m4", "nothing capitalised here at all"),
+        ("m5", "PaymentGateway timeouts hurt Alice Johnson."),
+    ]
+    other = os.path.join(store, "other")
+    assert cli("init", "--dest", other, "--agent-type", "coding").returncode == 0
+    for memory_id, text in pairs:
+        entity_store.link_memory(other, memory_id, text)
+    expected = {n: (e["type"], e["memory_ids"], e["count"]) for n, e in entity_store.load_entities(other).items()}
+
+    saves = []
+    original = entity_store.save_entities
+    monkeypatch.setattr(entity_store, "save_entities", lambda root, entities: (saves.append(1), original(root, entities)))
+    assert entity_store.link_memories(store, pairs) == 3
+    assert len(saves) == 1
+    actual = {n: (e["type"], e["memory_ids"], e["count"]) for n, e in entity_store.load_entities(store).items()}
+    assert actual == expected and "checkoutflow" in actual
+
+
+def test_link_memories_with_nothing_to_link_never_writes(store, monkeypatch):
+    monkeypatch.setattr(entity_store, "save_entities", lambda *_: pytest.fail("saved without a change"))
+    assert entity_store.link_memories(store, []) == 0
+    assert entity_store.link_memories(store, [("m1", "no entities here"), ("", "Alice Johnson")]) == 0
+
+
+def test_batched_fact_writes_rewrite_the_entity_index_once(store, monkeypatch):
+    saves = []
+    original = entity_store.save_entities
+    monkeypatch.setattr(entity_store, "save_entities", lambda root, entities: (saves.append(1), original(root, entities)))
+    hierarchical.add_facts(store, [{"statement": f"Customer Acme{i} prefers invoices by email"} for i in range(25)])
+    assert len(saves) == 1
+
+
 def _seed_conversation(root):
     store = Store(root, "alice")
     store.add(

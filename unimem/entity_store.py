@@ -189,6 +189,34 @@ def link_memory(root: str, memory_id: str, text: str) -> list[str]:
         return touched
 
 
+def link_memories(root: str, pairs: list[tuple[str, str]]) -> int:
+    """Link many ``(memory_id, text)`` pairs with one locked load and one atomic save.
+
+    ``link_memory`` per pair re-reads and rewrites the whole index every call, so
+    a batch of N memories cost N full rewrites. Returns the number of pairs that
+    touched at least one entity; a pair that cannot be processed is skipped.
+    """
+    work: list[tuple[str, str, list[tuple[str, str]]]] = []
+    for memory_id, text in pairs:
+        if not memory_id or not text or not text.strip():
+            continue
+        try:
+            extracted = extract_entities(text)
+        except Exception:
+            continue
+        if extracted:
+            work.append((str(memory_id), text, extracted))
+    if not work:
+        return 0
+    with _jsonl.locked(_entities_file(root)):
+        entities = load_entities(root)
+        linked = sum(1 for memory_id, text, extracted in work
+                     if _link_into(entities, memory_id, text, extracted=extracted))
+        if linked:
+            save_entities(root, entities)
+    return linked
+
+
 def unlink_memory(root: str, memory_id: str) -> int:
     """Remove *memory_id* from every entity list; drop entities left with none."""
     if not memory_id:

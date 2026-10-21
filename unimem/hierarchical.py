@@ -1199,11 +1199,7 @@ def _link_entities_best_effort(root: str, pairs: list[tuple[str, str]]) -> None:
     try:
         from unimem import entity_store
 
-        for memory_id, text in pairs:
-            try:
-                entity_store.link_memory(root, memory_id, text)
-            except Exception:
-                pass
+        entity_store.link_memories(root, pairs)
     except Exception:
         pass
 
