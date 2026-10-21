@@ -1,4 +1,4 @@
-# unimem-v2 — Python dependencies
+# unimem — Python dependencies
 # Minimum Python: 3.10
 #
 # Attention layer (memory/attention/) — required for semantic pre-filtering (Phase 0 / Alpha):

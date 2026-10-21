@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "unimem"
-version = "2.0.0"
+version = "1.0.0"
 description = "UniMem Protocol client — capture agent experience, validate lessons, and inject them into any agent platform (Claude Code, Cursor, Devin, Windsurf, generic MCP)."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -92,7 +92,7 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/denemlabs/unimem-v2"
+Homepage = "https://github.com/varma61923/unimem"
 
 [project.scripts]
 unimem = "unimem.cli:main"

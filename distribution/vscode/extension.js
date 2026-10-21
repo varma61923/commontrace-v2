@@ -34,7 +34,7 @@ function activate(context) {
   const definitions = () => !vscode.workspace.isTrusted ? [] : (vscode.workspace.workspaceFolders || []).map(folder => {
     const args = ['serve', '--dest', folder.uri.fsPath];
     if (!settings(folder).get('approvalTools', false)) args.push('--no-approval');
-    return new vscode.McpStdioServerDefinition(`UniMem: ${folder.name}`, executable(folder), args, {}, '2.0.0');
+    return new vscode.McpStdioServerDefinition(`UniMem: ${folder.name}`, executable(folder), args, {}, '1.0.0');
   });
   context.subscriptions.push(channel, changed,
     vscode.lm.registerMcpServerDefinitionProvider('unimem', {

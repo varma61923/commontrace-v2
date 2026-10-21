@@ -32,7 +32,7 @@ def _load_schema(filename: str) -> dict:
     if not path.is_file():
         raise FileNotFoundError(
             f"Protocol schema {filename!r} not found at {path}. The Hub must be run "
-            "from within (or alongside) a unimem-v2 checkout that has protocol/schemas/."
+            "from within (or alongside) a unimem checkout that has protocol/schemas/."
         )
     with path.open("r", encoding="utf-8") as fh:
         return json.load(fh)

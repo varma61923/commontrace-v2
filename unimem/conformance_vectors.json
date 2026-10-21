@@ -2828,7 +2828,7 @@
    ]
   }
  ],
- "protocol": "2.0.0",
+ "protocol": "1.0.0",
  "revision": [
   {
    "body": "## Rule\nLink the policy.\n",

@@ -19,7 +19,7 @@ TIER_DIRS = {
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="UniMem v2 Master E2E Test Runner")
+    parser = argparse.ArgumentParser(description="UniMem Master E2E Test Runner")
     parser.add_argument(
         "--tier",
         default="all",
@@ -118,7 +118,7 @@ def main() -> int:
 
     if not args.json:
         print("=" * 80)
-        print("  UniMem v2 Enterprise Cognitive Memory — Master E2E Suite")
+        print("  UniMem Enterprise Cognitive Memory — Master E2E Suite")
         print("=" * 80)
         print(f"Python: {sys.version.split()[0]} | Root: {REPO_ROOT}")
         print(f"Selected Tiers: {selected_tiers}")

@@ -1,7 +1,7 @@
 <idea-plugin>
   <id>io.unimem.memory</id>
   <name>UniMem</name>
-  <vendor url="https://github.com/varma61923/unimem-v2">UniMem</vendor>
+  <vendor url="https://github.com/varma61923/unimem">UniMem</vendor>
   <description>Initialize workspace memory, check store health, and copy native MCP configuration for AI Assistant.</description>
   <depends>com.intellij.modules.platform</depends>
   <actions>

@@ -3,7 +3,7 @@ plugins {
     id("org.jetbrains.intellij.platform") version "2.19.0"
 }
 group = "io.unimem"
-version = "2.0.0"
+version = "1.0.0"
 repositories {
     mavenCentral()
     intellijPlatform { defaultRepositories() }

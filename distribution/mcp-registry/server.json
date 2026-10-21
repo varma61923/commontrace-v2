@@ -3,16 +3,16 @@
   "name": "io.github.varma61923/unimem",
   "title": "UniMem",
   "description": "Agent memory store that measures, by randomized holdout, which lessons help and which hurt.",
-  "version": "2.0.0",
+  "version": "1.0.0",
   "repository": {
-    "url": "https://github.com/varma61923/unimem-v2",
+    "url": "https://github.com/varma61923/unimem",
     "source": "github"
   },
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "unimem",
-      "version": "2.0.0",
+      "version": "1.0.0",
       "transport": {
         "type": "stdio"
       },

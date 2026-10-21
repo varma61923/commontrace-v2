@@ -129,7 +129,7 @@ def build_vectors() -> dict:
         occasion = f"ep-{rng.randint(0, 10**6)}"
         allocations.append({"schedule": schedule, "lesson": lesson, "occasion": occasion,
                             **ref_allocate(schedule, lesson, occasion)})
-    return {"suite": SUITE_VERSION, "protocol": "2.0.0", "assign": assign, "ledger": ledgers, "digest": digests,
+    return {"suite": SUITE_VERSION, "protocol": "1.0.0", "assign": assign, "ledger": ledgers, "digest": digests,
             "revision": revisions, "allocate": allocations}
 
 
