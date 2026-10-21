@@ -303,6 +303,9 @@ async def _add_members(session: AsyncSession, org_id: str, group_id: str, user_i
 
 
 async def _remove_members(session: AsyncSession, group_id: str, user_ids: set[str]) -> None:
+    # Member ids are UUID columns; an IdP-sent external id cannot be a member,
+    # and binding it would raise a driver error (a 500 the IdP retries forever).
+    user_ids = {uid for uid in user_ids if _is_uuid(uid)}
     if not user_ids:
         return
     await session.execute(

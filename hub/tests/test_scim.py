@@ -719,3 +719,24 @@ class TestHostileInputIsA400NotA500:
         async with _client(_app(session_factory)) as client:
             resp = await client.get("/scim/v2/Users", headers=headers, params={"filter": 'userName eq "a\x00b"'})
         assert resp.status_code == 400
+
+
+class TestGroupMemberRemovalTolerance:
+    async def test_removing_a_non_uuid_member_value_is_a_no_op_not_a_server_error(self, session_factory, org):
+        raw_key = await _issue(session_factory, org, ["scim"])
+        headers = _auth(raw_key)
+        async with _client(_app(session_factory)) as client:
+            user = await client.post("/scim/v2/Users", headers=headers, json={"userName": "m@x.test"})
+            user_id = user.json()["id"]
+            group = await client.post("/scim/v2/Groups", headers=headers, json={
+                "displayName": "Engineers", "members": [{"value": user_id}]})
+            group_id = group.json()["id"]
+            for operation in (
+                {"op": "remove", "path": 'members[value eq "okta-00u1abc"]'},
+                {"op": "remove", "path": "members", "value": [{"value": "okta-00u1abc"}]},
+            ):
+                resp = await client.patch(f"/scim/v2/Groups/{group_id}", headers=headers, json={
+                    "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"], "Operations": [operation]})
+                assert resp.status_code == 200, resp.text
+            fetched = await client.get(f"/scim/v2/Groups/{group_id}", headers=headers)
+        assert [m["value"] for m in fetched.json()["members"]] == [user_id]
