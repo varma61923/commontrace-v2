@@ -4,10 +4,10 @@ import json
 
 import pytest
 
-from unimem import evidence, harm, holdout_io, integrity, retrieval_io, semantic_arm
-from unimem.commands import query_cmd
 from tests.test_hybrid_retrieval import _args
 from tests.test_mcp_server import _write_lesson, call, cli
+from unimem import evidence, harm, holdout_io, integrity, retrieval_io, semantic_arm
+from unimem.commands import query_cmd
 
 TASK = "password reset email suppression"
 SEMANTIC = ["refund-threshold", "suppression-list", "unsubscribe-sync"]

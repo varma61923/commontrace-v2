@@ -7,12 +7,12 @@ import time
 
 import pytest
 
-from unimem.conversation import AsyncStore, ConversationError, Store, embed
-from unimem.conversation import store as store_module
-from unimem.conversation.store import write_txn
 from tests.test_conversation_vector_backend import encoder as vector_encoder
 from tests.test_conversation_vector_backend import engine as vector_engine
 from tests.test_conversation_vector_backend import options
+from unimem.conversation import AsyncStore, ConversationError, Store, embed
+from unimem.conversation import store as store_module
+from unimem.conversation.store import write_txn
 
 encoder, engine = vector_encoder, vector_engine
 

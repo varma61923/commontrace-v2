@@ -20,10 +20,10 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from hub.models import TransparencyEntry, TransparencyHead
 from unimem import frontier_protocol as fp
 from unimem import origin
 from unimem import transparency_log as merkle
-from hub.models import TransparencyEntry, TransparencyHead
 
 # Proof and consistency exports hold one 64-character hash per leaf in memory.
 MAX_PROOF_LEAVES = merkle.MAX_TREE_LEAVES

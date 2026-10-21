@@ -67,7 +67,6 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, Response
 
-from unimem.ui_style import THEME_CSS
 from hub import audit as audit_module
 from hub import auth, crud, events, manage, plans, rbac, retention, scopes
 from hub.abuse import RateLimiter, make_named_limiter, rate_limit_key
@@ -84,6 +83,7 @@ from hub.models import (
     Vote,
 )
 from hub.ui_kit import THEME_SCRIPT
+from unimem.ui_style import THEME_CSS
 
 logger = logging.getLogger("unimem.hub.admin")
 
@@ -227,7 +227,7 @@ form.stack input:not([type=hidden]),form.act input[type=text],.live-toggle{min-h
 def auto_refresh_script(seconds: int) -> str:
     return (
         "<script>(function(){"
-        "var KEY='ct-scroll-'+location.pathname+location.search,PAUSE='ct-live-paused',timer=null;"
+        "var KEY='unimem-scroll-'+location.pathname+location.search,PAUSE='unimem-live-paused',timer=null;"
         "var y=sessionStorage.getItem(KEY);"
         "if(y!==null){window.scrollTo(0,parseInt(y,10)||0);sessionStorage.removeItem(KEY);}"
         "function paused(){try{return localStorage.getItem(PAUSE)==='1';}catch(e){return false;}}"
@@ -263,10 +263,10 @@ def live_badge(seconds: int) -> str:
 _FORM_GUARD_SCRIPT = (
     "<script>document.addEventListener('submit',function(ev){"
     "var f=ev.target;"
-    "if(f.dataset.ctSubmitting==='1'){ev.preventDefault();return;}"
+    "if(f.dataset.unimemSubmitting==='1'){ev.preventDefault();return;}"
     "if(ev.defaultPrevented)return;"
     "if(f.dataset.confirm&&!window.confirm(f.dataset.confirm)){ev.preventDefault();return;}"
-    "f.dataset.ctSubmitting='1';"
+    "f.dataset.unimemSubmitting='1';"
     "if(ev.submitter){ev.submitter.classList.add('busy');}"
     "},true);"
     "document.addEventListener('click',function(ev){"

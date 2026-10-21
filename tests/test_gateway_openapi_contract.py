@@ -10,8 +10,8 @@ import sys
 import pytest
 
 from benchmarks.robot_fleet_demo import _png
-from unimem import gateway, gateway_contract
 from tests.test_ledger_views import _lesson, seeded_store
+from unimem import gateway, gateway_contract
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TOKEN = "c" * 40

@@ -14,11 +14,11 @@ from sqlalchemy import and_, false, or_, select, true
 from sqlalchemy.dialects.postgresql import insert
 from starlette.responses import JSONResponse
 
-from unimem import frontier_protocol as fp
-from unimem import origin, policy_proof
 from hub import transparency
 from hub.db import session_scope
 from hub.models import MemoryPolicyState, TransparencyEntry
+from unimem import frontier_protocol as fp
+from unimem import origin, policy_proof
 
 ACTOR: ContextVar[str] = ContextVar("unimem_hub_policy_actor", default="service:internal")
 SNAPSHOT: ContextVar[tuple[str, Any] | None] = ContextVar("unimem_hub_policy_snapshot", default=None)

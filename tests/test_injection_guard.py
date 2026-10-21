@@ -5,8 +5,8 @@ import sys
 
 import pytest
 
-from unimem import holdout_io, injection_guard, mcp_server, paths
 from tests.test_mcp_server import REPO_ROOT, _curate, call, cli
+from unimem import holdout_io, injection_guard, mcp_server, paths
 
 pytest.importorskip("mcp", reason="the MCP surface needs: pip install 'unimem[serve]'")
 

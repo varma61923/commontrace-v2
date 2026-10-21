@@ -375,7 +375,7 @@ class TestMalformedInput:
 
 class TestLooksLikeJwt:
     def test_an_api_key_does_not_look_like_a_jwt(self):
-        assert not sso.looks_like_jwt("ct_live_" + "a" * 43)
+        assert not sso.looks_like_jwt("unimem_live_" + "a" * 43)
 
     def test_a_real_jwt_looks_like_one(self, signing_key):
         key, _ = signing_key

@@ -8,11 +8,11 @@ import pytest
 import pytest_asyncio
 from starlette.applications import Starlette
 
-from unimem import frontier_protocol as fp
 from hub import alerts as alerts_module
 from hub import auth, console, events, incidents, rbac
 from hub.db import session_scope
 from hub.models import AlertRule, ApiKey, IncidentSnapshot, LegalHold, Organization, User, WebhookEndpoint
+from unimem import frontier_protocol as fp
 
 pytestmark = pytest.mark.asyncio
 

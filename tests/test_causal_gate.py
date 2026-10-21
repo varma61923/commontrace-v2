@@ -386,8 +386,8 @@ def test_a_plain_assignment_without_context_logs_no_context(tmp_path, clock):
 
 
 def test_the_gateway_takes_a_context_and_refuses_a_bad_one(tmp_path):
-    from unimem import gateway
     from tests.test_gateway import ITEMS, TOKEN, _start_experiment, recall
+    from unimem import gateway
 
     root = str(tmp_path)
     _start_experiment(root)
@@ -401,8 +401,8 @@ def test_the_gateway_takes_a_context_and_refuses_a_bad_one(tmp_path):
 
 def test_mcp_retrieve_logs_the_agent_type_and_the_report_tool_answers(tmp_path):
     pytest.importorskip("mcp", reason="needs the MCP SDK")
-    from unimem import mcp_server
     from tests.test_mcp_server import _write_lesson, call, cli
+    from unimem import mcp_server
 
     root = str(tmp_path / "store")
     assert cli("init", "--dest", root, "--agent-type", "support").returncode == 0

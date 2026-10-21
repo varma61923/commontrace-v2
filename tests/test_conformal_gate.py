@@ -144,8 +144,8 @@ def test_core_and_hazard_memories_bypass_the_budget(tmp_path):
 
 def test_recall_gates_only_the_calibrated_lessons_channel(tmp_path):
     pytest.importorskip("mcp")
-    from unimem import hierarchical, recall
     from tests.test_mcp_server import _write_lesson
+    from unimem import hierarchical, recall
 
     root = str(tmp_path)
     _write_lesson(root, "torque", body="Limit gripper torque to five newton metres on glass.")

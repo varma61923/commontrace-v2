@@ -3,8 +3,8 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 
-from unimem import hierarchical
 from e2e_tests.harness.cli_runner import run_cli
+from unimem import hierarchical
 
 
 def test_t1_fact_add_and_metadata(isolated_store: str):

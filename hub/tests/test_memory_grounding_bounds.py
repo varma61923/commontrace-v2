@@ -3,9 +3,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from unimem.memory_record import MemoryRecord
 from hub import memory_records
 from hub.models import MemoryPolicyState
+from unimem.memory_record import MemoryRecord
 
 
 def _hosted_graph(monkeypatch, records, candidates):

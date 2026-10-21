@@ -13,10 +13,10 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.responses import JSONResponse
 
+from hub.db import session_scope
 from unimem import capabilities as cap
 from unimem import capability_io as io
 from unimem import frontier_protocol as fp
-from hub.db import session_scope
 
 ROOT = contextvars.ContextVar("unimem_hub_capability_root", default="")
 
@@ -239,8 +239,8 @@ async def queue(session, org_id, signed):
 
 
 async def drain(factory, org_id, root):
-    from unimem import lineage
     from hub.models import CapabilityAttestation
+    from unimem import lineage
 
     async with session_scope(factory, org_id=org_id) as session:
         # Shared DB fence preserves order across worker processes and filesystem drainer retries.

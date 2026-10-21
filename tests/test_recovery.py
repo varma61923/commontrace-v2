@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from unimem import holdout_io, recovery
 from tests.test_safety import protected_fact
+from unimem import holdout_io, recovery
 
 CONTEXT = {"site": "warehouse", "robot": "r7", "embodiment": "parallel-jaw", "environment": "sim"}
 

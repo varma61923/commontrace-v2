@@ -5,10 +5,10 @@ from dataclasses import replace
 
 import pytest
 
-from unimem import attested_keys as keys
-from unimem import frontier_protocol as fp
 from hub import attestation, kms
 from hub.tests.test_rest import _app, _client, _key, _org_with_key
+from unimem import attested_keys as keys
+from unimem import frontier_protocol as fp
 
 pytestmark = pytest.mark.asyncio
 

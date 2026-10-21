@@ -24,8 +24,8 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Mount, Route
 
-from unimem import __version__
 from hub import alerts, crud, events, plans, rbac, retention, scopes
+from unimem import __version__
 
 OPENAPI_VERSION = "3.1.0"
 DOCUMENT_PATH = "/api/v1/openapi.json"
@@ -195,7 +195,7 @@ CONNECTOR = [
 _SECURITY_SCHEMES = {
     "apiKey": {
         "type": "apiKey", "in": "header", "name": "X-API-Key",
-        "description": "An org API key (`ct_...`). Each route also requires a scope on that key "
+        "description": "An org API key (`unimem_...`). Each route also requires a scope on that key "
                        "(read, write); a key without it gets 403.",
     },
     "userBearer": {
@@ -215,7 +215,7 @@ _SECURITY_SCHEMES = {
                        "password. Form posts additionally carry a per-action `csrf` token the pages embed.",
     },
     "consoleSession": {
-        "type": "apiKey", "in": "cookie", "name": "ct_console",
+        "type": "apiKey", "in": "cookie", "name": "unimem_console",
         "description": "Signed session cookie set by POST /app/signin (HttpOnly, SameSite=Strict, "
                        "Path=/app, 8 hours). It names the API key used to sign in; revoking that key "
                        "ends the session.",
@@ -1227,9 +1227,9 @@ def _operations() -> dict[tuple[str, str], dict]:
             body=_form_body({"api_key": _string("An org API key; checked once, never stored in the cookie.")},
                             ("api_key",)),
             responses={
-                "303": {"description": "Signed in: sets the ct_console cookie and redirects to /app.",
+                "303": {"description": "Signed in: sets the unimem_console cookie and redirects to /app.",
                         "headers": {"Location": {"$ref": "#/components/headers/Location"},
-                                    "Set-Cookie": {"description": "ct_console session cookie.",
+                                    "Set-Cookie": {"description": "unimem_console session cookie.",
                                                    "schema": {"type": "string"}}}},
                 "200": _html("The form with an error (rejected key, or too many attempts)."),
                 "403": _response_ref("CrossOriginRefused"),

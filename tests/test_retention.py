@@ -62,10 +62,10 @@ def test_causal_dream_cli(tmp_path):
 
 def test_retrieve_randomizes_reviewed_rewrites_and_replay_recovers_them(tmp_path):
     pytest.importorskip("mcp")
+    from tests.test_mcp_server import _write_lesson, call
     from unimem import frontier_protocol as fp
     from unimem import incident
     from unimem.mcp_server import build_server
-    from tests.test_mcp_server import _write_lesson, call
 
     root = str(tmp_path)
     original = "Verify the account owner before resetting a password."

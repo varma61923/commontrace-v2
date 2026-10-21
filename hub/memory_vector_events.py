@@ -12,8 +12,8 @@ from collections.abc import Iterable
 from sqlalchemy import delete, update
 from sqlalchemy.dialects.postgresql import insert
 
-from unimem.memory_record import MemoryRecord
 from hub.models import MemoryChangeClock, MemoryChangeEvent, MemoryEmbeddingCache
+from unimem.memory_record import MemoryRecord
 
 
 async def append_change(

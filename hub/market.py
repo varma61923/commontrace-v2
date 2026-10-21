@@ -22,10 +22,10 @@ from sqlalchemy import or_, select
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-from unimem import market_listing, origin
 from hub import audit, scopes
 from hub.db import session_scope
 from hub.models import MarketListing, MarketPublisher
+from unimem import market_listing, origin
 
 API_PREFIX = "/api/v1/market"
 ACTOR = "rest-api-market"

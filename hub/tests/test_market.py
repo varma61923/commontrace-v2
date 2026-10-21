@@ -10,13 +10,13 @@ import pytest_asyncio
 from sqlalchemy import text
 from starlette.applications import Starlette
 
-from unimem import lesson_io, marketplace, paths, templates
 from hub import auth, rest
 from hub.abuse import make_rate_limiter
 from hub.alembic.versions.b8e3f1a2c7d4_lesson_marketplace import _OWN_ROWS, _READ, _UNSCOPED
 from hub.db import session_scope
 from hub.models import Organization
 from hub.tests import test_row_level_security as _rls
+from unimem import lesson_io, marketplace, paths, templates
 
 pytestmark = pytest.mark.asyncio
 

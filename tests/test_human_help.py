@@ -5,10 +5,10 @@ from datetime import timedelta
 
 import pytest
 
+from tests.test_capabilities import NOW
 from unimem import frontier_protocol as fp
 from unimem import hierarchical, holdout_io, memory_authority
 from unimem import human_help as help_io
-from tests.test_capabilities import NOW
 
 
 @pytest.fixture(autouse=True)
@@ -252,8 +252,8 @@ def test_cli_and_native_mcp_expose_governed_asking_without_implicit_enablement(t
         "--dest", root]) == 0
     assert not json.loads(capsys.readouterr().out)["enabled"]
     pytest.importorskip("mcp")
-    from unimem import mcp_server
     from tests.test_mcp_server import call
+    from unimem import mcp_server
 
     result = call(mcp_server.build_server(root), "should_ask", context="office", question_type="preference", occasion="task")
     assert result["ok"] and not result["randomized"]

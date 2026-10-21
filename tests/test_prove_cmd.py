@@ -8,7 +8,7 @@ from unimem.commands import prove_cmd
 def _args(**kw):
     base = {
         "hub_url": "https://hub.example.com",
-        "hub_api_key": "ct_test",
+        "hub_api_key": "unimem_test",
         "agent_type": "",
         "json": False,
     }

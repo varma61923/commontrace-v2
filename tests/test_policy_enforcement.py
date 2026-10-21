@@ -5,10 +5,10 @@ from copy import deepcopy
 
 import pytest
 
+from tests import test_policy_io
 from unimem import frontmatter, hierarchical, lesson_io, memory_authority, nextwave_store, paths, policy_io
 from unimem.memory_journal import Journal
 from unimem.memory_record import MemoryRecord
-from tests import test_policy_io
 
 clock = test_policy_io.clock
 configured_policy = test_policy_io.configured_policy

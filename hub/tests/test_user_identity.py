@@ -313,7 +313,7 @@ class TestCapabilityEnforcementThroughARealTool:
         from hub import scopes
 
         org_token = auth.current_org_id.set(org)
-        actor_token = auth.current_actor.set("ct_live_test")
+        actor_token = auth.current_actor.set("unimem_live_test")
         scope_token = auth.current_scopes.set(scopes.ALL_SCOPES)
         try:
             result = payload(await mcp.call_tool("search_traces", {"query": "x"}))
@@ -405,9 +405,9 @@ class TestGetCurrentActor:
             auth.current_actor.reset(token)
 
     async def test_an_api_key_prefix_is_still_wrapped(self):
-        token = auth.current_actor.set("ct_live_test")
+        token = auth.current_actor.set("unimem_live_test")
         try:
-            assert auth.get_current_actor() == "api-key:ct_live_test"
+            assert auth.get_current_actor() == "api-key:unimem_live_test"
         finally:
             auth.current_actor.reset(token)
 

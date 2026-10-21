@@ -5,6 +5,8 @@ import json
 
 import pytest
 
+from tests import test_skill_foundry
+from tests.test_contagion import fact
 from unimem import (
     cli,
     contagion,
@@ -19,8 +21,6 @@ from unimem import nextwave_store as store
 from unimem import (
     sentinel_io as io,
 )
-from tests import test_skill_foundry
-from tests.test_contagion import fact
 
 clock = test_skill_foundry.clock
 
@@ -231,8 +231,8 @@ def test_prefix_commitment_is_streamed_and_canonical_forgery_is_refused(tmp_path
 
 
 def test_leaf_namespace_does_not_authorize_sentinel_metadata(tmp_path, clock):
-    from unimem import capability_io
     from tests import test_capability_io
+    from unimem import capability_io
 
     root, token = test_capability_io.prepare(tmp_path)
     prepare(root, clock)

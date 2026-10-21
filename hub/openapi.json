@@ -1888,7 +1888,7 @@
         "type": "http"
       },
       "apiKey": {
-        "description": "An org API key (`ct_...`). Each route also requires a scope on that key (read, write); a key without it gets 403.",
+        "description": "An org API key (`unimem_...`). Each route also requires a scope on that key (read, write); a key without it gets 403.",
         "in": "header",
         "name": "X-API-Key",
         "type": "apiKey"
@@ -1896,7 +1896,7 @@
       "consoleSession": {
         "description": "Signed session cookie set by POST /app/signin (HttpOnly, SameSite=Strict, Path=/app, 8 hours). It names the API key used to sign in; revoking that key ends the session.",
         "in": "cookie",
-        "name": "ct_console",
+        "name": "unimem_console",
         "type": "apiKey"
       },
       "githubSignature": {
@@ -7027,13 +7027,13 @@
             "description": "The form with an error (rejected key, or too many attempts)."
           },
           "303": {
-            "description": "Signed in: sets the ct_console cookie and redirects to /app.",
+            "description": "Signed in: sets the unimem_console cookie and redirects to /app.",
             "headers": {
               "Location": {
                 "$ref": "#/components/headers/Location"
               },
               "Set-Cookie": {
-                "description": "ct_console session cookie.",
+                "description": "unimem_console session cookie.",
                 "schema": {
                   "type": "string"
                 }

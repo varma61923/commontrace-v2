@@ -203,8 +203,8 @@ def test_unmeasured_or_untrusted_sources_never_induce(tmp_path):
 
 def test_cli_and_mcp_surfaces(tmp_path, clock):
     pytest.importorskip("mcp")
-    from unimem.mcp_server import build_server
     from tests.test_mcp_server import call, cli
+    from unimem.mcp_server import build_server
 
     root = str(tmp_path)
     identity = source(root)

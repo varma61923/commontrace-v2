@@ -74,12 +74,12 @@ def test_hub_api_key_can_come_from_a_mounted_file(tmp_path, monkeypatch):
     from unimem.commands._format import resolve_hub
 
     secret = tmp_path / "hub_key"
-    secret.write_text("ct_from_file\n")
+    secret.write_text("unimem_from_file\n")
     monkeypatch.delenv("UNIMEM_HUB_API_KEY", raising=False)
     monkeypatch.setenv("UNIMEM_HUB_API_KEY_FILE", str(secret))
     monkeypatch.setenv("UNIMEM_HUB_URL", "https://hub.example.com/mcp")
     resolved = resolve_hub(argparse.Namespace(hub_url=None, hub_api_key=None))
-    assert resolved == ("https://hub.example.com/mcp", "ct_from_file")
+    assert resolved == ("https://hub.example.com/mcp", "unimem_from_file")
 
 
 def test_offline_state_does_not_leak_between_tests():

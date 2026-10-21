@@ -14,10 +14,10 @@ from typing import Protocol
 
 from sqlalchemy import select, text
 
-from unimem.vector_snapshots import SnapshotConflict
-from unimem.vector_store import MAX_DIMENSION, VectorHit, VectorRecord, _keys, _label, _limit, _vector
 from hub.db import session_scope
 from hub.models import MemoryChangeClock, MemoryChangeEvent, MemoryEmbeddingCache, MemoryProjectionState
+from unimem.vector_snapshots import SnapshotConflict
+from unimem.vector_store import MAX_DIMENSION, VectorHit, VectorRecord, _keys, _label, _limit, _vector
 
 
 @dataclass(frozen=True)

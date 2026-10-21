@@ -201,7 +201,7 @@ def test_hub_export_rejects_tampering_before_download_is_written(tmp_path, monke
 
 @pytest.mark.parametrize("text, secret", [
     ("key sk-proj-" + "a" * 48, "sk-proj-" + "a" * 48),
-    ("key ct_live_" + "a" * 43, "ct_live_" + "a" * 43),
+    ("key unimem_live_" + "a" * 43, "unimem_live_" + "a" * 43),
     ("AWS_SECRET_ACCESS_KEY=short-credential", "short-credential"),
 ])
 def test_local_and_modern_provider_credentials_do_not_persist(text: str, secret: str) -> None:

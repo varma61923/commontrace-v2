@@ -169,8 +169,8 @@ def test_signed_contributions_privacy_budget_and_scope(tmp_path):
 
 def test_cli_and_mcp_pool_surfaces(tmp_path):
     pytest.importorskip("mcp")
-    from unimem.mcp_server import build_server
     from tests.test_mcp_server import call, cli
+    from unimem.mcp_server import build_server
 
     request = tmp_path / "budget.json"
     request.write_text('{"tenant":"a","epsilon":0.5,"delta":0.000001}')

@@ -6,12 +6,12 @@ from pathlib import Path
 
 import pytest
 
+from tests.test_gateway import AUTH, TOKEN
+from tests.test_safety import protected_fact
 from unimem import evidence, gateway, holdout_io, paths
 from unimem import frontier_protocol as fp
 from unimem import transparency_log as log
 from unimem.robotics import bridge, edge, ingest
-from tests.test_gateway import AUTH, TOKEN
-from tests.test_safety import protected_fact
 
 
 class LocalTransport:

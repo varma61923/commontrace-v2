@@ -3,12 +3,12 @@ from __future__ import annotations
 
 import pytest
 
+from tests.test_capabilities import policy
+from tests.test_capability_io import authenticate, fixed_time, prepare, proof  # noqa: F401 - shared clock fixture
 from unimem import capability_io as io
 from unimem import change_stream, lineage, nextwave_store
 from unimem.memory_journal import Journal
 from unimem.memory_record import MemoryRecord
-from tests.test_capabilities import policy
-from tests.test_capability_io import authenticate, fixed_time, prepare, proof  # noqa: F401 - shared clock fixture
 
 
 def test_runtime_class_scope_trust_and_typed_identity(tmp_path):

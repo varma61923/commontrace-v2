@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import os
 
-from unimem import hierarchical, memory_blocks
 from e2e_tests.harness.cli_runner import run_cli
+from unimem import hierarchical, memory_blocks
 
 
 def test_t3_agent_memory_to_dream_pipeline(isolated_store: str):

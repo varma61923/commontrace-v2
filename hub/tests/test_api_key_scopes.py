@@ -40,7 +40,7 @@ class _Scoped:
 
     def __enter__(self):
         self._org = auth.current_org_id.set(self._org_id)
-        self._actor = auth.current_actor.set("ct_live_test")
+        self._actor = auth.current_actor.set("unimem_live_test")
         self._scopes = auth.current_scopes.set(self._granted)
         return self
 

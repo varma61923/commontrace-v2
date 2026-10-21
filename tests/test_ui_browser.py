@@ -396,7 +396,7 @@ def test_disconnect_erases_visible_evidence_and_tab_credential_then_reconnects(p
     pw.expect(page.get_by_label("Access token", exact=True)).to_be_visible()
     pw.expect(page.locator("main")).not_to_contain_text("Aster")
     assert page.locator("main article").count() == 0
-    assert page.evaluate("() => sessionStorage.getItem('ct-token') === null")
+    assert page.evaluate("() => sessionStorage.getItem('unimem-token') === null")
     page.get_by_label("Access token", exact=True).fill(console.credential[0])
     page.get_by_role("button", name="Connect", exact=True).click()
     pw.expect(page.locator("#conn")).to_have_attribute("data-state", "ok")

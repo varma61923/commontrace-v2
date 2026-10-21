@@ -528,7 +528,7 @@ class TestAWorkerRunsTheQueryCommand:
         elsewhere = tmp_path / "elsewhere"
         elsewhere.mkdir()
         before_env, before_cwd = dict(os.environ), os.getcwd()
-        env = dict(os.environ, UNIMEM_ROOT=root, CT_WARM_PROBE="1")
+        env = dict(os.environ, UNIMEM_ROOT=root, UNIMEM_WARM_PROBE="1")
         reply = warm._Script(script).cli(["query", "payment retry", "--lexical"], str(elsewhere), env)
         assert reply["rc"] == 0 and "idem" in reply["stdout"]
         assert dict(os.environ) == before_env and os.getcwd() == before_cwd

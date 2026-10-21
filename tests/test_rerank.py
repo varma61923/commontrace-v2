@@ -6,13 +6,13 @@ import pytest
 
 pytest.importorskip("mcp", reason="`unimem serve` needs the MCP SDK: pip install 'unimem[serve]'")
 
-from unimem import holdout_io, integrity, mcp_server, rerank_arm, retrieval_io, semantic_arm  # noqa: E402
-from unimem.cli import main  # noqa: E402
-from unimem.commands import query_cmd  # noqa: E402
 from tests import test_mcp_fusion as fusion_tests  # noqa: E402
 from tests.test_hybrid_retrieval import _args  # noqa: E402
 from tests.test_mcp_fusion import SEMANTIC, TASK, _logged, _slugs, _stub_both  # noqa: E402
 from tests.test_mcp_server import _write_lesson, call  # noqa: E402
+from unimem import holdout_io, integrity, mcp_server, rerank_arm, retrieval_io, semantic_arm  # noqa: E402
+from unimem.cli import main  # noqa: E402
+from unimem.commands import query_cmd  # noqa: E402
 
 MARKERS = ("opt-out", "roster", "vendor")
 

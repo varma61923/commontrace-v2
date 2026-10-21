@@ -9,6 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+from hub import commons  # noqa: E402
 from unimem.overlap import (  # noqa: E402
     _MERSENNE_61,
     _STOPWORDS,
@@ -16,7 +17,6 @@ from unimem.overlap import (  # noqa: E402
     _stable_hash,
     estimate_jaccard,
 )
-from hub import commons  # noqa: E402
 
 NUM_PERM = commons.COMMONS_NUM_PERM
 THRESHOLD = commons.DEFAULT_COMMONS_THRESHOLD

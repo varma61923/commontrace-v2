@@ -18,6 +18,10 @@ from sqlalchemy import DateTime, cast, delete, func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 
+from hub import audit, delegation
+from hub.db import session_scope
+from hub.memory_vector_events import append_change, redact_changes
+from hub.models import MemoryRecordEvent, MemoryRecordProjection, MemoryVectorErasure
 from unimem import capabilities, memory_guard
 from unimem.fact_evidence import MAX_CHECKS, EvidenceResolver
 from unimem.memory_record import (
@@ -29,10 +33,6 @@ from unimem.memory_record import (
     rerank_profile_results,
 )
 from unimem.record_visibility import GroundingState, bind_capture_sources, now, sanitize_record_content, visible
-from hub import audit, delegation
-from hub.db import session_scope
-from hub.memory_vector_events import append_change, redact_changes
-from hub.models import MemoryRecordEvent, MemoryRecordProjection, MemoryVectorErasure
 
 _VECTOR_CANDIDATE_BATCH = 500
 _ATOMIC_FACT_FORMAT = "unimem.atomic-fact.v1"
@@ -152,8 +152,8 @@ class PostgresJournal:
             from unimem import capability_io
 
             record = capability_io.runtime_prepare(delegation.ROOT.get(), record)
-        from unimem.capability_io import runtime_descriptor
         from hub import policies
+        from unimem.capability_io import runtime_descriptor
 
         policy = await policies.active(session, self.org_id)
         if not policies.permits(policy, runtime_descriptor(record), action="write"):
@@ -209,8 +209,8 @@ class PostgresJournal:
                       "record": record.to_dict(), "scope": record.scope},
             )
         )
-        from unimem import frontier_protocol as fp
         from hub import audit
+        from unimem import frontier_protocol as fp
 
         if session.info.get("transparency_key"):
             await audit.record(session, actor="memory-runtime", action="memory_record.put", org_id=self.org_id,
@@ -252,8 +252,8 @@ class PostgresJournal:
         if not sources:
             return
         observation = facet_observation(entity, facet, sources)
-        from unimem.capability_io import runtime_descriptor
         from hub import policies
+        from unimem.capability_io import runtime_descriptor
 
         policy = await policies.active(session, self.org_id)
         if not policies.permits(policy, runtime_descriptor(observation), action="write"):
@@ -311,9 +311,9 @@ class PostgresJournal:
         return _HostedEvidenceResolver("", facts), invalid
 
     async def _cap_allowed_ids(self, session, context, reference, kinds):
+        from hub import policies
         from unimem import frontier_protocol as fp
         from unimem.capability_io import runtime_descriptor
-        from hub import policies
 
         policy = await policies.active(session, self.org_id)
 

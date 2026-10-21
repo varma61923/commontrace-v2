@@ -9,8 +9,8 @@ import pytest
 
 from benchmarks import conversation_bench as bench
 from benchmarks.vendor_adapters import eligible_turns, pack, vendor_profile
-from unimem.conversation import Store
 from tests.test_benchmark_measurement import _args
+from unimem.conversation import Store
 
 
 def test_locomo_question_limit_exact_stratified_and_repeatable():

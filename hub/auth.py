@@ -36,8 +36,8 @@ from hub.secrets_provider import env_secret
 
 logger = logging.getLogger(__name__)
 
-_KEY_PREFIX = "ct_live_"
-_PREFIX_LEN = 12
+_KEY_PREFIX = "unimem_live_"
+_PREFIX_LEN = len(_KEY_PREFIX) + 4
 
 if _has_argon2 and PasswordHasher is not None:
     _hasher: PasswordHasher | None = PasswordHasher()

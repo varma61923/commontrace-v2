@@ -5,9 +5,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.test_workbench import TOKEN, call
 from unimem import cli, gateway, hierarchical, ui_commands
 from unimem.conversation import Store
-from tests.test_workbench import TOKEN, call
 
 
 def test_all_commands_are_categorized_and_topic_discovery_is_useful(capsys):

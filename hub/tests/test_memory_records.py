@@ -3,10 +3,10 @@ import uuid
 import pytest
 from sqlalchemy import text
 
-from unimem.memory_record import MemoryRecord
 from hub.db import session_scope
 from hub.memory_records import PostgresJournal
 from hub.models import Organization
+from unimem.memory_record import MemoryRecord
 
 
 @pytest.mark.asyncio

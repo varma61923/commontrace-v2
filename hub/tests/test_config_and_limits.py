@@ -307,7 +307,7 @@ class TestMetricsEndpoint:
         m.observe_request("POST", "/mcp", 200, 1.0)
         m.observe_rate_limited("write")
         out = m.render()
-        for forbidden in ("org", "ct_live_", "api_key", "query"):
+        for forbidden in ("org", "unimem_live_", "api_key", "query"):
             assert forbidden not in out, f"{forbidden!r} must never be exposed on /metrics"
 
     def test_output_is_valid_prometheus_text_format(self):

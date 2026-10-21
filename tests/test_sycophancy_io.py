@@ -5,6 +5,7 @@ import json
 
 import pytest
 
+from tests import test_skill_foundry
 from unimem import (
     causal_gate,
     cli,
@@ -16,7 +17,6 @@ from unimem import (
 from unimem import frontier_protocol as fp
 from unimem import nextwave_store as store
 from unimem import sycophancy_io as io
-from tests import test_skill_foundry
 
 clock = test_skill_foundry.clock
 CONTEXT = ["domain:science"]
@@ -243,9 +243,9 @@ def test_source_erasure_removes_secondary_metric_and_delivery_payloads(tmp_path,
 
 
 def test_real_gateway_and_local_sdk_record_labels_before_outcome(tmp_path, clock):
+    from tests.test_gateway import TOKEN, call
     from unimem import gateway
     from unimem.client import MemoryClient
-    from tests.test_gateway import TOKEN, call
 
     root = str(tmp_path)
     _, identity = prepare(root, clock, horizon=32)

@@ -14,8 +14,8 @@ import time
 from dataclasses import dataclass
 from typing import Protocol
 
-from unimem import memory_guard
 from hub.config import HubConfig
+from unimem import memory_guard
 
 logger = logging.getLogger("unimem.hub.abuse")
 

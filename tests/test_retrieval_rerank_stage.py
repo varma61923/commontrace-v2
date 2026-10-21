@@ -5,12 +5,12 @@ import json
 
 import pytest
 
+from tests.test_multichannel_recall import store  # noqa: F401 - fixture
 from unimem import hierarchical, providers, recall, reranking
 from unimem.conversation import Options, Store
 from unimem.conversation import recall as conversation_recall
 from unimem.reranking import Hit, TextReranker
 from unimem.search_recipes import search
-from tests.test_multichannel_recall import store  # noqa: F401 - fixture
 
 FAKE = "fake-text-for-test"
 

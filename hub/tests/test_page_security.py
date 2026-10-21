@@ -97,9 +97,9 @@ def test_the_page_offers_a_skip_link_to_its_content():
 def test_a_live_page_can_be_paused(render):
     live = render(30).body.decode()
     assert '<button type="button" class="live-toggle" data-live-toggle hidden>' in live
-    assert "ct-live-paused" in live
+    assert "unimem-live-paused" in live
     still = render(0).body.decode()
-    assert "data-live-toggle" not in still and "ct-live-paused" not in still
+    assert "data-live-toggle" not in still and "unimem-live-paused" not in still
 
 
 def test_a_hidden_tab_does_not_reload():
@@ -141,9 +141,9 @@ def test_every_form_post_route_is_guarded(module):
 
 
 def test_a_shown_once_secret_is_labelled_and_copyable():
-    field = admin.secret_field('ct_live_"<x>', "key-label")
+    field = admin.secret_field('unimem_live_"<x>', "key-label")
     assert 'aria-labelledby="key-label"' in field
-    assert 'value="ct_live_&quot;&lt;x&gt;"' in field
+    assert 'value="unimem_live_&quot;&lt;x&gt;"' in field
     assert '<button type="button" class="btn" data-copy hidden>Copy</button>' in field
     assert 'role="status"' in field
     assert "button[data-copy]" in admin._FORM_GUARD_SCRIPT

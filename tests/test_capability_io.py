@@ -6,11 +6,11 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+from tests.test_capabilities import A_KEY, B_KEY, NOW, policy
 from unimem import capabilities as cap
 from unimem import capability_io as io
 from unimem import frontier_protocol as fp
 from unimem import hierarchical, lineage, memory_authority, nextwave_store
-from tests.test_capabilities import A_KEY, B_KEY, NOW, policy
 
 
 @pytest.fixture(autouse=True)

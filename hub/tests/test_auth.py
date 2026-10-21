@@ -42,7 +42,7 @@ async def test_wrong_key_does_not_verify(session_factory, config):
         await auth.issue_api_key(session, org_id)
 
     async with session_scope(session_factory) as session:
-        resolved = await auth.verify_api_key(session, "ct_live_totally-made-up-key")
+        resolved = await auth.verify_api_key(session, "unimem_live_totally-made-up-key")
     assert resolved is None
 
 
@@ -65,7 +65,7 @@ async def test_unknown_prefix_still_pays_the_argon2_cost(session_factory, config
     monkeypatch.setattr(PasswordHasher, "verify", _tracking_verify)
 
     async with session_scope(session_factory) as session:
-        resolved = await auth.verify_api_key(session, "ct_live_" + "z" * 40)
+        resolved = await auth.verify_api_key(session, "unimem_live_" + "z" * 40)
     assert resolved is None
     assert calls == [auth._DUMMY_HASH]
 

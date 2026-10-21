@@ -6,9 +6,9 @@ import sys
 
 import pytest
 
+from tests.conftest import write_lesson
 from unimem import graph, hierarchical, recall
 from unimem.conversation import Store
-from tests.conftest import write_lesson
 
 
 @pytest.fixture

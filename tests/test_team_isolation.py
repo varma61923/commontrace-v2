@@ -219,8 +219,8 @@ def test_semantic_merge_keeps_sources_and_requires_review(tmp_path):
 
 
 def test_gateway_returns_structured_stale_generation_and_does_not_write(tmp_path):
-    from unimem.gateway import Gateway
     from tests.test_gateway import TOKEN, call
+    from unimem.gateway import Gateway
 
     root = str(tmp_path)
     fact = h.add_fact(root, 'Wrist payload limit is 5 kg', scopes=['tenant:a'])[0]
@@ -260,8 +260,8 @@ def test_team_cli_isolation_read_and_lease(tmp_path, capsys):
 
 
 def test_gateway_fetch_by_id_uses_subtenant_scope(tmp_path):
-    from unimem.gateway import Gateway
     from tests.test_gateway import TOKEN, call
+    from unimem.gateway import Gateway
 
     root = str(tmp_path)
     fact = h.add_fact(root, 'Secret medical history', scopes=['tenant:b'])[0]
@@ -274,9 +274,9 @@ def test_gateway_fetch_by_id_uses_subtenant_scope(tmp_path):
 
 
 def test_local_and_http_client_forward_and_validate_read_sets(tmp_path, monkeypatch):
+    from tests.test_gateway import TOKEN, call
     from unimem.client import MemoryClient
     from unimem.gateway import Gateway
-    from tests.test_gateway import TOKEN, call
 
     root = str(tmp_path)
     fact = h.add_fact(root, 'Payload limit is 5 kg', scopes=['tenant:a'])[0]

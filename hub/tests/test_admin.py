@@ -1087,7 +1087,7 @@ class TestKeyIssuanceFromTheConsole:
             )
         assert r.status_code == 200
         assert "shown once" in r.text
-        assert "ct_" in r.text
+        assert "unimem_" in r.text
 
     @pytest.mark.parametrize("days", ["30d", "0", "-1", "99999999"])
     async def test_an_unusable_expiry_issues_nothing_rather_than_a_permanent_key(self, session_factory, days):

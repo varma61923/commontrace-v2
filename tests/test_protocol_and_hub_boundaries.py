@@ -18,8 +18,8 @@ if str(REPO_ROOT) not in sys.path:
 pytest.importorskip("hub")
 
 from commons.eval import representations  # noqa: E402 -- must follow importorskip above
-from unimem import validate  # noqa: E402 -- must follow importorskip above
 from hub import abuse, outcomes  # noqa: E402 -- must follow importorskip above
+from unimem import validate  # noqa: E402 -- must follow importorskip above
 
 
 class TestValidateOutcomeNullableMetrics:
@@ -398,7 +398,7 @@ class TestHubAuthArgon2Remediation:
             session = AsyncMock()
             with caplog.at_level(logging.WARNING):
                 result = asyncio.run(
-                    auth._verify_by_legacy_scan(session, "ct_live_test_key_12345", datetime.now(timezone.utc))
+                    auth._verify_by_legacy_scan(session, "unimem_live_test_key_12345", datetime.now(timezone.utc))
                 )
                 assert result is None
                 assert any("argon2-cffi is not installed" in rec.message for rec in caplog.records)

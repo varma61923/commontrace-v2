@@ -271,7 +271,7 @@ async def _entitlements(session, report: Reporter) -> None:
 
 
 async def _rejects_bad_credentials(url: str, report: Reporter) -> None:
-    problem = _preflight(url, "ct_live_definitely-not-a-real-key")
+    problem = _preflight(url, "unimem_live_definitely-not-a-real-key")
     if problem is None:
         report.fail("an invalid API key is refused", "the server ACCEPTED a bogus key")
     elif "rejected the API key" in problem:

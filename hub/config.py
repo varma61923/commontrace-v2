@@ -5,8 +5,8 @@ from __future__ import annotations
 import ipaddress
 from dataclasses import dataclass, field
 
-from unimem.configuration import getenv as _configuration_getenv
 from hub.secrets_provider import env_secret
+from unimem.configuration import getenv as _configuration_getenv
 
 DEFAULT_SEARCH_LIMIT = 50
 MAX_SEARCH_LIMIT = 200

@@ -366,13 +366,13 @@ class TestBatchHydration:
 class TestAuditLog:
     async def test_contribute_writes_an_audit_row(self, session_factory, config, org):
         result = await _contribute(
-            session_factory, config, org, "audited", "ctx", "sol", actor="api-key:ct_live_abcd"
+            session_factory, config, org, "audited", "ctx", "sol", actor="api-key:unimem_live_abcd"
         )
         async with session_scope(session_factory) as session:
             rows = (await session.execute(select(AuditLogEntry))).scalars().all()
         assert len(rows) == 1
         assert rows[0].action == "contribute_trace"
-        assert rows[0].actor == "api-key:ct_live_abcd"
+        assert rows[0].actor == "api-key:unimem_live_abcd"
         assert rows[0].org_id == org
         assert rows[0].target_id == result["id"]
 
@@ -415,7 +415,7 @@ class TestAuditLog:
         assert rows == []
 
     async def test_actor_helper_builds_a_non_secret_string(self):
-        assert audit.actor_for_api_key("ct_live_abcd") == "api-key:ct_live_abcd"
+        assert audit.actor_for_api_key("unimem_live_abcd") == "api-key:unimem_live_abcd"
 
 
 class TestApiKeyExpiry:

@@ -5,8 +5,8 @@ import sys
 
 import pytest
 
-from unimem import entities, graph, ontology
 from tests.conftest import write_lesson
+from unimem import entities, graph, ontology
 
 
 @pytest.fixture

@@ -6,8 +6,8 @@ from typing import Callable
 
 import yaml
 
-from unimem import dosage, frontmatter
 from tests.e2e.conftest import CLIResult
+from unimem import dosage, frontmatter
 
 
 def test_tier4_code_review_pipeline_simulation(

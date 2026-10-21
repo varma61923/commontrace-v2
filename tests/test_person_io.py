@@ -5,17 +5,17 @@ from copy import deepcopy
 
 import pytest
 
+from tests import test_capability_io, test_skill_foundry
 from unimem import hierarchical, memory_authority, nextwave_store, privacy_erasure
 from unimem import person_io as person
-from tests import test_capability_io, test_skill_foundry
 
 clock = test_skill_foundry.clock
 
 
 @pytest.fixture
 def cap_clock(monkeypatch):
-    from unimem import frontier_protocol as fp
     from tests.test_capabilities import NOW
+    from unimem import frontier_protocol as fp
 
     monkeypatch.setattr(fp, "now", lambda: NOW.isoformat())
 
@@ -251,8 +251,8 @@ def test_browser_commands_cannot_open_holder_keys_or_local_summary_files(tmp_pat
 
 def test_mcp_challenge_and_verify_use_real_holder_signatures(tmp_path):
     pytest.importorskip("mcp")
-    from unimem import credentials, mcp_server
     from tests.test_mcp_server import call
+    from unimem import credentials, mcp_server
 
     root, fact, holder, issued = credentials_setup(tmp_path)
     server = mcp_server.build_server(root, allow_approval=False)
@@ -301,8 +301,8 @@ def test_expired_verifier_nonce_and_stale_foreign_status_are_rejected(tmp_path, 
 
 
 def test_per_segment_grant_is_actual_verified_capability_with_export_permission(tmp_path, cap_clock):
-    from unimem import capability_io
     from tests.test_capabilities import policy
+    from unimem import capability_io
 
     root, _ = test_capability_io.prepare(tmp_path)
     fact = hierarchical.append_facts(root, [{"statement": "The reviewed wrist offset is 0.12.",
@@ -418,10 +418,10 @@ def test_cross_scope_native_shadowing_cannot_create_an_erasure_confusion(tmp_pat
 
 
 def test_fact_only_leaf_cannot_erase_a_hidden_capture_by_claiming_it_as_evidence(tmp_path, cap_clock):
+    from tests.test_capabilities import policy
     from unimem import capability_io
     from unimem.memory_journal import Journal
     from unimem.memory_record import MemoryRecord
-    from tests.test_capabilities import policy
 
     root, _ = test_capability_io.prepare(tmp_path)
     journal = Journal(root)
@@ -442,10 +442,10 @@ def test_fact_only_leaf_cannot_erase_a_hidden_capture_by_claiming_it_as_evidence
 
 
 def test_delegated_canonical_cascade_requires_authenticated_native_mirror(tmp_path, cap_clock):
+    from tests.test_capabilities import policy
     from unimem import capability_io
     from unimem.memory_journal import Journal
     from unimem.memory_record import MemoryRecord
-    from tests.test_capabilities import policy
 
     root, _ = test_capability_io.prepare(tmp_path)
     journal = Journal(root)

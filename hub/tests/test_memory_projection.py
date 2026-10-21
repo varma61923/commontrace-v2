@@ -8,9 +8,6 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import delete
 
-from unimem.memory_record import MemoryRecord
-from unimem.vector_snapshots import SnapshotConflict
-from unimem.vector_store import PostgresVectorIndex, SQLiteVectorIndex, VectorRecord
 from hub.db import session_scope
 from hub.memory_projection import HostedProjection, ProjectionIdentity
 from hub.models import (
@@ -20,6 +17,9 @@ from hub.models import (
     MemoryRecordProjection,
     Organization,
 )
+from unimem.memory_record import MemoryRecord
+from unimem.vector_snapshots import SnapshotConflict
+from unimem.vector_store import PostgresVectorIndex, SQLiteVectorIndex, VectorRecord
 
 
 def test_projection_identity_and_owner_are_pinned():

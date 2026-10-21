@@ -54,11 +54,11 @@ class TestArgon2HardeningAndFailClosed:
         if not auth._has_argon2:
             pytest.skip("argon2-cffi not installed in this environment")
 
-        secret = "ct_live_super_secret_test_token_123"
+        secret = "unimem_live_super_secret_test_token_123"
         hashed = auth._hash_argon2(secret)
         assert hashed.startswith("$argon2id$")
         assert auth._verify_argon2(secret, hashed) is True
-        assert auth._verify_argon2("ct_live_wrong_secret_token", hashed) is False
+        assert auth._verify_argon2("unimem_live_wrong_secret_token", hashed) is False
 
     def test_argon2_installed_verify_mismatch_and_invalid_hash(self):
         if not auth._has_argon2:
@@ -106,7 +106,7 @@ class TestArgon2HardeningAndFailClosed:
                 with patch.object(auth, "_has_argon2", False), \
                      patch.object(auth, "PasswordHasher", None), \
                      patch.object(auth, "_hasher", None):
-                    res = await auth._verify_by_legacy_scan(session, "ct_live_candidate_raw_key_123", now)
+                    res = await auth._verify_by_legacy_scan(session, "unimem_live_candidate_raw_key_123", now)
                     assert res is None
                     assert any("argon2-cffi is not installed" in record.message for record in caplog.records)
 

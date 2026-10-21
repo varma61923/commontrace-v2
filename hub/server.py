@@ -31,7 +31,6 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp
 
-from unimem import __version__ as _UNIMEM_VERSION
 from hub import auth, collab, commons, crud, observability, plans, scheduler, scopes
 from hub.abuse import (
     RateLimited,
@@ -59,6 +58,7 @@ from hub.rest import add_rest_routes
 from hub.schema_validation import SchemaValidationError
 from hub.scim import add_scim_routes
 from hub.signup import add_signup_routes
+from unimem import __version__ as _UNIMEM_VERSION
 
 logger = logging.getLogger("unimem.hub")
 

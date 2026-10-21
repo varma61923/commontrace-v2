@@ -5,8 +5,8 @@ import pathlib
 import subprocess
 import sys
 
-from unimem.commands import install_cmd
 from hub import smoke
+from unimem.commands import install_cmd
 
 
 class TestAdvertisedSurfaceMatchesReality:

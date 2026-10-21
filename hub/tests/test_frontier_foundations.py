@@ -4,12 +4,12 @@ from dataclasses import replace
 
 import pytest
 
-from unimem import frontier_protocol as fp
-from unimem import origin
-from unimem import transparency_log as merkle
 from hub import transparency
 from hub.db import session_scope
 from hub.tests.test_rest import _app, _client, _key, _org_with_key
+from unimem import frontier_protocol as fp
+from unimem import origin
+from unimem import transparency_log as merkle
 
 pytestmark = pytest.mark.asyncio
 
@@ -53,8 +53,8 @@ async def test_incident_freeze_routes_and_tenant_isolation(session_factory, conf
 
 
 async def test_targeted_hub_promotion_restricts_measured_embodiment_and_owner(session_factory, tmp_path):
-    from unimem.memory_record import MemoryRecord
     from hub.memory_records import PostgresJournal
+    from unimem.memory_record import MemoryRecord
     org, _ = await _org_with_key(session_factory)
     other, _ = await _org_with_key(session_factory)
     root = str(tmp_path)

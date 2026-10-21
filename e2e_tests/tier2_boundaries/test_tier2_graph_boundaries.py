@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from unimem import graph
 from e2e_tests.harness.cli_runner import run_cli
+from unimem import graph
 
 
 def test_t2_graph_cycle_resilience(isolated_store: str):

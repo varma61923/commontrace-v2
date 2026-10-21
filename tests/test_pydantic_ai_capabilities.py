@@ -242,7 +242,7 @@ def test_memory_wait_limits_are_configurable_and_must_be_positive(monkeypatch):
 
 
 def test_missing_sdk_is_reported_only_when_constructing_capabilities(monkeypatch):
-    from unimem.integrations import pydantic_ai as ct
+    from unimem.integrations import pydantic_ai as unimem_integration
 
     original_import = builtins.__import__
 
@@ -253,4 +253,4 @@ def test_missing_sdk_is_reported_only_when_constructing_capabilities(monkeypatch
 
     monkeypatch.setattr(builtins, "__import__", reject_pydantic_ai)
     with pytest.raises(ImportError, match="pydantic-ai"):
-        ct.memory_capabilities(FakeMemory("alice"))
+        unimem_integration.memory_capabilities(FakeMemory("alice"))

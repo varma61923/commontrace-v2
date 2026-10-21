@@ -40,7 +40,7 @@ async def test_a_refusal_looks_like_a_wrong_key_and_nothing_about_regions_leaks_
     _, key = await _org_with_key(session_factory, region="eu")
     auth.configure_region("us")
     refused = await _verify(session_factory, key)
-    stranger = await _verify(session_factory, "ct_live_made-up")
+    stranger = await _verify(session_factory, "unimem_live_made-up")
     assert refused is None and stranger is None
 
 

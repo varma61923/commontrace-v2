@@ -7,9 +7,9 @@ import threading
 
 import pytest
 
+from tests.test_workbench import TOKEN, _lesson, call
 from unimem import frontmatter, gateway, holdout_io, lesson_admission, lesson_io, paths, workbench
 from unimem.cli import main
-from tests.test_workbench import TOKEN, _lesson, call
 
 
 @pytest.fixture

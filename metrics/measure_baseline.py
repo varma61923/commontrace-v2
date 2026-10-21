@@ -74,7 +74,7 @@ def must(*args: str, cwd: str | None = None) -> float:
 
 
 def activation(seed: int = 0) -> dict:
-    root = tempfile.mkdtemp(prefix="ct-baseline-")
+    root = tempfile.mkdtemp(prefix="unimem-baseline-")
     try:
         t0 = time.perf_counter()
         must("init", "--function", "support", "--dest", root)
@@ -148,7 +148,7 @@ def activation(seed: int = 0) -> dict:
 def query_latency(n_lessons: int = 1000, runs: int = 40) -> dict:
     from unimem.reference.measure_local_latency import _queries, build_store
 
-    root = tempfile.mkdtemp(prefix="ct-baseline-q-")
+    root = tempfile.mkdtemp(prefix="unimem-baseline-q-")
     try:
         must("init", "--agent-type", "general", "--dest", root)
         build_store(root, n_lessons)
@@ -193,7 +193,7 @@ def hub_floor() -> dict:
 def install_matrix() -> dict:
     results = {}
     for target in install_cmd.TARGETS:
-        root = tempfile.mkdtemp(prefix=f"ct-baseline-i-{target}-")
+        root = tempfile.mkdtemp(prefix=f"unimem-baseline-i-{target}-")
         try:
             must("init", "--agent-type", "general", "--dest", root)
             _, done = cli("install", "--target", target, "--dest", root, cwd=root)

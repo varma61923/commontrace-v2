@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import os
 
-from unimem import frontmatter, retrieval
 from e2e_tests.harness.cli_runner import run_cli
+from unimem import frontmatter, retrieval
 
 
 def test_t1_retrieval_graph_boost_ranking():

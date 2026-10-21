@@ -1282,7 +1282,7 @@
     form.addEventListener("submit", function (ev) {
       ev.preventDefault();
       token = input.value.trim();
-      try { sessionStorage.setItem("ct-token", token); } catch (e) { /* ignore */ }
+      try { sessionStorage.setItem("unimem-token", token); } catch (e) { /* ignore */ }
       refresh();
     });
     return h("div", { class: "auth card" }, h("h1", { text: "Connect to the gateway" }),
@@ -1353,8 +1353,8 @@
       return generation === refreshGeneration && token === requestedToken && location.hash === requestedHash;
     }
     if (stateToken !== token) clearCredentialState();
-    // CodeQL false positive (Alert #1): client-side UI gate; gateway enforces 401 on every route.
-    if (!token) { main.textContent = ""; main.appendChild(viewAuth()); setConn("bad", "Not connected"); return Promise.resolve(); }
+    // The gateway decides whether this credential can read each resource,
+    // including an empty credential. A local token value is never authorization.
     var route = currentRoute().id;
     var wants = ["status"];
     // Capability discovery changes infrequently. Fetch it on first connection
@@ -1402,7 +1402,7 @@
       })
       .catch(function (e) {
         if (!current()) return;
-        if (e && e.auth) { token = ""; clearCredentialState(); try { sessionStorage.removeItem("ct-token"); } catch (x) { /* ignore */ } main.textContent = ""; main.appendChild(viewAuth("That token was not accepted.")); setConn("bad", "Not connected"); return; }
+        if (e && e.auth) { token = ""; clearCredentialState(); try { sessionStorage.removeItem("unimem-token"); } catch (x) { /* ignore */ } main.textContent = ""; main.appendChild(viewAuth("That token was not accepted.")); setConn("bad", "Not connected"); return; }
         if (e && !e.auth) console.error(e);
         setConn("bad", lastOk ? "Disconnected · last update " + ago(new Date(lastOk).toISOString()) : "Cannot reach the gateway");
       });
@@ -1419,13 +1419,13 @@
     if (v === "light" || v === "dark") document.documentElement.setAttribute("data-theme", v);
     else document.documentElement.removeAttribute("data-theme");
   }
-  var saved = load("ct-theme") || "system";
+  var saved = load("unimem-theme") || "system";
   themeSel.value = saved; applyTheme(saved);
-  themeSel.addEventListener("change", function () { store("ct-theme", themeSel.value); applyTheme(themeSel.value); });
+  themeSel.addEventListener("change", function () { store("unimem-theme", themeSel.value); applyTheme(themeSel.value); });
   if (commandLaunch) commandLaunch.addEventListener("click", function () { location.hash = "#/commands"; });
   if (disconnect) disconnect.addEventListener("click", function () {
     token = "";
-    try { sessionStorage.removeItem("ct-token"); } catch (e) { /* private mode */ }
+    try { sessionStorage.removeItem("unimem-token"); } catch (e) { /* private mode */ }
     refresh();
   });
   if (commandLaunch) {
@@ -1445,10 +1445,10 @@
     var m = /(?:^|[#&])token=([^&]+)/.exec(location.hash);
     if (m) {
       try { token = decodeURIComponent(m[1]); } catch (e) { token = ""; }
-      try { sessionStorage.setItem("ct-token", token); } catch (e) { /* ignore */ }
+      try { sessionStorage.setItem("unimem-token", token); } catch (e) { /* ignore */ }
       history.replaceState(null, "", location.pathname + location.search + "#/overview");
     } else {
-      try { token = sessionStorage.getItem("ct-token") || ""; } catch (e) { token = ""; }
+      try { token = sessionStorage.getItem("unimem-token") || ""; } catch (e) { token = ""; }
     }
   })();
 

@@ -225,7 +225,7 @@ docker compose up    # set POSTGRES_PASSWORD and HUB_CONSOLE_SECRET for anything
 ```mermaid
 flowchart LR
     Agent["Agent or framework"] -->|"MCP · HTTP · Python"| Recall
-    subgraph CT["UniMem"]
+    subgraph UNIMEM["UniMem"]
         Recall["Retrieval<br/>hybrid · rerank · multi-hop"] --> Holdout["Holdout<br/>per memory, per occasion"]
         Holdout --> Deliver["Delivered context"]
         Outcomes["Outcomes"] --> Evidence["Evidence<br/>AIPW · integrity audit"]

@@ -77,7 +77,7 @@ class TestAuthentication:
         async with _client(_app(session_factory, config)) as client:
             response = await client.post(
                 otlp.OTLP_TRACES_PATH, json=_otlp_body(_span("a" * 16)),
-                headers=_key("ct_not_a_real_key"),
+                headers=_key("unimem_not_a_real_key"),
             )
         assert response.status_code == 401
 

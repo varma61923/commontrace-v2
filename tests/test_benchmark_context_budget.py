@@ -117,9 +117,9 @@ def test_counter_contract_changes_cannot_be_silently_paired(tmp_path, monkeypatc
 
 
 def test_unfitting_native_context_fails_before_reader_dispatch(tmp_path, monkeypatch):
+    from tests.test_benchmark_measurement import _args
     from unimem import llm
     from unimem.conversation.search import Recall
-    from tests.test_benchmark_measurement import _args
 
     bench = _fixture_counter(monkeypatch)
     args = _args(tmp_path, strict_context_budget=True, tokenizer="fixture", budget="10", answer=True,
@@ -167,8 +167,8 @@ def test_reference_only_modes_skip_unrequested_memory_retrieval(tmp_path, monkey
 def test_native_vendor_is_reassembled_instead_of_context_truncation(tmp_path, monkeypatch):
     import contextlib
 
-    from unimem.conversation.search import Recall
     from tests.test_benchmark_measurement import _args
+    from unimem.conversation.search import Recall
 
     bench = _fixture_counter(monkeypatch)
     calls = []

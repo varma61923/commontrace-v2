@@ -657,7 +657,7 @@ async def test_argument_count_validation():
 
 
 async def test_auth_import_is_used():
-    assert auth.generate_raw_key().startswith("ct_live_")
+    assert auth.generate_raw_key().startswith("unimem_live_")
 
 
 @pytest.mark.filterwarnings("ignore:.*is marked with '@pytest.mark.asyncio'.*:pytest.PytestWarning")

@@ -72,8 +72,8 @@ def test_cli_erasure_reaches_derived_lessons_rewrites_and_live_recall(tmp_path):
     import json
     import os
 
-    from unimem import holdout_io, lesson_io, recall, retention
     from tests.test_mcp_server import _write_lesson, cli
+    from unimem import holdout_io, lesson_io, recall, retention
 
     root = str(tmp_path / "store")
     vault_dir = str(tmp_path / "vault")

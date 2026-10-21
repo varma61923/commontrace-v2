@@ -5,8 +5,8 @@ import pytest
 
 pytest.importorskip("cedarpy", reason="install unimem[policy-cedar] for native Cedar checks")
 
-from unimem import policy_cedar, policy_proof  # noqa: E402
 from tests.test_policy_proof import example  # noqa: E402
+from unimem import policy_cedar, policy_proof  # noqa: E402
 
 
 def test_actual_native_cedar_export_import_has_identical_finite_permissions():

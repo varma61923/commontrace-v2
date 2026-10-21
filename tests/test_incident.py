@@ -51,8 +51,8 @@ def test_path_forgery_refused(tmp_path, identity):
 
 def test_replay_returns_delivered_bytes_after_later_correction(tmp_path):
     pytest.importorskip("mcp")
-    from unimem.mcp_server import build_server
     from tests.test_mcp_server import _write_lesson, call
+    from unimem.mcp_server import build_server
 
     root = str(tmp_path)
     path = _write_lesson(root, "arm-zone", body="Keep the arm inside bay A during calibration.")

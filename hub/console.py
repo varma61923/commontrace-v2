@@ -20,7 +20,6 @@ from sqlalchemy import or_, select
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
-from unimem import raw_export
 from hub import alerts, audit, auth, commons, crud, events, manage, plans, rbac, scopes, ui_kit
 from hub.abuse import RateLimited, TraceRejected, make_named_limiter, make_rate_limiter, rate_limit_key
 from hub.admin import (
@@ -39,11 +38,12 @@ from hub.config import HubConfig
 from hub.db import session_scope
 from hub.encryption import NULL_CIPHER, EnvelopeCipher
 from hub.models import AlertRule, ApiKey, AuditLogEntry, Organization, User, WebhookEndpoint
+from unimem import raw_export
 
 logger = logging.getLogger("unimem.hub.console")
 
 CONSOLE_PATH = "/app"
-SESSION_COOKIE = "ct_console"
+SESSION_COOKIE = "unimem_console"
 
 SESSION_TTL_SECONDS = 8 * 60 * 60
 
@@ -1530,7 +1530,7 @@ _SIGNIN = (
     "authenticate with. It is verified once and never stored in your browser.</p></div>"
     '<form method="post" action="{path}/signin">'
     '<label for="api_key">API key</label>'
-    '<input type="password" id="api_key" name="api_key" placeholder="ct_live_…" autocomplete="off" '
+    '<input type="password" id="api_key" name="api_key" placeholder="unimem_live_…" autocomplete="off" '
     "autofocus required spellcheck=\"false\">"
     '<button type="submit">Sign in</button>'
     "</form>"

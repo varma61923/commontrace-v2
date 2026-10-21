@@ -6,11 +6,11 @@ from copy import deepcopy
 
 import pytest
 
+from tests import test_skill_foundry
+from tests.test_policy_proof import example
 from unimem import frontier_protocol as fp
 from unimem import memory_authority
 from unimem import policy_io as io
-from tests import test_skill_foundry
-from tests.test_policy_proof import example
 
 clock = test_skill_foundry.clock
 

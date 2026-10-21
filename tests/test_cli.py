@@ -445,7 +445,7 @@ def test_sync_without_hub_configured_prints_setup_instructions(store, capsys, mo
 def test_sync_warns_when_api_key_passed_on_the_command_line(store, capsys, monkeypatch):
     monkeypatch.delenv("UNIMEM_HUB_URL", raising=False)
     monkeypatch.delenv("UNIMEM_HUB_API_KEY", raising=False)
-    assert main(["sync", "--dest", str(store), "--hub-api-key", "ct_live_test"]) == 0
+    assert main(["sync", "--dest", str(store), "--hub-api-key", "unimem_live_test"]) == 0
     err = capsys.readouterr().err
     assert "WARN" in err
     assert "--hub-api-key" in err

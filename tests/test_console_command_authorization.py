@@ -6,9 +6,9 @@ import os
 
 import pytest
 
+from tests.test_workbench import AUTH, TOKEN, _lesson, call
 from unimem import frontmatter, gateway, lesson_io, ui_commands
 from unimem.cli import main
-from tests.test_workbench import AUTH, TOKEN, _lesson, call
 
 
 @pytest.fixture

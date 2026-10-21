@@ -65,8 +65,8 @@ class TestFingerprintEquivalence:
 
         sys.path.insert(0, "hub")
         try:
-            from unimem import hub_client
             from hub import crud
+            from unimem import hub_client
         finally:
             sys.path.remove("hub")
         assert crud._contribute_request_hash("T", "C", "S", ["b", "a"], "agent", {"k": 1}, "prof") == CONTRIBUTE_DIGEST

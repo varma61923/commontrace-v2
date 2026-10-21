@@ -231,9 +231,9 @@ def test_import_stores_no_credential(tmp_path):
 
 def test_the_mcp_capture_tool_stores_no_credential(tmp_path):
     pytest.importorskip("mcp")
+    from tests.test_mcp_server import call
     from unimem import mcp_server
     from unimem.cli import main
-    from tests.test_mcp_server import call
 
     root = str(tmp_path / "s")
     assert main(["init", "--dest", root]) == 0

@@ -117,12 +117,12 @@ class TestLLMContextualizer:
 class TestAliasCanonicalizer:
     def test_basic_alias_replacement(self):
         canonicalizer = AliasCanonicalizer(
-            aliases={"UniMem": ["CT", "common-trace"]}
+            aliases={"UniMem": ["UM", "uni-mem"]}
         )
         from unimem.ingest import Chunk
 
         chunk = Chunk(
-            content="CT is great, common-trace too",
+            content="UM is great, uni-mem too",
             source_path="test.txt",
             chunk_id="test",
             breadcrumb="test",
@@ -131,17 +131,17 @@ class TestAliasCanonicalizer:
         result = list(canonicalizer.apply([chunk]))
         assert len(result) == 1
         assert "UniMem" in result[0].content
-        assert "CT" not in result[0].content
-        assert "common-trace" not in result[0].content
+        assert "UM" not in result[0].content
+        assert "uni-mem" not in result[0].content
 
     def test_risky_word_protection(self):
         canonicalizer = AliasCanonicalizer(
-            aliases={"not CT": ["CT"]},
+            aliases={"not UM": ["UM"]},
         )
         from unimem.ingest import Chunk
 
         chunk = Chunk(
-            content="CT is great",
+            content="UM is great",
             source_path="test.txt",
             chunk_id="test",
             breadcrumb="test",
@@ -149,17 +149,17 @@ class TestAliasCanonicalizer:
         )
         result = list(canonicalizer.apply([chunk]))
         assert len(result) == 1
-        assert "CT" in result[0].content
+        assert "UM" in result[0].content
         assert len(canonicalizer.flush_warnings()) > 0
 
     def test_warning_flushing(self):
         canonicalizer = AliasCanonicalizer(
-            aliases={"not CT": ["CT"]},
+            aliases={"not UM": ["UM"]},
         )
         from unimem.ingest import Chunk
 
         chunk = Chunk(
-            content="CT",
+            content="UM",
             source_path="test.txt",
             chunk_id="test",
             breadcrumb="test",
@@ -325,7 +325,7 @@ class TestPipeline:
         try:
             loader = FileLoader(path)
             transforms = [
-                AliasCanonicalizer(aliases={"not CT": ["CT"]}),
+                AliasCanonicalizer(aliases={"not UM": ["UM"]}),
                 LimitGuard(max_chars=100),
             ]
             pipeline = Pipeline(loader, transforms)

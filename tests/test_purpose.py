@@ -6,10 +6,10 @@ from datetime import timedelta
 
 import pytest
 
-from unimem import capability_io, hierarchical, memory_authority, nextwave_store, person_io, purpose
-from unimem import frontier_protocol as fp
 from tests import test_capability_io
 from tests.test_capabilities import NOW, policy
+from unimem import capability_io, hierarchical, memory_authority, nextwave_store, person_io, purpose
+from unimem import frontier_protocol as fp
 
 HEALTH = purpose.DPV+"ImproveHealthcare"
 SHOPPING = purpose.DPV+"ServiceProvision"
@@ -163,8 +163,8 @@ def test_passport_requires_disclosure_consent_and_preserves_receipt(tmp_path):
 
 
 def test_gateway_recall_filters_even_supplied_items_by_exact_purpose(tmp_path):
-    from unimem.gateway import Gateway
     from tests.test_gateway import call
+    from unimem.gateway import Gateway
 
     root, fact = source(tmp_path)
     enroll(root, [fact.id])
@@ -274,8 +274,8 @@ def test_cli_enrollment_explanation_and_actual_mcp_owner_view(tmp_path, capsys):
                      "--dest", root]) == 0
     assert json.loads(capsys.readouterr().out)["memories"][0]["id"] == fact.id
     pytest.importorskip("mcp")
-    from unimem import mcp_server
     from tests.test_mcp_server import call
+    from unimem import mcp_server
 
     server = mcp_server.build_server(root, allow_approval=False)
     result = call(server, "explain_memory_about_me", subject="person", context=["project:a"])
@@ -324,8 +324,8 @@ def test_expiry_purges_native_sources_lessons_and_traces(tmp_path, monkeypatch):
 
 
 def test_gateway_capability_purpose_is_bound_to_headers_and_body(tmp_path):
-    from unimem import capabilities, gateway
     from tests.test_capabilities import A_KEY
+    from unimem import capabilities, gateway
 
     root, _ = test_capability_io.prepare(tmp_path)
     fact = hierarchical.append_facts(root, [{"statement": "Private care limit.", "scopes": ["project:a"]}])[0][0]

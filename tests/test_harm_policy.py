@@ -5,8 +5,8 @@ import os
 
 import pytest
 
-from unimem import evidence, experiment, harm, holdout_io, receipts, retrieval_io
 from tests.test_mcp_server import _write_lesson, call, cli
+from unimem import evidence, experiment, harm, holdout_io, receipts, retrieval_io
 
 TASK = "customer asks for a password reset email"
 BAD = "reset-link-in-chat"

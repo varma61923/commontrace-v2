@@ -11,11 +11,11 @@ from dataclasses import dataclass
 
 from sqlalchemy import select, text
 
-from unimem import configuration, embeddings
-from unimem.vector_store import PostgresVectorIndex
 from hub.db import session_scope
 from hub.memory_projection import HostedProjection, ProjectionIdentity
 from hub.models import MemoryChangeClock, MemoryProjectionState
+from unimem import configuration, embeddings
+from unimem.vector_store import PostgresVectorIndex
 
 
 class LocalEmbedder:
