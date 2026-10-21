@@ -3,8 +3,8 @@ import json
 import os
 import re
 
-from commontrace.cli import main
-from commontrace.memory_journal import Journal
+from unimem.cli import main
+from unimem.memory_journal import Journal
 
 
 def _write_jsonl(path, rows):
@@ -137,7 +137,7 @@ def test_up_keeps_private_history_opt_in_and_imports_only_cwd_attributed_session
 
 
 def test_agent_history_discovery_reports_bounded_partial_coverage(tmp_path):
-    from commontrace.history_import import discover_agent_history
+    from unimem.history_import import discover_agent_history
 
     root = tmp_path / "repo"
     home = tmp_path / "home"
@@ -159,7 +159,7 @@ def test_agent_history_discovery_reports_bounded_partial_coverage(tmp_path):
 
 
 def test_agent_history_total_byte_cap_is_reported(tmp_path, monkeypatch):
-    import commontrace.history_import as history_import
+    import unimem.history_import as history_import
 
     root = tmp_path / "repo"
     home = tmp_path / "home"
@@ -184,7 +184,7 @@ def test_agent_history_total_byte_cap_is_reported(tmp_path, monkeypatch):
 
 
 def test_agent_history_aggregate_probe_cap_persists_partial_coverage(tmp_path, monkeypatch):
-    import commontrace.history_import as history_import
+    import unimem.history_import as history_import
 
     root = tmp_path / "repo"
     home = tmp_path / "home"
@@ -218,7 +218,7 @@ def test_agent_history_aggregate_probe_cap_persists_partial_coverage(tmp_path, m
 
 
 def test_cursor_and_gemini_history_discovery_fail_closed_without_project_cwd(tmp_path):
-    from commontrace.history_import import discover_agent_history, record_discovery_coverage
+    from unimem.history_import import discover_agent_history, record_discovery_coverage
 
     root = tmp_path / "repo"
     home = tmp_path / "home"

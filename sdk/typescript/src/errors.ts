@@ -22,7 +22,7 @@ export class HubToolError extends Error {
 /** The client refused to start: the Hub URL is one it will not send an
  * API key to (a non-http(s) scheme, plaintext http:// to anything but
  * loopback, or a link-local / cloud-metadata address). Same rules as
- * commontrace/hub_client.py's `_validate_hub_url`. Not retryable: the
+ * unimem/hub_client.py's `_validate_hub_url`. Not retryable: the
  * configuration has to change. */
 export class HubConfigurationError extends Error {
   constructor(message: string) {

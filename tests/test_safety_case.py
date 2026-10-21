@@ -1,6 +1,6 @@
 import pytest
 
-from commontrace import safety_case
+from unimem import safety_case
 
 
 def test_dependency_change_stales_only_affected_evidence_and_queues_revalidation(tmp_path):
@@ -112,7 +112,7 @@ def test_node_ids_are_unique_across_claims_arguments_and_evidence(tmp_path):
 
 
 def test_completed_revalidation_cannot_replay_a_historical_pending_event(tmp_path, monkeypatch):
-    from commontrace import world_model_trust
+    from unimem import world_model_trust
 
     root = str(tmp_path)
     safety_case.add_claim(root, "stop", hazard="collision", statement="stop")

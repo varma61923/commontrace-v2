@@ -7,8 +7,8 @@ from fractions import Fraction
 
 import pytest
 
-from commontrace import frontier_protocol as fp
-from commontrace import zk_effect as zk
+from unimem import frontier_protocol as fp
+from unimem import zk_effect as zk
 
 
 def witness(count=200, *, dp=False, kind="effect"):

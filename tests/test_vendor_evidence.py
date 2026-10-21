@@ -4,8 +4,8 @@ import json
 
 import pytest
 
-from commontrace import frontier_protocol as fp
-from commontrace import holdout_io, lineage, memory_adapters
+from unimem import frontier_protocol as fp
+from unimem import holdout_io, lineage, memory_adapters
 
 FIXTURES = {
     "mem0": {"results": [{"id": "m1", "memory": "Verify the object class"}]},

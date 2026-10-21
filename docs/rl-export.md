@@ -8,9 +8,9 @@ it does not prove that an agent executed the assigned treatment.
 Export the complete admitted cohort, including unsuccessful occasions:
 
 ```sh
-commontrace experiment export-rl '{"units":["memory-id"],"context":["team:release"]}' --format dpo
-commontrace experiment export-rl request.json --format advantage
-commontrace experiment export-rl request.json --format replay
+unimem experiment export-rl '{"units":["memory-id"],"context":["team:release"]}' --format dpo
+unimem experiment export-rl request.json --format advantage
+unimem experiment export-rl request.json --format replay
 ```
 
 The authenticated gateway accepts the same request plus `format` at

@@ -14,10 +14,10 @@ import time
 from dataclasses import dataclass
 from typing import Protocol
 
-from commontrace import memory_guard
 from hub.config import HubConfig
+from unimem import memory_guard
 
-logger = logging.getLogger("commontrace.hub.abuse")
+logger = logging.getLogger("unimem.hub.abuse")
 
 _URL_RE = re.compile(r"https?://", re.IGNORECASE)
 

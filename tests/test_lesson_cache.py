@@ -1,6 +1,6 @@
 import os
 
-from commontrace import frontmatter, lesson_cache, paths, retrieval
+from unimem import frontmatter, lesson_cache, paths, retrieval
 
 
 def _write_lesson(root, slug, description="", applies_when="", tags=None,
@@ -213,7 +213,7 @@ class TestScoringIsProcessOrderIndependent:
 
         script = (
             "import sys; sys.path.insert(0, %r)\n"
-            "from commontrace import retrieval, lesson_cache\n"
+            "from unimem import retrieval, lesson_cache\n"
             "lessons, terms = lesson_cache.load_active_with_terms(%r)\n"
             "ranked = retrieval.rank_lessons("
             "    'the vendor form was rejected instead of approved', lessons,"

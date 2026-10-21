@@ -7,8 +7,8 @@ import json
 
 import pytest
 
-from commontrace import commons_integrity as ci
-from commontrace import memory_guard as guard
+from unimem import commons_integrity as ci
+from unimem import memory_guard as guard
 
 KEY = b"a" * 32
 RECORD = {"title": "Bounded pool", "context_text": "Pool exhaustion", "solution_text": "Bound concurrency",
@@ -18,7 +18,7 @@ RECORD = {"title": "Bounded pool", "context_text": "Pool exhaustion", "solution_
 @pytest.mark.parametrize("kind", ["RSA PRIVATE KEY", "PRIVATE KEY", "ENCRYPTED PRIVATE KEY", "OPENSSH PRIVATE KEY", "PGP PRIVATE KEY BLOCK"])
 @pytest.mark.parametrize("complete", [False, True])
 def test_entire_private_key_is_redacted(kind: str, complete: bool) -> None:
-    from commontrace.defense import apply_redaction
+    from unimem.defense import apply_redaction
 
     block = f"-----BEGIN {kind}-----\nSENSITIVEBASE64BODY\n"
     if complete:
@@ -91,9 +91,9 @@ def test_numeric_credentials_are_not_exempt_from_named_field_redaction() -> None
 
 
 def test_trace_writer_redacts_nested_metadata_before_persistence(tmp_path, monkeypatch) -> None:
-    from commontrace.trace_io import write_new
+    from unimem.trace_io import write_new
 
-    monkeypatch.setenv("COMMONTRACE_REDACT_PII", "1")
+    monkeypatch.setenv("UNIMEM_REDACT_PII", "1")
     path = write_new(str(tmp_path), title="Memory", context="Client 192.0.2.9",
                      solution="Retry", tags=["ghp_" + "a" * 36],
                      extra={"extensions": {"password": "short", "contact": "alice@example.com"}})
@@ -149,15 +149,15 @@ def test_noncanonical_or_oversize_payloads_fail_closed(record) -> None:
 
 
 def test_key_rotation_and_required_policy(monkeypatch) -> None:
-    monkeypatch.setenv("COMMONTRACE_COMMONS_VERIFY_KEY", KEY.decode())
-    monkeypatch.setenv("COMMONTRACE_COMMONS_VERIFY_KEY_PREVIOUS", "b" * 32)
+    monkeypatch.setenv("UNIMEM_COMMONS_VERIFY_KEY", KEY.decode())
+    monkeypatch.setenv("UNIMEM_COMMONS_VERIFY_KEY_PREVIOUS", "b" * 32)
     old = ci.sign_record(RECORD, b"b" * 32, key_id="previous")
     ci.verify_records([old])
     with pytest.raises(ci.CommonsIntegrityError, match="unsigned"):
         ci.verify_records([dict(RECORD)])
-    monkeypatch.delenv("COMMONTRACE_COMMONS_VERIFY_KEY")
-    monkeypatch.delenv("COMMONTRACE_COMMONS_VERIFY_KEY_PREVIOUS")
-    monkeypatch.setenv("COMMONTRACE_COMMONS_REQUIRE_SIGNED", "1")
+    monkeypatch.delenv("UNIMEM_COMMONS_VERIFY_KEY")
+    monkeypatch.delenv("UNIMEM_COMMONS_VERIFY_KEY_PREVIOUS")
+    monkeypatch.setenv("UNIMEM_COMMONS_REQUIRE_SIGNED", "1")
     with pytest.raises(ci.CommonsIntegrityError, match="no trusted key"):
         ci.verification_policy()
 
@@ -165,7 +165,7 @@ def test_key_rotation_and_required_policy(monkeypatch) -> None:
 def test_verification_file_secret_is_resolved_fresh(tmp_path, monkeypatch) -> None:
     keyfile = tmp_path / "key"
     keyfile.write_text(KEY.decode())
-    monkeypatch.setenv("COMMONTRACE_COMMONS_VERIFY_KEY_FILE", str(keyfile))
+    monkeypatch.setenv("UNIMEM_COMMONS_VERIFY_KEY_FILE", str(keyfile))
     signed = ci.sign_record(RECORD, KEY)
     ci.verify_records([signed])
     keyfile.write_text("b" * 32)
@@ -174,11 +174,11 @@ def test_verification_file_secret_is_resolved_fresh(tmp_path, monkeypatch) -> No
 
 
 def test_hub_export_rejects_tampering_before_download_is_written(tmp_path, monkeypatch) -> None:
-    from commontrace import hub_client
-    from commontrace.cli import main
-    from commontrace.commands import commons_cmd
+    from unimem import hub_client
+    from unimem.cli import main
+    from unimem.commands import commons_cmd
 
-    monkeypatch.setenv("COMMONTRACE_COMMONS_VERIFY_KEY", KEY.decode())
+    monkeypatch.setenv("UNIMEM_COMMONS_VERIFY_KEY", KEY.decode())
     signed = ci.sign_record(RECORD, KEY)
     signed["solution_text"] = "leak-raw-sensitive-payload"
 
@@ -201,7 +201,7 @@ def test_hub_export_rejects_tampering_before_download_is_written(tmp_path, monke
 
 @pytest.mark.parametrize("text, secret", [
     ("key sk-proj-" + "a" * 48, "sk-proj-" + "a" * 48),
-    ("key ct_live_" + "a" * 43, "ct_live_" + "a" * 43),
+    ("key unimem_live_" + "a" * 43, "unimem_live_" + "a" * 43),
     ("AWS_SECRET_ACCESS_KEY=short-credential", "short-credential"),
 ])
 def test_local_and_modern_provider_credentials_do_not_persist(text: str, secret: str) -> None:
@@ -224,9 +224,9 @@ def test_hub_signing_key_is_hidden_and_invalid_keys_fail_closed() -> None:
 def test_capture_privacy_policy_scrubs_the_filename_and_tags(tmp_path, monkeypatch) -> None:
     from pathlib import Path
 
-    from commontrace.cli import main
+    from unimem.cli import main
 
-    monkeypatch.setenv("COMMONTRACE_REDACT_PII", "1")
+    monkeypatch.setenv("UNIMEM_REDACT_PII", "1")
     assert main(["capture", "--dest", str(tmp_path), "--title", "alice@example.com 192.0.2.9",
                  "--context", "Contact alice@example.com", "--solution", "Rotate",
                  "--tags", "ghp_" + "a" * 36]) == 0
@@ -238,7 +238,7 @@ def test_capture_privacy_policy_scrubs_the_filename_and_tags(tmp_path, monkeypat
 
 def test_unreadable_verification_secret_has_sanitized_diagnostic(tmp_path, monkeypatch) -> None:
     private_name = tmp_path / "sensitive-customer-name"
-    monkeypatch.setenv("COMMONTRACE_COMMONS_VERIFY_KEY_FILE", str(private_name))
+    monkeypatch.setenv("UNIMEM_COMMONS_VERIFY_KEY_FILE", str(private_name))
     with pytest.raises(ci.CommonsIntegrityError) as error:
         ci.verification_policy()
     assert "sensitive-customer-name" not in str(error.value)
@@ -258,7 +258,7 @@ def test_ipv6_sentence_punctuation_survives_redaction() -> None:
 
 
 def test_standalone_defense_uses_capture_credential_rules() -> None:
-    from commontrace.defense import DefenseAction, screen_content
+    from unimem.defense import DefenseAction, screen_content
 
     decision = screen_content("Authorization: Bearer opaque-session; password='short'")
     assert decision.action == DefenseAction.REDACT
@@ -269,7 +269,7 @@ def test_standalone_defense_uses_capture_credential_rules() -> None:
 
 
 def test_inline_private_key_marker_preserves_unaffected_prose() -> None:
-    from commontrace.defense import apply_redaction
+    from unimem.defense import apply_redaction
 
     source = "[-----BEGIN ENCRYPTED PRIVATE KEY-----] ordinary suffix alice@example.com"
     assert guard.redact_secrets(source)[0].endswith("] ordinary suffix alice@example.com")

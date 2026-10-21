@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from commontrace import hub_client, templates
+from unimem import hub_client, templates
 
 try:  # pragma: no cover - which branch runs depends only on the interpreter
     _ExcGroup = ExceptionGroup  # type: ignore[name-defined]  # noqa: F821
@@ -191,7 +191,7 @@ class TestUnfilledPlaceholders:
 
 class TestScaffoldingNeverBecomesAnActiveLesson:
     def _candidate(self, store):
-        from commontrace.cli import main
+        from unimem.cli import main
         main(["init", "--agent-type", "support", "--dest", str(store)])
         for i in range(3):
             main(["capture", "--title", f"Gateway 409 refund {i}",
@@ -207,32 +207,32 @@ class TestScaffoldingNeverBecomesAnActiveLesson:
         return lessons[0].stem[len("lesson_"):]
 
     def test_approve_refuses_a_lesson_that_is_still_scaffolding(self, tmp_path, capsys):
-        from commontrace.cli import main
+        from unimem.cli import main
         slug = self._candidate(tmp_path)
         capsys.readouterr()
         assert main(["lesson", "approve", slug, "--dest", str(tmp_path)]) == 1
         assert "unedited scaffolding" in capsys.readouterr().err
 
     def test_force_approves_but_says_so(self, tmp_path, capsys):
-        from commontrace.cli import main
+        from unimem.cli import main
         slug = self._candidate(tmp_path)
         capsys.readouterr()
         assert main(["lesson", "approve", slug, "--force", "--dest", str(tmp_path)]) == 0
         assert "warning" in capsys.readouterr().err
 
     def test_validate_fails_an_active_lesson_that_is_still_scaffolding(self, tmp_path):
-        from commontrace.cli import main
+        from unimem.cli import main
         slug = self._candidate(tmp_path)
         main(["lesson", "approve", slug, "--force", "--dest", str(tmp_path)])
         assert main(["lesson", "validate", "--dest", str(tmp_path)]) == 1
 
     def test_validate_leaves_a_review_candidate_alone(self, tmp_path):
-        from commontrace.cli import main
+        from unimem.cli import main
         self._candidate(tmp_path)
         assert main(["lesson", "validate", "--dest", str(tmp_path)]) == 0
 
     def test_taxonomy_does_not_count_scaffolding_as_coverage(self, tmp_path, capsys):
-        from commontrace.cli import main
+        from unimem.cli import main
         slug = self._candidate(tmp_path)
         main(["lesson", "approve", slug, "--force", "--dest", str(tmp_path)])
         capsys.readouterr()
@@ -242,8 +242,8 @@ class TestScaffoldingNeverBecomesAnActiveLesson:
         assert "Gaps (recurring, no lesson yet): **1**" in out
 
     def test_lesson_new_scaffolds_at_review_not_active(self, tmp_path):
-        from commontrace import frontmatter
-        from commontrace.cli import main
+        from unimem import frontmatter
+        from unimem.cli import main
         main(["init", "--agent-type", "code", "--dest", str(tmp_path)])
         main(["lesson", "new", "--slug", "fresh", "--description", "d",
               "--agent-type", "code", "--domain", "testing", "--dest", str(tmp_path)])
@@ -251,8 +251,8 @@ class TestScaffoldingNeverBecomesAnActiveLesson:
         assert fm["status"] == "review"
 
     def test_push_refuses_to_publish_scaffolding(self, tmp_path):
-        from commontrace import frontmatter
-        from commontrace.cli import main
+        from unimem import frontmatter
+        from unimem.cli import main
         slug = self._candidate(tmp_path)
         main(["lesson", "approve", slug, "--force", "--dest", str(tmp_path)])
         path = tmp_path / "memory" / "lessons" / f"lesson_{slug}.md"
@@ -262,7 +262,7 @@ class TestScaffoldingNeverBecomesAnActiveLesson:
         async def explode(*a, **kw):
             raise AssertionError("scaffolding must not be sent to the Hub")
 
-        import commontrace.hub_client as hc
+        import unimem.hub_client as hc
         original, hc._call_tool = hc._call_tool, explode
         try:
             results = asyncio.run(hc.push_active_lessons("https://hub.example/mcp", "k", str(tmp_path)))
@@ -277,7 +277,7 @@ class TestPulledTracesAreNeverPushedBack:
     def test_a_pulled_trace_is_not_a_push_candidate(self, tmp_path):
         import os
 
-        from commontrace import hub_client, paths
+        from unimem import hub_client, paths
 
         tdir = paths.traces_dir(str(tmp_path))
         os.makedirs(tdir)
@@ -291,8 +291,8 @@ class TestPulledTracesAreNeverPushedBack:
         assert candidates == ["2026-01-01_local_abc12345.md"]
 
     def test_locally_captured_traces_are_still_pushed(self, tmp_path):
-        from commontrace import hub_client
-        from commontrace.cli import main
+        from unimem import hub_client
+        from unimem.cli import main
 
         main(["init", "--agent-type", "support", "--dest", str(tmp_path)])
         main(["capture", "--title", "Real capture", "--context", "c", "--solution", "s",

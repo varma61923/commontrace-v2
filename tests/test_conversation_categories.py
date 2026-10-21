@@ -5,8 +5,8 @@ import sqlite3
 
 import pytest
 
-from commontrace.conversation import Options, Store, profile, recall
-from commontrace.conversation.search import asks_current, is_broad
+from unimem.conversation import Options, Store, profile, recall
+from unimem.conversation.search import asks_current, is_broad
 
 LEX = dict(embedder=None, rerank=None)
 
@@ -140,7 +140,7 @@ def test_neighbours_are_time_gated(tmp_path):
 
 
 def test_list_questions_search_each_aspect():
-    from commontrace.conversation.search import subqueries
+    from unimem.conversation.search import subqueries
 
     subs = subqueries("Can you give a comprehensive summary of my budget tracker project, including the key "
                       "features implemented, security enhancements, and documentation efforts?")
@@ -160,12 +160,12 @@ def test_self_introductions_are_identity_and_answer_profession_questions(tmp_pat
 
 
 def test_cross_encoder_blends_with_the_fused_rank(monkeypatch):
-    from commontrace import rerank_arm
-    from commontrace.conversation import search
+    from unimem import rerank_arm
+    from unimem.conversation import search
 
     class FakeStore:
         def turns(self, ids):
-            from commontrace.conversation.store import Turn
+            from unimem.conversation.store import Turn
             return {i: Turn(i, "s", i, None, "user", "user", f"turn {i}", ()) for i in ids}
 
     monkeypatch.setattr(rerank_arm, "ready", lambda mode: "")

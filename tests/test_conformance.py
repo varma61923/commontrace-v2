@@ -7,11 +7,11 @@ import threading
 
 import pytest
 
-from commontrace import conformance, gateway, holdout_io, paths
-from commontrace.cli import main
+from unimem import conformance, gateway, holdout_io, paths
+from unimem.cli import main
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-REFERENCE = f"{sys.executable} -m commontrace.conformance"
+REFERENCE = f"{sys.executable} -m unimem.conformance"
 
 
 def test_the_committed_vectors_are_exactly_what_the_reference_produces():
@@ -133,8 +133,8 @@ def test_the_report_names_what_it_does_not_test():
     assert "1/1 checks passed" in text and "not tested" in text and "statistics" in text
 
 
-@pytest.mark.skipif(not os.environ.get("COMMONTRACE_CONFORMANCE_GO") or shutil.which("go") is None,
-                    reason="set COMMONTRACE_CONFORMANCE_GO=1 with Go installed (downloads golang.org/x/crypto)")
+@pytest.mark.skipif(not os.environ.get("UNIMEM_CONFORMANCE_GO") or shutil.which("go") is None,
+                    reason="set UNIMEM_CONFORMANCE_GO=1 with Go installed (downloads golang.org/x/crypto)")
 def test_an_independent_go_implementation_written_from_the_spec_passes_three_layers(tmp_path):
     src = os.path.join(ROOT, "protocol", "conformance", "examples", "go")
     binary = tmp_path / "conf"

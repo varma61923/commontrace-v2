@@ -4,7 +4,7 @@ import json
 import os
 
 from benchmarks.robot_fleet_demo import _png
-from commontrace import gateway, paths, trace_io
+from unimem import gateway, paths, trace_io
 
 TOKEN = "e" * 40
 

@@ -6,7 +6,7 @@ import os
 
 import pytest
 
-from commontrace import (
+from unimem import (
     frontmatter,
     holdout_io,
     lesson_io,
@@ -14,7 +14,7 @@ from commontrace import (
     retrieval,
     retrieval_io,
 )
-from commontrace.commands import query_cmd
+from unimem.commands import query_cmd
 
 
 class TestEligibilityLabel:
@@ -100,7 +100,7 @@ class TestConfig:
         assert config.scorer == "count"
 
     def test_redundancy_threshold_is_off_unless_the_store_asked(self, tmp_path):
-        from commontrace import dosage
+        from unimem import dosage
 
         assert (
             retrieval_io.load_config(str(tmp_path)).redundancy_threshold
@@ -113,7 +113,7 @@ class TestConfig:
         assert retrieval_io.load_config(str(tmp_path)).redundancy_threshold == pytest.approx(0.4)
 
     def test_an_out_of_range_redundancy_threshold_degrades_rather_than_raising(self, tmp_path):
-        from commontrace import dosage
+        from unimem import dosage
 
         _write_config(str(tmp_path), redundancy_threshold=1.7)
         assert (
@@ -134,7 +134,7 @@ class TestConfig:
 
 class TestDriftIsCaught:
     def _rows(self, *labels):
-        from commontrace import integrity
+        from unimem import integrity
 
         return [
             integrity.Assignment(
@@ -146,13 +146,13 @@ class TestDriftIsCaught:
         ]
 
     def test_one_configuration_throughout_is_ok(self):
-        from commontrace import integrity
+        from unimem import integrity
 
         finding = integrity.check_scorer_drift(self._rows("idf-v2", "idf-v2"))
         assert finding.severity == integrity.SEVERITY_OK
 
     def test_turning_fusion_on_mid_run_invalidates_the_experiment(self):
-        from commontrace import integrity
+        from unimem import integrity
 
         finding = integrity.check_scorer_drift(self._rows(
             retrieval_io.eligibility_label("idf-v2", retrieval_io.FUSION_NONE),
@@ -162,7 +162,7 @@ class TestDriftIsCaught:
         assert "rrf(idf-v2+semantic)" in finding.headline
 
     def test_a_consistently_fused_run_is_ok(self):
-        from commontrace import integrity
+        from unimem import integrity
 
         label = retrieval_io.eligibility_label("idf-v2", retrieval_io.FUSION_RRF)
         finding = integrity.check_scorer_drift(self._rows(label, label))
@@ -381,7 +381,7 @@ class TestMcpSurfaceIsHonestAboutFusion:
         pytest.importorskip("mcp")
         import asyncio
 
-        from commontrace import mcp_server, semantic_arm
+        from unimem import mcp_server, semantic_arm
 
         monkeypatch.setattr(semantic_arm, "available", lambda: False)
         _write_config(store, fusion="rrf")
@@ -400,7 +400,7 @@ class TestMcpSurfaceIsHonestAboutFusion:
         pytest.importorskip("mcp")
         import asyncio
 
-        from commontrace import mcp_server
+        from unimem import mcp_server
 
         server = mcp_server.build_server(store)
         result = asyncio.run(server.call_tool(
@@ -415,7 +415,7 @@ class TestMcpSurfaceIsHonestAboutFusion:
 
 class TestTheSemanticOnlyPathIsLabelled:
     def test_its_assignments_record_the_semantic_label(self, store, monkeypatch, capsys):
-        from commontrace import holdout_io
+        from unimem import holdout_io
 
         holdout_io.configure(store, rate=0.5)
         monkeypatch.setattr(query_cmd, "has_attention_deps", lambda: True)
@@ -432,7 +432,7 @@ class TestTheSemanticOnlyPathIsLabelled:
         assert {r.get("scorer") for r in rows if r["occasion_id"] == "sem-1"} == {"semantic-dosed"}
 
     def test_a_log_mixing_it_with_lexical_is_drift(self):
-        from commontrace import integrity
+        from unimem import integrity
 
         rows = [
             integrity.Assignment(lesson="a", occasion_id=f"o{i}", injected=bool(i % 2),

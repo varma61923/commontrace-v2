@@ -95,7 +95,7 @@ def test_exit_code_2_on_missing_required_positional(cli_runner: Callable[..., CL
 def test_clean_error_message_no_traceback_on_exit_1(cli_runner: Callable[..., CLIResult], isolated_store: Path) -> None:
     res = cli_runner(["lesson", "validate", str(isolated_store / "memory"), "--dest", str(isolated_store)])
     assert res.exit_code == 1
-    assert "[commontrace] error:" in res.stderr
+    assert "[unimem] error:" in res.stderr
     assert "Traceback (most recent call last)" not in res.stderr
 
 
@@ -168,7 +168,7 @@ def test_capture_writes_valid_schema_and_validates(
 def test_lesson_new_refuses_oversized_payload(
     isolated_store: Path,
 ) -> None:
-    from commontrace.commands._validators import REFUSE_CHARS, check_text_size
+    from unimem.commands._validators import REFUSE_CHARS, check_text_size
     fields = {"description": "X" * (REFUSE_CHARS + 100), "applies_when": "always"}
     assert check_text_size(fields, what="lesson") is False
 
@@ -220,7 +220,7 @@ def test_query_task_resembling_builtin_flag(
 ) -> None:
     res = cli_runner(["query", "--lexical", "--dest", str(isolated_store), "--", "--help needed for build"])
     assert res.exit_code == 0
-    assert "usage: commontrace query" not in res.stdout, "Should not print usage help when delimited"
+    assert "usage: unimem query" not in res.stdout, "Should not print usage help when delimited"
 
 
 def test_query_with_spaces_and_quotes(
@@ -301,4 +301,4 @@ def test_install_sh_supports_in_place_flag() -> None:
 
 def test_install_sh_references_valid_reference_paths() -> None:
     content = INSTALL_SCRIPT.read_text(encoding="utf-8")
-    assert "commontrace/reference/build_index.py" in content or "commontrace.cli index" in content or "commontrace index" in content or "memory/attention/build_index.py" in content
+    assert "unimem/reference/build_index.py" in content or "unimem.cli index" in content or "unimem index" in content or "memory/attention/build_index.py" in content

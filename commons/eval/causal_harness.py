@@ -4,8 +4,8 @@ import random
 import shutil
 import tempfile
 
-from commontrace import experiment, holdout_io, integrity
-from commontrace.commands import experiment_cmd
+from unimem import experiment, holdout_io, integrity
+from unimem.commands import experiment_cmd
 
 SEEDS = list(range(30))
 PER_ARM = 150
@@ -13,7 +13,7 @@ PASS_THRESHOLD = 0.90
 
 
 def _fresh_root() -> str:
-    return tempfile.mkdtemp(prefix="commontrace-causal-harness-")
+    return tempfile.mkdtemp(prefix="unimem-causal-harness-")
 
 
 def _analyze(root: str) -> tuple[integrity.IntegrityReport, dict[str, experiment.CausalEffect]]:
@@ -104,7 +104,7 @@ SCENARIOS = (
 
 
 def main() -> int:
-    print(f"commontrace causal-detection harness -- {len(SEEDS)} seeds per scenario, PASS at >={PASS_THRESHOLD:.0%}\n")
+    print(f"unimem causal-detection harness -- {len(SEEDS)} seeds per scenario, PASS at >={PASS_THRESHOLD:.0%}\n")
     all_ok = True
     for scenario in SCENARIOS:
         result = scenario()

@@ -5,17 +5,17 @@ import sqlite3
 
 import pytest
 
-from commontrace.conversation import Options, Store, recall
-from commontrace.conversation.answer import answer
-from commontrace.conversation.extract import extract
-from commontrace.conversation.summary import extractive, summarize
+from unimem.conversation import Options, Store, recall
+from unimem.conversation.answer import answer
+from unimem.conversation.extract import extract
+from unimem.conversation.summary import extractive, summarize
 
 LEXICAL = Options(embedder=None)
 
 
 @pytest.fixture(autouse=True)
 def _lexical(monkeypatch):
-    monkeypatch.setenv("COMMONTRACE_CONVERSATION_EMBEDDER", "none")
+    monkeypatch.setenv("UNIMEM_CONVERSATION_EMBEDDER", "none")
 
 
 def _seed(root):
@@ -85,7 +85,7 @@ class TestMigration:
             UPDATE meta SET value='1' WHERE key='schema';""")
         db.close()
         store = Store(str(tmp_path), "old")
-        from commontrace.conversation.store import SCHEMA_VERSION
+        from unimem.conversation.store import SCHEMA_VERSION
 
         assert store.get_meta("schema") == str(SCHEMA_VERSION)
         assert [f["statement"] for f in store.facts()] == ["I love tea."]
@@ -157,7 +157,7 @@ class TestExtraction:
         assert extract(store, complete=FakeModel())["calls"] == 0
 
     def test_unparseable_replies_add_nothing(self, tmp_path):
-        from commontrace.conversation.store import ConversationError
+        from unimem.conversation.store import ConversationError
 
         store = _seed(str(tmp_path))
         before = store.facts(history=True)
@@ -186,7 +186,7 @@ class TestAnswer:
 
 class TestPortability:
     def test_export_import_round_trip(self, tmp_path, capsys, monkeypatch):
-        from commontrace.cli import main
+        from unimem.cli import main
 
         root = str(tmp_path)
         store = _seed(root)
@@ -204,7 +204,7 @@ class TestPortability:
         assert Store(root, "copy").stats()["turns"] == 5
 
     def test_cli_forget_and_profile_history(self, tmp_path, capsys):
-        from commontrace.cli import main
+        from unimem.cli import main
 
         root = str(tmp_path)
         _seed(root)
@@ -215,19 +215,19 @@ class TestPortability:
         assert Store(root, "ana").stats()["sessions"] == 1
 
     def test_cli_answer_without_a_model_refuses(self, tmp_path, monkeypatch, capsys):
-        from commontrace.cli import main
+        from unimem.cli import main
 
-        for name in ("COMMONTRACE_LLM_API_KEY", "COMMONTRACE_LLM_PROVIDER"):
+        for name in ("UNIMEM_LLM_API_KEY", "UNIMEM_LLM_PROVIDER"):
             monkeypatch.delenv(name, raising=False)
         root = str(tmp_path)
         _seed(root)
         assert main(["conversation", "answer", "ana", "What is the cat called?", "--dest", root]) == 2
-        assert "COMMONTRACE_LLM" in capsys.readouterr().err
+        assert "UNIMEM_LLM" in capsys.readouterr().err
 
 
 class TestEntitiesAndPromotion:
     def test_entities_are_indexed_and_backfilled(self, tmp_path):
-        from commontrace.conversation import profile
+        from unimem.conversation import profile
 
         assert profile.entities("Hey Mel! I read \"The Night Circus\" at the LGBTQ center.") == \
             {"mel", "night circus", "lgbtq"}
@@ -245,7 +245,7 @@ class TestEntitiesAndPromotion:
         assert r.explain["entities"] == ["miso"] and "cat named Miso" in r.context
 
     def test_promote_copies_the_current_profile_into_facts(self, tmp_path):
-        from commontrace import hierarchical
+        from unimem import hierarchical
 
         store = _seed(str(tmp_path))
         out = store.promote()
@@ -258,7 +258,7 @@ class TestEntitiesAndPromotion:
         pytest.importorskip("mcp")
         import asyncio
 
-        from commontrace import mcp_server
+        from unimem import mcp_server
 
         _seed(str(tmp_path))
         server = mcp_server.build_server(str(tmp_path))
@@ -288,8 +288,8 @@ class TestEntitiesAndPromotion:
 def test_future_assertions_remain_known_now_without_superseding_current_job(tmp_path):
     import json
 
-    from commontrace.conversation.extract import extract
-    from commontrace.conversation.store import Store
+    from unimem.conversation.extract import extract
+    from unimem.conversation.store import Store
 
     with Store(str(tmp_path), "project") as store:
         store.add("session", [{"speaker": "user", "text": "Ana works at Acme.", "at": "2026-10-14"},
@@ -317,7 +317,7 @@ def test_future_assertions_remain_known_now_without_superseding_current_job(tmp_
 
 
 def test_explicit_vector_preparation_requires_capability_before_writing_source(tmp_path, monkeypatch):
-    from commontrace.conversation import ConversationError, embed
+    from unimem.conversation import ConversationError, embed
 
     monkeypatch.setattr(embed, "available_for", lambda tag: False)
     with Store(str(tmp_path), "project") as store:

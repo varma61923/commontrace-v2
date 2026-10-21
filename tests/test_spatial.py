@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from commontrace import frontier_protocol as fp
-from commontrace import spatial
+from unimem import frontier_protocol as fp
+from unimem import spatial
 
 CONTEXT = {"tenant": "acme", "site": "depot", "robot": "r7"}
 
@@ -31,7 +31,7 @@ def test_moves_corrections_and_record_time_beliefs(tmp_path):
 
 
 def test_bounded_updates_and_planner_tools(tmp_path):
-    from commontrace.mcp_server import build_server
+    from unimem.mcp_server import build_server
     pytest.importorskip("mcp")
     from tests.test_mcp_server import call
     root = str(tmp_path)
@@ -42,7 +42,7 @@ def test_bounded_updates_and_planner_tools(tmp_path):
 
 
 def test_scene_objects_obey_canonical_forgetting_and_validity(tmp_path):
-    from commontrace import hierarchical
+    from unimem import hierarchical
     root = str(tmp_path)
     item = spatial.update(root, delta([1, 2, 3], "2026-01-01T00:00:00Z"), context=CONTEXT)
     hierarchical.invalidate_fact(root, item["fact_id"], at="2026-02-01T00:00:00Z")
@@ -53,7 +53,7 @@ def test_scene_objects_obey_canonical_forgetting_and_validity(tmp_path):
 
 
 def test_resightings_reinforce_placements_and_respect_invalidation(tmp_path):
-    from commontrace import hierarchical
+    from unimem import hierarchical
 
     root = str(tmp_path)
     first = spatial.update(root, delta([1, 2, 3], "2026-01-01T00:00:00Z"), context=CONTEXT)

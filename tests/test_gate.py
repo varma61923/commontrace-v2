@@ -5,8 +5,8 @@ from xml.etree import ElementTree
 
 import pytest
 
-from commontrace import evidence, experiment, frontmatter, gate, paths, retrieval_io, templates
-from commontrace.cli import main
+from unimem import evidence, experiment, frontmatter, gate, paths, retrieval_io, templates
+from unimem.cli import main
 
 
 @pytest.fixture
@@ -125,7 +125,7 @@ class TestFormats:
     def test_github_annotations_name_the_failure(self, root):
         _lesson(root, "unfinished", rule="TODO: one actionable sentence")
         out = gate.render_github(gate.run(root))
-        assert out.splitlines()[0].startswith("::error title=commontrace gate: scaffolding (unfinished)::")
+        assert out.splitlines()[0].startswith("::error title=unimem gate: scaffolding (unfinished)::")
 
     def test_json_round_trips(self, root):
         _lesson(root, "idempotency")

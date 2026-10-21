@@ -162,7 +162,7 @@ class TestItIsNotMeteredPerFailure:
 async def test_authenticated_export_binds_content_and_review_metadata(session_factory, config, orgs):
     import dataclasses
 
-    from commontrace.commons_integrity import CommonsIntegrityError, verify_record
+    from unimem.commons_integrity import CommonsIntegrityError, verify_record
 
     await _seed(session_factory, orgs["operator"], "Signed knowledge")
     key = "private-signing-key-" + "x" * 32

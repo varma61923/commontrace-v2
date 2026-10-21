@@ -1,6 +1,6 @@
-# Postgres for the CommonTrace Hub on AWS: encrypted with a customer-managed key, TLS required,
+# Postgres for the UniMem Hub on AWS: encrypted with a customer-managed key, TLS required,
 # multi-AZ, point-in-time recovery, and optional cross-region backup replication. It creates no
-# Hub workload and no ingress; deploy/helm/commontrace-hub does that.
+# Hub workload and no ingress; deploy/helm/unimem-hub does that.
 #
 # `terraform apply` creates billable resources in your account. Plan first; nothing here is applied
 # by CI.
@@ -68,7 +68,7 @@ resource "aws_db_instance" "this" {
   storage_encrypted     = true
   kms_key_id            = local.key_arn
 
-  db_name  = "commontrace_hub"
+  db_name  = "unimem_hub"
   username = "hub_owner"
   # The master password lives in Secrets Manager, rotated by RDS; it is never in state or in a variable.
   manage_master_user_password   = true

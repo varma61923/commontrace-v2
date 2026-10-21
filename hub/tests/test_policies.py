@@ -8,12 +8,12 @@ from dataclasses import replace
 import pytest
 from sqlalchemy import select
 
-from commontrace.memory_record import MemoryRecord
 from hub import auth, scopes
 from hub.db import session_scope
 from hub.memory_records import PostgresJournal
 from hub.models import MemoryPolicyState
 from hub.tests.test_rest import _app, _client, _key, _org_with_key
+from unimem.memory_record import MemoryRecord
 
 pytestmark = pytest.mark.asyncio
 

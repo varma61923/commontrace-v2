@@ -5,7 +5,7 @@ import contextlib
 import errno
 import os
 
-from commontrace import graph
+from unimem import graph
 
 BASE = "2024-01-01T00:00:00+00:00"
 

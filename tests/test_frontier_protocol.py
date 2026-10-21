@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from commontrace import frontier_protocol as fp
+from unimem import frontier_protocol as fp
 
 
 @pytest.mark.parametrize("value", [10**1000, -(10**1000), float("nan"), float("inf"), True, None])
@@ -59,7 +59,7 @@ def test_canonical_encoding_and_hashes_remain_compatible():
 
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf"), True])
 def test_json_schema_numeric_types_reject_nonfinite_values_and_booleans(value):
-    from commontrace.validate import validate
+    from unimem.validate import validate
 
     schema = {"properties": {"value": {"type": "number", "minimum": 0, "maximum": 1}}}
     assert validate({"value": value}, schema)
@@ -67,8 +67,8 @@ def test_json_schema_numeric_types_reject_nonfinite_values_and_booleans(value):
 
 
 def test_untrusted_numeric_dates_and_optimizer_scores_fail_closed():
-    from commontrace import oauth, optimizer_intake, telemetry
-    from commontrace.validate import finite_number
+    from unimem import oauth, optimizer_intake, telemetry
+    from unimem.validate import finite_number
 
     oversized = 10**1000
     assert not finite_number(oversized)
@@ -85,7 +85,7 @@ def test_untrusted_numeric_dates_and_optimizer_scores_fail_closed():
 
 
 def test_oauth_backoff_saturates_during_prolonged_issuer_outages():
-    from commontrace import oauth
+    from unimem import oauth
 
     config = oauth.OAuthConfig(issuer="https://issuer.example", audience="memory",
                               jwks_url="https://issuer.example/jwks")
@@ -101,7 +101,7 @@ def test_oauth_backoff_saturates_during_prolonged_issuer_outages():
 
 
 def test_oauth_server_cache_is_bounded_and_keeps_recent_issuers(monkeypatch):
-    from commontrace import oauth
+    from unimem import oauth
 
     monkeypatch.setattr(oauth, "_SERVERS", {})
     monkeypatch.setattr(oauth, "_MAX_SERVERS", 2)

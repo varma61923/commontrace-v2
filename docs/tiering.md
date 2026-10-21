@@ -7,10 +7,10 @@ reference implementation manages bounded JSON payloads, including embedding
 generations, and works without a cloud SDK.
 
 ```sh
-commontrace tier residency '{"namespace":"assembly","region":"eu","allowed_regions":["eu"],"cold_region":"eu","scopes":["project:assembly"]}' --dest ./store
-commontrace tier status '{"namespace":"assembly","region":"eu","context":["project:assembly"]}' --dest ./store
-commontrace tier hibernate '{"namespace":"assembly","region":"eu","context":["project:assembly"],"idle_seconds":3600}' --dest ./store
-commontrace tier warm '{"namespace":"assembly","region":"eu","context":["project:assembly"]}' --dest ./store
+unimem tier residency '{"namespace":"assembly","region":"eu","allowed_regions":["eu"],"cold_region":"eu","scopes":["project:assembly"]}' --dest ./store
+unimem tier status '{"namespace":"assembly","region":"eu","context":["project:assembly"]}' --dest ./store
+unimem tier hibernate '{"namespace":"assembly","region":"eu","context":["project:assembly"],"idle_seconds":3600}' --dest ./store
+unimem tier warm '{"namespace":"assembly","region":"eu","context":["project:assembly"]}' --dest ./store
 ```
 
 Configuration is immutable. Reads, writes, pre-warm, migration and embedding
@@ -41,7 +41,7 @@ withdrawal. Filesystem durability still depends on the storage stack honoring
 those operations. A namespace can reference at most 512 distinct active sources
 for migration admission.
 
-The default cold tier is `memory/tier-cold`. Install `commontrace[tier]` for S3
+The default cold tier is `memory/tier-cold`. Install `unimem[tier]` for S3
 or GCS, create `S3Cold(bucket, region)` or `GCSCold(bucket, region)`, and register
 the backend in the trusted operator process with `tiering.register_backend`.
 S3-compatible endpoints use an injected configured client. Tests use fake
@@ -56,9 +56,9 @@ unverified.
 ## Pre-warm before the turn
 
 ```python
-from commontrace import tiering
-from commontrace.client import MemoryClient
-from commontrace.robotics.bridge import RobotBridge
+from unimem import tiering
+from unimem.client import MemoryClient
+from unimem.robotics.bridge import RobotBridge
 
 warm = tiering.prewarmer(root, "assembly", region="eu", context=["project:assembly"])
 client = MemoryClient(root, context={"project": "assembly"}, prewarm=warm)
@@ -87,7 +87,7 @@ the predicate-pushdown motivation of ACORN (arXiv:2403.04871). Exact SQLite test
 match filtering the complete candidate set before top-k. Approximate indexes
 can have different recall after filtering; no universal ANN equality is claimed.
 
-`commontrace tier reembed` accepts an operator-pinned model fingerprint,
+`unimem tier reembed` accepts an operator-pinned model fingerprint,
 validated precomputed vectors, and held-out queries with old/new query vectors
 and admitted gold IDs. It builds a separate immutable generation, measures the
 recall delta on the same candidate universe and cuts over an atomic signed
@@ -97,7 +97,7 @@ indexes use their own namespace-bound adapter. The operator supplies truthful
 model fingerprints and genuinely held-out queries. Recall is an **estimate**,
 not causal evidence or a deployment guarantee. A first generation reports that
 there was no previous baseline. Vector limits are 128 candidates, 8,192 dimensions
-and the managed 256 KiB payload bound. `commontrace tier rollback` restores the
+and the managed 256 KiB payload bound. `unimem tier rollback` restores the
 previous admitted generation with one command.
 
 The owner-authenticated `POST /v1/tier` gateway accepts

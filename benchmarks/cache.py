@@ -40,11 +40,11 @@ def completion_binding(config: object, *, generation: dict | None = None) -> dic
     Never persist configuration values, credentials, or credential-bearing URLs.
     Old unbound responses cannot satisfy a configuration-bound lookup.
     """
-    from commontrace import llm
+    from unimem import llm
 
     fields = asdict(config) if is_dataclass(config) else dict(vars(config))
     if fields.get("provider") in ("bedrock", "vertex") and not fields.get("cache_namespace"):
-        raise ValueError("benchmark caching with ambient cloud credentials requires COMMONTRACE_LLM_CACHE_NAMESPACE")
+        raise ValueError("benchmark caching with ambient cloud credentials requires UNIMEM_LLM_CACHE_NAMESPACE")
     credential = str(fields.pop("api_key", ""))
     fields["credential_sha256"] = prompt_hash(credential)
     with open(llm.__file__, "rb") as source:
@@ -59,7 +59,7 @@ def completion_binding(config: object, *, generation: dict | None = None) -> dic
 def get_price(model: str, prices: dict | None = None, *, require_known: bool = False) -> tuple[float, float]:
     """Return (input_per_mtok, output_per_mtok) for a model."""
     if prices is None:
-        path = os.environ.get("COMMONTRACE_LLM_PRICES", "").strip()
+        path = os.environ.get("UNIMEM_LLM_PRICES", "").strip()
         if path and os.path.exists(path):
             try:
                 with open(path, encoding="utf-8") as fh:

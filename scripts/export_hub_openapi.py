@@ -9,7 +9,7 @@ import argparse
 import os
 import sys
 
-ROOT = os.environ.get("COMMONTRACE_ROOT") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.environ.get("UNIMEM_ROOT") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 

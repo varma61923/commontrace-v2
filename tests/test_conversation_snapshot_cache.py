@@ -1,5 +1,5 @@
 """Bounded cache accounting and adversarial snapshot acquisition races."""
-from commontrace.conversation import Options, Store, recall, search
+from unimem.conversation import Options, Store, recall, search
 
 
 def test_one_snapshot_uses_constant_version_checks(tmp_path):
@@ -119,7 +119,7 @@ def test_cache_sizes_are_counted_once_and_enforce_metadata_bytes(tmp_path, monke
 
 
 def test_auto_model_reconfiguration_cannot_reuse_old_response(tmp_path, monkeypatch):
-    from commontrace.conversation import embed
+    from unimem.conversation import embed
 
     configured = [None]
     monkeypatch.setattr(embed, "configured", lambda: configured[0])

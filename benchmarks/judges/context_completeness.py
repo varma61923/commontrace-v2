@@ -112,7 +112,7 @@ class ContextCompletenessJudge:
             raise ValueError("context completeness inputs must be strings")
         prompt = self.format_prompt(q_text, gold, context)
         if complete_fn is None:
-            from commontrace import llm
+            from unimem import llm
 
             config = llm.Config(provider="openai-compatible", model=model or self.model,
                                 api_key=llm.load_config().api_key)

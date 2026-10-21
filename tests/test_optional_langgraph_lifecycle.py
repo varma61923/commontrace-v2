@@ -21,13 +21,13 @@ from langgraph.checkpoint.memory import InMemorySaver  # noqa: E402
 from langgraph.prebuilt import create_react_agent  # noqa: E402
 from pydantic import Field  # noqa: E402
 
-from commontrace import holdout_io  # noqa: E402
-from commontrace.integrations.langgraph import (  # noqa: E402
+from unimem import holdout_io  # noqa: E402
+from unimem.integrations.langgraph import (  # noqa: E402
     create_pre_model_hook,
     record_outcome,
     turn_occasion_id,
 )
-from commontrace.measure import CausalMemory  # noqa: E402
+from unimem.measure import CausalMemory  # noqa: E402
 
 
 class _ToolModel(BaseChatModel):
@@ -35,7 +35,7 @@ class _ToolModel(BaseChatModel):
 
     @property
     def _llm_type(self):
-        return "commontrace-provider-free-tool-model"
+        return "unimem-provider-free-tool-model"
 
     def bind_tools(self, tools, **kwargs):
         return self
@@ -85,7 +85,7 @@ def test_native_tool_loop_scoped_recall_turn_outcome_and_checkpoint(tmp_path, as
     first = invoke({"messages": [HumanMessage(content="Retry webhook?", id="turn-1")]})
     assert calls == [("Retry webhook?", {"tenant": "tenant-a", "user": "user-a"})]
     assert len(model.seen) == 2
-    assert all(sum("COMMONTRACE_MEMORY" in str(message.content) for message in messages) == 1 for messages in model.seen)
+    assert all(sum("UNIMEM_MEMORY" in str(message.content) for message in messages) == 1 for messages in model.seen)
     assert all(messages[0].content == "Stable system instructions." for messages in model.seen)
     assert all(isinstance(messages[1], SystemMessage) for messages in model.seen)
     assert [message.type for message in first["messages"]] == ["human", "ai", "tool", "ai"]
@@ -96,7 +96,7 @@ def test_native_tool_loop_scoped_recall_turn_outcome_and_checkpoint(tmp_path, as
     assert len(model.seen) == 4
     snapshot = agent.get_state(config)
     assert [message.type for message in snapshot.values["messages"]] == ["human", "ai", "tool", "ai"] * 2
-    assert all("COMMONTRACE_MEMORY" not in str(message.content) for message in snapshot.values["messages"])
+    assert all("UNIMEM_MEMORY" not in str(message.content) for message in snapshot.values["messages"])
     assert record_outcome(memory, config, state=second, recall_kwargs=_scope, succeeded=False)
     expected = {
         turn_occasion_id(first, config, scope=_scope(config)): True,
@@ -127,4 +127,4 @@ def test_native_tool_loop_caches_fail_open_result_and_retries_next_turn(tmp_path
     assert calls == ["hello"]
     agent.invoke({"messages": [HumanMessage(content="hello", id="turn-2")]}, config)
     assert calls == ["hello", "hello"]
-    assert not any("COMMONTRACE_MEMORY" in str(message.content) for messages in model.seen for message in messages)
+    assert not any("UNIMEM_MEMORY" in str(message.content) for messages in model.seen for message in messages)

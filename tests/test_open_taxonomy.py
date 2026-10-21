@@ -2,9 +2,9 @@ import os
 
 import pytest
 
-from commontrace import distill, paths, templates
-from commontrace.cli import main
-from commontrace.commands import _validators
+from unimem import distill, paths, templates
+from unimem.cli import main
+from unimem.commands import _validators
 
 
 class TestAnyFieldCanBeDeclared:

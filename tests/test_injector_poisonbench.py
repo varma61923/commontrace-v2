@@ -2,9 +2,9 @@
 import pytest
 
 from benchmarks.injector_bench import SEMANTIC_EVENTS, poison_check
-from commontrace.hook_kit import HookKit
-from commontrace.memory_record import MemoryRecord
-from commontrace.native_hooks import format_reply, normalize
+from unimem.hook_kit import HookKit
+from unimem.memory_record import MemoryRecord
+from unimem.native_hooks import format_reply, normalize
 
 
 def test_poison_and_unreviewed_directives_never_reach_native_hook_context():

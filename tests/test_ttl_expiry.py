@@ -5,8 +5,8 @@ import os
 
 import pytest
 
-from commontrace import frontmatter, hierarchical, lesson_cache, paths, ttl
-from commontrace.cli import main
+from unimem import frontmatter, hierarchical, lesson_cache, paths, ttl
+from unimem.cli import main
 
 
 def _write_lesson(root, slug, description="force-push shared branch guidance",

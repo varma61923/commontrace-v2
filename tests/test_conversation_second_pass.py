@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import pytest
 
-from commontrace.conversation import Options, Store
-from commontrace.conversation import recall as conversation_recall
-from commontrace.conversation.search import SECOND_PASS_QUERIES, facet_queries
+from unimem.conversation import Options, Store
+from unimem.conversation import recall as conversation_recall
+from unimem.conversation.search import SECOND_PASS_QUERIES, facet_queries
 
 QUESTION = "Which tomatoes and peppers are on the trellis?"
 

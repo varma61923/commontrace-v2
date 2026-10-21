@@ -1,4 +1,4 @@
-"""The DolphinBench harness without DolphinBench: ingestion into CommonTrace, frozen
+"""The DolphinBench harness without DolphinBench: ingestion into UniMem, frozen
 read-only memory, a scripted tool loop, checkpoint verification and cost accounting."""
 import asyncio
 import dataclasses
@@ -10,7 +10,7 @@ import types
 import pytest
 
 HARNESS = os.path.join(os.path.dirname(os.path.dirname(__file__)), "benchmarks", "dolphinbench",
-                       "commontrace_harness.py")
+                       "unimem_harness.py")
 
 
 @dataclasses.dataclass
@@ -44,7 +44,7 @@ def H(monkeypatch):
     adapter.InteractionRecord = InteractionRecord
     monkeypatch.setitem(sys.modules, "harness", pkg)
     monkeypatch.setitem(sys.modules, "harness.adapter", adapter)
-    spec = importlib.util.spec_from_file_location("commontrace_harness_under_test", HARNESS)
+    spec = importlib.util.spec_from_file_location("unimem_harness_under_test", HARNESS)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

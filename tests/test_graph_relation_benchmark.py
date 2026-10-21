@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from benchmarks import graph_relations
-from commontrace import graph
+from unimem import graph
 
 
 def test_fixture_has_distinct_neighbors_and_unique_canonical_edge_keys(monkeypatch):

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from commontrace import graph, hierarchical, memory_blocks
+from unimem import graph, hierarchical, memory_blocks
 
 
 def test_t4_autonomous_coding_agent_lifecycle(isolated_store: str):

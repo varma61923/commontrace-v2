@@ -3,7 +3,7 @@
 A change plan fixes the candidate/incumbent policies, allowed change types,
 minimum margin, alpha, support requirement, propensity floor, training size,
 monitoring and rollback instructions before any trial outcomes. These criteria
-cannot be changed during certification. Register it with `commontrace promote
+cannot be changed during certification. Register it with `unimem promote
 register REQUEST.json`; request shapes follow `promotion.register`.
 
 `promote evaluate REQUEST.json` reports the doubly robust difference and betting
@@ -16,11 +16,11 @@ Repeated looks never move the training/evaluation boundary.
 bound exceeds the preregistered margin, and anchors it in the transparency log.
 `promote rollback REQUEST.json` records revocation.
 
-`commontrace allocate plan --require-certificate` (and `allocation.plan(...,
+`unimem allocate plan --require-certificate` (and `allocation.plan(...,
 require_certificate=True)`) refuses to publish a Thompson schedule unless an
 unrevoked certificate binds that gate's configuration. The certified change is the
 gate itself: its per-era rates are outputs computed at planning time and cannot be
-certified in advance. `commontrace allocate show` prints the gate's policy hash
+certified in advance. `unimem allocate show` prints the gate's policy hash
 (`allocation.policy_hash`); register a change plan with that value as
 `artifact_hash`, run its randomized trial with `promotion.assign`, certify it, and
 then plan. A differently configured gate is a different, uncertified change.

@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Iterator
 
 import pytest
 
-from commontrace import (
+from unimem import (
     frontmatter,
     functions,
     gateway,
@@ -24,7 +24,7 @@ from commontrace import (
     proof,
     templates,
 )
-from commontrace.fact_evidence import bind_evidence
+from unimem.fact_evidence import bind_evidence
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -53,7 +53,7 @@ def browser() -> Iterator[Browser]:
         executable = runtime.chromium.executable_path
         # Normal core installs have neither Playwright nor its browser. CI
         # explicitly requires the browser, so a broken install must fail there.
-        if not os.path.isfile(executable) and not os.environ.get("COMMONTRACE_REQUIRE_BROWSER"):
+        if not os.path.isfile(executable) and not os.environ.get("UNIMEM_REQUIRE_BROWSER"):
             try:
                 instance = runtime.chromium.launch(headless=True)
             except pw.Error as exc:
@@ -396,7 +396,7 @@ def test_disconnect_erases_visible_evidence_and_tab_credential_then_reconnects(p
     pw.expect(page.get_by_label("Access token", exact=True)).to_be_visible()
     pw.expect(page.locator("main")).not_to_contain_text("Aster")
     assert page.locator("main article").count() == 0
-    assert page.evaluate("() => sessionStorage.getItem('ct-token') === null")
+    assert page.evaluate("() => sessionStorage.getItem('unimem-token') === null")
     page.get_by_label("Access token", exact=True).fill(console.credential[0])
     page.get_by_role("button", name="Connect", exact=True).click()
     pw.expect(page.locator("#conn")).to_have_attribute("data-state", "ok")
@@ -462,7 +462,7 @@ def test_learning_ledger_value_design_forensics_and_digest(page: Page, console: 
     page.get_by_label("Holdout rate", exact=True).fill("0.2")
     page.get_by_label("Occasions per day (optional)", exact=True).fill("100")
     page.get_by_role("button", name="Plan", exact=True).click()
-    pw.expect(page.get_by_text("commontrace experiment --configure --rate 0.2", exact=True)).to_be_visible()
+    pw.expect(page.get_by_text("unimem experiment --configure --rate 0.2", exact=True)).to_be_visible()
     pw.expect(page.get_by_role("heading", name="Days needed", exact=True)).to_be_visible()
 
     page.get_by_role("navigation", name="Ledger sections").get_by_role("link", name="Forensics", exact=True).click()
@@ -471,10 +471,10 @@ def test_learning_ledger_value_design_forensics_and_digest(page: Page, console: 
     pw.expect(page.get_by_role("region", name="Memories eligible on this occasion")).to_contain_text("noise")
 
     page.get_by_role("navigation", name="Ledger sections").get_by_role("link", name="Weekly digest", exact=True).click()
-    pw.expect(page.locator("main pre")).to_contain_text("CommonTrace digest")
+    pw.expect(page.locator("main pre")).to_contain_text("UniMem digest")
     with page.expect_download() as download:
         page.get_by_role("button", name="Download Markdown", exact=True).click()
-    assert download.value.suggested_filename.startswith("commontrace-digest-")
+    assert download.value.suggested_filename.startswith("unimem-digest-")
     assert not page.evaluate("() => document.documentElement.scrollWidth > innerWidth")
     assert not errors
 
@@ -484,7 +484,7 @@ def test_lesson_trace_and_benchmark_history_are_real_redacted_and_accessible(pag
     import json
     from pathlib import Path
 
-    from commontrace import trace_io
+    from unimem import trace_io
 
     page.set_viewport_size({"width": width, "height": 1000})
     errors = []

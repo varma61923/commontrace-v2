@@ -4,8 +4,8 @@ import shlex
 
 import pytest
 
-from commontrace.hook_bridge import EVENTS
-from commontrace.native_hooks import (
+from unimem.hook_bridge import EVENTS
+from unimem.native_hooks import (
     CLINE,
     KIMI_HOOK_EVENTS,
     install_special,
@@ -91,8 +91,8 @@ def test_kimi_preserves_existing_toml_and_is_idempotent(tmp_path):
     assert first == second
     assert twice == once
     assert once.startswith(original)
-    assert twice.count("# BEGIN COMMONTRACE HOOKS") == 1
-    assert twice.count("# END COMMONTRACE HOOKS") == 1
+    assert twice.count("# BEGIN UNIMEM HOOKS") == 1
+    assert twice.count("# END UNIMEM HOOKS") == 1
     assert twice.count("hook_bridge.py --event UserPromptSubmit --format kimi") == 1
     assert 'default_model = "kimi-code/k3"' in twice
     assert "max_attempts_per_step = 8" in twice
@@ -104,10 +104,10 @@ def test_kimi_preserves_existing_toml_and_is_idempotent(tmp_path):
         assert parsed["loop_control"]["max_attempts_per_step"] == 8
         entries = parsed["hooks"]
         assert sum(entry["command"] == "user-hook" for entry in entries) == 1
-        commontrace_entries = [entry for entry in entries if entry["command"].endswith("--format kimi")]
-        assert [entry["event"] for entry in commontrace_entries] == list(EVENTS)
-        assert all(set(entry) == {"event", "command", "timeout"} for entry in commontrace_entries)
-        assert all(entry["timeout"] == 1 for entry in commontrace_entries)
+        unimem_entries = [entry for entry in entries if entry["command"].endswith("--format kimi")]
+        assert [entry["event"] for entry in unimem_entries] == list(EVENTS)
+        assert all(set(entry) == {"event", "command", "timeout"} for entry in unimem_entries)
+        assert all(entry["timeout"] == 1 for entry in unimem_entries)
 
 
 def test_kimi_event_mapping_and_activation_use_active_host_config(tmp_path):
@@ -178,7 +178,7 @@ def test_kimi_external_target_requires_explicit_allowance_and_rejects_symlinks(t
 
 def test_kimi_rejects_malformed_managed_region_without_modifying_config(tmp_path):
     target = tmp_path / "config.toml"
-    original = 'default_model = "keep"\n# BEGIN COMMONTRACE HOOKS\n[[hooks]]\n'
+    original = 'default_model = "keep"\n# BEGIN UNIMEM HOOKS\n[[hooks]]\n'
     target.write_text(original, encoding="utf-8")
 
     with pytest.raises(ValueError, match="incomplete or duplicate"):

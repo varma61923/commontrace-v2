@@ -4,7 +4,7 @@ import sys
 
 import pytest
 
-from commontrace.commands._shellout import (
+from unimem.commands._shellout import (
     _store_scripts_allowed,
     find_reference_script,
     packaged_reference_dir,
@@ -41,7 +41,7 @@ class TestSubprocessHardening:
         cmd, kwargs = recorded_calls[0]
 
         env = kwargs["env"]
-        assert env["COMMONTRACE_ROOT"] == root
+        assert env["UNIMEM_ROOT"] == root
         assert env["PYTHONUTF8"] == "1"
         assert env["PYTHONSAFEPATH"] == "1"
         assert env["CUSTOM_KEY"] == "CUSTOM_VAL"
@@ -98,7 +98,7 @@ class TestShadowModuleImmunity:
             assert control_res.returncode != 0
             assert "SHADOW_JSON_HIJACKED" in control_res.stderr or "SHADOW_ARGPARSE_HIJACKED" in control_res.stderr
 
-            os.environ["COMMONTRACE_ALLOW_STORE_SCRIPTS"] = "1"
+            os.environ["UNIMEM_ALLOW_STORE_SCRIPTS"] = "1"
             rc, out = run_script(
                 str(malicious_dir),
                 "test_import.py",
@@ -111,24 +111,24 @@ class TestShadowModuleImmunity:
 
         finally:
             os.chdir(old_cwd)
-            os.environ.pop("COMMONTRACE_ALLOW_STORE_SCRIPTS", None)
+            os.environ.pop("UNIMEM_ALLOW_STORE_SCRIPTS", None)
 
 
 class TestStoreScriptsSecurityPolicy:
     def test_store_scripts_allowed_flag(self, monkeypatch):
-        monkeypatch.delenv("COMMONTRACE_ALLOW_STORE_SCRIPTS", raising=False)
+        monkeypatch.delenv("UNIMEM_ALLOW_STORE_SCRIPTS", raising=False)
         assert _store_scripts_allowed() is False
 
         for val in ["0", "false", "no", "off", "anything_else"]:
-            monkeypatch.setenv("COMMONTRACE_ALLOW_STORE_SCRIPTS", val)
+            monkeypatch.setenv("UNIMEM_ALLOW_STORE_SCRIPTS", val)
             assert _store_scripts_allowed() is False
 
         for val in ["1", "true", "yes", "on", "True", "YES", " 1 "]:
-            monkeypatch.setenv("COMMONTRACE_ALLOW_STORE_SCRIPTS", val)
+            monkeypatch.setenv("UNIMEM_ALLOW_STORE_SCRIPTS", val)
             assert _store_scripts_allowed() is True
 
     def test_find_reference_script_default_ignores_store_script(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("COMMONTRACE_ALLOW_STORE_SCRIPTS", raising=False)
+        monkeypatch.delenv("UNIMEM_ALLOW_STORE_SCRIPTS", raising=False)
 
         store_script = tmp_path / "measure_performance.py"
         store_script.write_text("# store copy", encoding="utf-8")
@@ -139,7 +139,7 @@ class TestStoreScriptsSecurityPolicy:
         assert found != str(store_script)
 
     def test_find_reference_script_with_opt_in_uses_store_script(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.setenv("COMMONTRACE_ALLOW_STORE_SCRIPTS", "1")
+        monkeypatch.setenv("UNIMEM_ALLOW_STORE_SCRIPTS", "1")
 
         store_script = tmp_path / "measure_performance.py"
         store_script.write_text("# store copy", encoding="utf-8")
@@ -151,7 +151,7 @@ class TestStoreScriptsSecurityPolicy:
         assert "running reference script from store root" in captured.err
 
     def test_find_reference_script_rejects_path_traversal_even_with_opt_in(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("COMMONTRACE_ALLOW_STORE_SCRIPTS", "1")
+        monkeypatch.setenv("UNIMEM_ALLOW_STORE_SCRIPTS", "1")
 
         outside_dir = tmp_path / "outside"
         outside_dir.mkdir()

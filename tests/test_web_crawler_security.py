@@ -7,8 +7,8 @@ import urllib.request
 
 import pytest
 
-from commontrace import offline
-from commontrace.connectors import web_crawler
+from unimem import offline
+from unimem.connectors import web_crawler
 
 
 @pytest.mark.parametrize("url", [
@@ -116,7 +116,7 @@ class TestHtmlConversionIsLinear:
     def test_a_maximum_size_hostile_page_converts_quickly(self, unit):
         import time
 
-        from commontrace.connectors.web_crawler import MAX_PAGE_BYTES, _html_to_markdown_text
+        from unimem.connectors.web_crawler import MAX_PAGE_BYTES, _html_to_markdown_text
 
         page = unit * (MAX_PAGE_BYTES // len(unit))
         started = time.perf_counter()
@@ -124,7 +124,7 @@ class TestHtmlConversionIsLinear:
         assert time.perf_counter() - started < 5.0
 
     def test_the_markdown_shape_is_unchanged(self):
-        from commontrace.connectors.web_crawler import _html_to_markdown_text
+        from unimem.connectors.web_crawler import _html_to_markdown_text
 
         page = (
             "<!DOCTYPE html><head><style>b{}</style><script>var a='<p>x</p>'</script></head>"
@@ -135,12 +135,12 @@ class TestHtmlConversionIsLinear:
         assert _html_to_markdown_text(page) == "# Main Title\n\nFish & chips\nBlock\nline\n## Sub\n\ntail"
 
     def test_an_unclosed_script_hides_the_rest_of_the_page_like_a_browser(self):
-        from commontrace.connectors.web_crawler import _html_to_markdown_text
+        from unimem.connectors.web_crawler import _html_to_markdown_text
 
         assert _html_to_markdown_text("before<script>steal(document.cookie) never closed") == "before"
 
     def test_offsets_survive_text_whose_lowercase_changes_length(self):
-        from commontrace.connectors.web_crawler import _html_to_markdown_text
+        from unimem.connectors.web_crawler import _html_to_markdown_text
 
         # "İ".lower() is two code points; offsets from a str.lower() copy
         # would drift and cut the page in the wrong places.

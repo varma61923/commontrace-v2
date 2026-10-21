@@ -40,7 +40,7 @@ async def test_the_unwrapped_key_works_as_the_hub_encryption_key():
     key = kms.unwrap(wrapped, key_id="arn:key/1", client=fake)
     cipher = encryption.EnvelopeCipher.from_config(key, "")
     assert cipher.decrypt(cipher.encrypt("https://hooks.example/secret-path")) == "https://hooks.example/secret-path"
-    assert fake.calls[0]["EncryptionContext"] == {"purpose": "commontrace-hub-encryption-key"}
+    assert fake.calls[0]["EncryptionContext"] == {"purpose": "unimem-hub-encryption-key"}
 
 
 async def test_only_the_wrapped_form_is_ever_returned():

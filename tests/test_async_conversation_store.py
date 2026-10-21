@@ -5,7 +5,7 @@ import threading
 
 import pytest
 
-from commontrace.conversation import AsyncStore, ConversationError, Options, Store
+from unimem.conversation import AsyncStore, ConversationError, Options, Store
 
 
 def test_concurrent_ingestion_batches_and_recalls(tmp_path, monkeypatch):

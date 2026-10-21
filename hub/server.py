@@ -9,7 +9,7 @@ isolation testable.
 
 Any MCP-capable client (Claude Code, Cursor, Devin, Windsurf, a generic MCP
 client) can attach to this server with a plain config block -- no
-CommonTrace-specific SDK -- by pointing at HUB_HOST:HUB_PORT/mcp with an
+UniMem-specific SDK -- by pointing at HUB_HOST:HUB_PORT/mcp with an
 `Authorization: Bearer <api-key>` header. See hub/README.md for a worked
 example.
 """
@@ -31,7 +31,6 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp
 
-from commontrace import __version__ as _COMMONTRACE_VERSION
 from hub import auth, collab, commons, crud, observability, plans, scheduler, scopes
 from hub.abuse import (
     RateLimited,
@@ -59,8 +58,9 @@ from hub.rest import add_rest_routes
 from hub.schema_validation import SchemaValidationError
 from hub.scim import add_scim_routes
 from hub.signup import add_signup_routes
+from unimem import __version__ as _UNIMEM_VERSION
 
-logger = logging.getLogger("commontrace.hub")
+logger = logging.getLogger("unimem.hub")
 
 
 class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
@@ -422,10 +422,10 @@ def _rate_limited_response(detail: str, retry_after: float) -> JSONResponse:
     Without `Retry-After` a refused client can only guess, and a client
     guessing short against a limiter that is already saying no turns one
     burst into a sustained stampede -- measured on this project's own CLI,
-    a bulk `commontrace sync --push-traces` drove 114 rejected requests
+    a bulk `unimem sync --push-traces` drove 114 rejected requests
     where the honest answer was "wait about two seconds". The header is the
     standard, machine-readable way to say that, and
-    commontrace/hub_client.py now paces its whole batch off it.
+    unimem/hub_client.py now paces its whole batch off it.
 
     Rounded UP to a whole second: `Retry-After` is defined in integer
     seconds, and rounding down would advertise a moment at which the bucket
@@ -575,10 +575,10 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
     )
 
     mcp = MCPServer(
-        name="commontrace",
-        version=_COMMONTRACE_VERSION,
+        name="unimem",
+        version=_UNIMEM_VERSION,
         instructions=(
-            "CommonTrace Hub. search_traces/get_trace/list_tags read; contribute_trace "
+            "UniMem Hub. search_traces/get_trace/list_tags read; contribute_trace "
             "writes a new trace; vote_trace/amend_trace act on an existing one; "
             "delete_trace permanently removes one of your own (irreversible); "
             "account_usage reports your plan and usage. All operations are scoped to "
@@ -589,7 +589,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
             "a mandatory delay between them, by design; see request_account_deletion's "
             "own description before calling it. "
             + ("commons_overlap/commons_search additionally let you consult the "
-               "CommonTrace Knowledge Base: commons_search looks up ranked candidate "
+               "UniMem Knowledge Base: commons_search looks up ranked candidate "
                "answers to one failure, commons_overlap reports the conservative "
                "coverage fraction across many. submit_kb_entry proposes a new entry "
                "for operator review (list_my_kb_submissions checks status) -- an "
@@ -921,7 +921,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         change, not a causal effect. `baseline` marks a time window, so
         anything else that changed between the windows is confounded with
         this product's contribution. For a causal claim, run the randomized
-        holdout (`commontrace experiment`), which withholds lessons at
+        holdout (`unimem experiment`), which withholds lessons at
         random so the arms differ only by the treatment.
 
         The causal estimate comes back under `causal`, and inside it
@@ -1034,7 +1034,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         one line per counted memory, each carrying a SHA-256 over the previous
         line, so editing a figure, deleting the memory that HURT, or
         reordering to bury it all break the chain. Recompute it with
-        `commontrace.value.verify_ledger`, or reimplement it: the hash is over
+        `unimem.value.verify_ledger`, or reimplement it: the hash is over
         the printed fields in a fixed order, on purpose.
 
         That chain proves the ledger is internally consistent, not who issued
@@ -1042,7 +1042,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         replacement chain would verify just as cleanly as the real one. If
         this deployment has HUB_LEDGER_SIGNING_KEY configured, the response
         also carries `signature` and `issued_at`: an HMAC-SHA256 over the
-        chain's root, checkable with `commontrace.value.
+        chain's root, checkable with `unimem.value.
         verify_ledger_signature`, that only verifies for a ledger this
         deployment actually issued. Otherwise `signature` is null and
         `signature_reason` says the deployment has not opted in.
@@ -1290,7 +1290,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
             agent_type: str = "",
         ) -> dict:
             """Of the recurring failures your fleet keeps hitting, what fraction
-            does the CommonTrace Knowledge Base already solve?
+            does the UniMem Knowledge Base already solve?
 
             The Knowledge Base is authored and curated by the operator -- public
             substrate knowledge, never another customer's data. There is no
@@ -1298,7 +1298,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
             nothing here can expose your fleet's traces to anyone else.
 
             Send MinHash signatures of your own failures -- generated locally by
-            `commontrace commons sign`, so no failure text ever leaves your
+            `unimem commons sign`, so no failure text ever leaves your
             machine. Each entry is {"label": str, "signature": [int, ...]}.
             """
             try:
@@ -1318,7 +1318,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
             limit: int = commons.DEFAULT_SEARCH_CANDIDATES,
             agent_type: str = "",
         ) -> dict:
-            """Ask the CommonTrace Knowledge Base what it already knows about
+            """Ask the UniMem Knowledge Base what it already knows about
             ONE failure, and get back ranked candidate answers with their
             solutions -- like searching a wiki, not a peer's ticket queue.
 
@@ -1329,7 +1329,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
             ranks instead, and finds the right record 89.1% of the time at
             rank 1 and 100% within the top 10 on the held-out evaluation.
 
-            Send one MinHash signature, generated locally by `commontrace
+            Send one MinHash signature, generated locally by `unimem
             commons sign` -- no failure text leaves your machine. What comes
             back is drawn only from the operator-curated Knowledge Base,
             never from another customer's traces.
@@ -1358,7 +1358,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
             failure, which means telling this Hub that you are asking and
             roughly what about -- a MinHash signature, but a disclosure all
             the same. This removes that price: hold the corpus locally and
-            `commontrace commons report --corpus` computes your coverage with
+            `unimem commons report --corpus` computes your coverage with
             no query, no signature and no record that you looked.
 
             Returns full solution text, not previews, because the point is to
@@ -1390,7 +1390,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
             rationale: str = "",
             idempotency_key: str | None = None,
         ) -> dict:
-            """Propose an entry for the CommonTrace Knowledge Base -- like
+            """Propose an entry for the UniMem Knowledge Base -- like
             posting an answer to a shared wiki, not sharing your own trace
             history. Nothing is published by this call.
 
@@ -1563,7 +1563,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         """
         return await run_batch(delete_trace, ids, field="id")
 
-    mcp.commontrace_tool_scopes = dict(tool_scopes)
+    mcp.unimem_tool_scopes = dict(tool_scopes)
     return mcp
 
 
@@ -1581,6 +1581,12 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
             "set HUB_RATE_LIMIT_BACKEND=postgres for shared enforcement"
         )
     if not auth.pepper_configured():
+        if config.require_api_key_pepper:
+            raise RuntimeError(
+                "refusing to start: HUB_REQUIRE_API_KEY_PEPPER is set, but HUB_API_KEY_PEPPER "
+                "(or HUB_API_KEY_PEPPER_FILE) is not. Without one shared pepper every replica "
+                "hashes API keys differently and each request falls back to an Argon2 scan."
+            )
         logger.warning(
             "HUB_API_KEY_PEPPER is not set: this process uses a random pepper, so stored key "
             "HMACs stop matching after a restart and differ between replicas, and every such "

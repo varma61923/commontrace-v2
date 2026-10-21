@@ -7,9 +7,9 @@ import subprocess
 
 import pytest
 
-from commontrace import frontier_protocol as fp
-from commontrace import zk_effect, zk_effect_io
 from tests.test_zk_effect import witness
+from unimem import frontier_protocol as fp
+from unimem import zk_effect, zk_effect_io
 
 
 def program(name):

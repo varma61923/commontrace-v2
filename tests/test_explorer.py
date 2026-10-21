@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from commontrace import explorer, gateway, hierarchical
+from unimem import explorer, gateway, hierarchical
 
 TOKEN = "explorer-test-token-01234567890123456789"
 
@@ -106,7 +106,7 @@ def test_explorer_has_no_model_dependency(tmp_path):
 
 
 def test_bound_fact_exposes_actual_quote_and_withdraws_after_source_change(tmp_path):
-    from commontrace.fact_evidence import bind_evidence
+    from unimem.fact_evidence import bind_evidence
 
     premise, _ = hierarchical.add_fact(str(tmp_path), "The Lumen database timeout log records 5 seconds")
     fact, _ = hierarchical.add_fact(str(tmp_path), "The Lumen database timeout is 5 seconds",

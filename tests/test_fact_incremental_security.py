@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from commontrace import _jsonl, fact_index, frontmatter, hierarchical, lesson_admission
-from commontrace.fact_evidence import bind_evidence
+from unimem import _jsonl, fact_index, frontmatter, hierarchical, lesson_admission
+from unimem.fact_evidence import bind_evidence
 
 SCORERS = ("overlap-v1", "bm25-v1")
 

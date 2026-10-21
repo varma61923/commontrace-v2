@@ -6,12 +6,12 @@ from datetime import timedelta
 
 import pytest
 
-from commontrace import frontier_protocol as fp
-from commontrace import hierarchical, memory_authority, nextwave_store, purpose
-from commontrace import subject_policy as policy
-from commontrace.memory_journal import Journal
-from commontrace.memory_record import MemoryRecord
 from tests.test_capabilities import NOW
+from unimem import frontier_protocol as fp
+from unimem import hierarchical, memory_authority, nextwave_store, purpose
+from unimem import subject_policy as policy
+from unimem.memory_journal import Journal
+from unimem.memory_record import MemoryRecord
 
 
 @pytest.fixture(autouse=True)
@@ -105,7 +105,7 @@ def test_fact_writes_and_direct_mutations_cannot_skip_modality_enforcement(tmp_p
     existing = hierarchical.append_facts(root, [{"statement": "Reviewed public procedure.",
                                                 "scopes": ["project:a"]}])[0][0]
     if indexed:
-        from commontrace import fact_store
+        from unimem import fact_store
 
         fact_store.migrate(root)
     configure(root)
@@ -132,7 +132,7 @@ def test_subject_context_cannot_be_overridden_by_record_metadata(tmp_path):
 
 
 def test_cli_compile_dry_run_and_hash_only_explanation(tmp_path, capsys):
-    from commontrace import cli
+    from unimem import cli
 
     root = str(tmp_path)
     binding = {"id": "school", "scopes": [], "subject_class": "adult", "context": "education"}
@@ -146,8 +146,8 @@ def test_cli_compile_dry_run_and_hash_only_explanation(tmp_path, capsys):
 
 
 def test_gateway_source_tags_are_validated_before_canonical_add(tmp_path):
-    from commontrace.gateway import Gateway
     from tests.test_gateway import AUTH, call
+    from unimem.gateway import Gateway
 
     root = str(tmp_path)
     configure(root)

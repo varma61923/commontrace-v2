@@ -27,8 +27,8 @@ def test_frontier_cli_requests(tmp_path, operation, body, field):
 
 
 def test_spatial_planner_history_and_belief_tools(tmp_path):
-    from commontrace import spatial
-    from commontrace.mcp_server import build_server
+    from unimem import spatial
+    from unimem.mcp_server import build_server
     pytest.importorskip("mcp")
     from tests.test_mcp_server import call
     context = {'tenant': 'a', 'site': 's', 'robot': 'r7'}
@@ -36,5 +36,5 @@ def test_spatial_planner_history_and_belief_tools(tmp_path):
         'frame': 'map', 'robot_id': 'r7', 'confidence': .8, 'timestamp': '2026-01-01T00:00:00Z'}, context=context)
     server = build_server(str(tmp_path))
     assert len(call(server, 'spatial_history', object_id='box', context=context)['history']) == 1
-    from commontrace import frontier_protocol as fp
+    from unimem import frontier_protocol as fp
     assert len(call(server, 'spatial_believed', robot='r7', time=fp.now(), context=context)['objects']) == 1

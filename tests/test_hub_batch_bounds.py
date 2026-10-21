@@ -3,7 +3,7 @@ import asyncio
 
 import pytest
 
-from commontrace import hub_client
+from unimem import hub_client
 
 
 def test_batch_consumes_lazily_and_preserves_order():

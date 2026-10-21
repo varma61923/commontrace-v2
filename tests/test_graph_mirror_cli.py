@@ -5,8 +5,8 @@ import argparse
 
 import pytest
 
-from commontrace import graph, graph_backends
-from commontrace.commands import graph_cmd
+from unimem import graph, graph_backends
+from unimem.commands import graph_cmd
 
 
 class FakeMirror:
@@ -58,15 +58,15 @@ def _args(root, **kw):
 
 
 def test_backend_selection_from_the_environment(monkeypatch):
-    monkeypatch.delenv("COMMONTRACE_GRAPH_BACKEND", raising=False)
+    monkeypatch.delenv("UNIMEM_GRAPH_BACKEND", raising=False)
     assert graph_backends.from_env() is None
     assert graph_backends.from_env("local") is None
     with pytest.raises(ValueError, match="one of neo4j, falkordb"):
         graph_backends.from_env("memgraph")
-    monkeypatch.delenv("COMMONTRACE_NEO4J_URI", raising=False)
-    with pytest.raises(ValueError, match="COMMONTRACE_NEO4J_URI"):
+    monkeypatch.delenv("UNIMEM_NEO4J_URI", raising=False)
+    with pytest.raises(ValueError, match="UNIMEM_NEO4J_URI"):
         graph_backends.from_env("neo4j")
-    monkeypatch.setenv("COMMONTRACE_FALKORDB_PORT", "not-a-port")
+    monkeypatch.setenv("UNIMEM_FALKORDB_PORT", "not-a-port")
     with pytest.raises(ValueError, match="port number"):
         graph_backends.from_env("falkordb")
 
@@ -81,10 +81,10 @@ def test_neo4j_settings_reach_the_driver_and_the_password_reads_from_a_file(monk
     secret = tmp_path / "pw"
     secret.write_text("s3cret\n")
     monkeypatch.setattr(graph_backends, "Neo4jGraph", Neo4j)
-    monkeypatch.setenv("COMMONTRACE_GRAPH_BACKEND", "neo4j")
-    monkeypatch.setenv("COMMONTRACE_NEO4J_URI", "bolt://graph:7687")
-    monkeypatch.setenv("COMMONTRACE_NEO4J_PASSWORD_FILE", str(secret))
-    monkeypatch.setenv("COMMONTRACE_GRAPH_NAMESPACE", "fleet-a")
+    monkeypatch.setenv("UNIMEM_GRAPH_BACKEND", "neo4j")
+    monkeypatch.setenv("UNIMEM_NEO4J_URI", "bolt://graph:7687")
+    monkeypatch.setenv("UNIMEM_NEO4J_PASSWORD_FILE", str(secret))
+    monkeypatch.setenv("UNIMEM_GRAPH_NAMESPACE", "fleet-a")
     assert isinstance(graph_backends.from_env(), Neo4j)
     assert seen == {"uri": "bolt://graph:7687", "username": "neo4j", "password": "s3cret", "database": "neo4j",
                     "namespace": "fleet-a"}
@@ -115,9 +115,9 @@ def test_query_reads_through_the_mirror_with_relation_filters(store, monkeypatch
 
 
 def test_unconfigured_mirror_fails_and_local_relation_filters_work(store, monkeypatch, capsys):
-    monkeypatch.delenv("COMMONTRACE_GRAPH_BACKEND", raising=False)
+    monkeypatch.delenv("UNIMEM_GRAPH_BACKEND", raising=False)
     assert graph_cmd.run_mirror(_args(store, backend=None)) == 2
-    assert "COMMONTRACE_GRAPH_BACKEND" in capsys.readouterr().err
+    assert "UNIMEM_GRAPH_BACKEND" in capsys.readouterr().err
     assert graph_cmd.run_query(_args(store, backend="local", relation=["depends_on"])) == 0
     filtered = capsys.readouterr().out
     assert "service:db" in filtered and "owned_by" not in filtered

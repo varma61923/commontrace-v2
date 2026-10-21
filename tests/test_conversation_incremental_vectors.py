@@ -7,12 +7,12 @@ import time
 
 import pytest
 
-from commontrace.conversation import AsyncStore, ConversationError, Store, embed
-from commontrace.conversation import store as store_module
-from commontrace.conversation.store import write_txn
 from tests.test_conversation_vector_backend import encoder as vector_encoder
 from tests.test_conversation_vector_backend import engine as vector_engine
 from tests.test_conversation_vector_backend import options
+from unimem.conversation import AsyncStore, ConversationError, Store, embed
+from unimem.conversation import store as store_module
+from unimem.conversation.store import write_txn
 
 encoder, engine = vector_encoder, vector_engine
 
@@ -153,7 +153,7 @@ def test_journal_rolls_back_and_resolves_reused_ids_to_target_state(tmp_path):
 
 
 def test_heartbeat_preserves_live_builder_through_slow_encoding(tmp_path, engine, encoder, monkeypatch):
-    from commontrace.conversation import async_store as async_module
+    from unimem.conversation import async_store as async_module
     monkeypatch.setattr(async_module, 'VECTOR_HEARTBEAT_SECONDS', 0.05)
     tenant, opening = engine
     async def run():
@@ -175,14 +175,14 @@ def test_heartbeat_preserves_live_builder_through_slow_encoding(tmp_path, engine
                     return await request(operation, *args, **kwargs)
                 monkeypatch.setattr(store, '_request', delayed)
                 assert 'Lynx' in (await store.recall('feline', options=options())).context
-                assert not [task for task in asyncio.all_tasks() if task.get_name() == 'commontrace-vector-build-lease']
+                assert not [task for task in asyncio.all_tasks() if task.get_name() == 'unimem-vector-build-lease']
         finally:
             await index.close()
     asyncio.run(run())
 
 
 def test_stalled_build_budget_aborts_private_state_and_recovers(tmp_path, engine, encoder, monkeypatch):
-    from commontrace.conversation import async_store as async_module
+    from unimem.conversation import async_store as async_module
     monkeypatch.setattr(async_module, 'VECTOR_BUILD_TIMEOUT_SECONDS', 0.03)
     monkeypatch.setattr(async_module, 'VECTOR_HEARTBEAT_SECONDS', 0.01)
     tenant, opening = engine
@@ -203,7 +203,7 @@ def test_stalled_build_budget_aborts_private_state_and_recovers(tmp_path, engine
                 monkeypatch.setattr(store, '_request', request)
                 monkeypatch.setattr(async_module, 'VECTOR_BUILD_TIMEOUT_SECONDS', 10)
                 assert 'Lynx' in (await store.recall('feline', options=options())).context
-                assert not [task for task in asyncio.all_tasks() if task.get_name() == 'commontrace-vector-build-lease']
+                assert not [task for task in asyncio.all_tasks() if task.get_name() == 'unimem-vector-build-lease']
         finally:
             await index.close()
     asyncio.run(run())

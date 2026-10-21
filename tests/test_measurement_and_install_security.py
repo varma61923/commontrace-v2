@@ -8,8 +8,8 @@ from unittest.mock import patch
 
 import pytest
 
-from commontrace.commands import install_cmd
-from commontrace.reference import measure_performance, pilot_metrics
+from unimem.commands import install_cmd
+from unimem.reference import measure_performance, pilot_metrics
 
 
 class TestPersistReportCollisionSort:
@@ -61,7 +61,7 @@ class TestJsonModeEmptyCorpusOutput:
         argv = ["--json", "--no-save"]
         with patch.object(measure_performance, "load_episodes", return_value=([], 0)):
             with patch.object(measure_performance, "load_lessons", return_value=({}, 0)):
-                with patch("sys.argv", ["commontrace"] + argv):
+                with patch("sys.argv", ["unimem"] + argv):
                     with pytest.raises(SystemExit) as exc_info:
                         measure_performance.main()
         assert exc_info.value.code == 0
@@ -73,7 +73,7 @@ class TestJsonModeEmptyCorpusOutput:
         argv = ["--no-save"]
         with patch.object(measure_performance, "load_episodes", return_value=([], 0)):
             with patch.object(measure_performance, "load_lessons", return_value=({}, 0)):
-                with patch("sys.argv", ["commontrace"] + argv):
+                with patch("sys.argv", ["unimem"] + argv):
                     with pytest.raises(SystemExit) as exc_info:
                         measure_performance.main()
         assert exc_info.value.code == 0
@@ -85,7 +85,7 @@ class TestJsonModeEmptyCorpusOutput:
     def test_pilot_metrics_empty_traces_emits_json_error(self, tmp_path, capsys):
         argv = ["--json"]
         with patch.object(pilot_metrics, "load_traces", return_value=[]):
-            with patch("sys.argv", ["commontrace"] + argv):
+            with patch("sys.argv", ["unimem"] + argv):
                 with pytest.raises(SystemExit) as exc_info:
                     pilot_metrics.main()
         assert exc_info.value.code == 0
@@ -100,7 +100,7 @@ class TestHtmlRendering:
         with patch.object(measure_performance, "_reports_dir", return_value=str(tmp_path)):
             with patch.object(measure_performance, "load_episodes", return_value=([], 0)):
                 with patch.object(measure_performance, "load_lessons", return_value=({}, 0)):
-                    with patch("sys.argv", ["commontrace"] + argv):
+                    with patch("sys.argv", ["unimem"] + argv):
                         with pytest.raises(SystemExit):
                             measure_performance.main()
 
@@ -186,7 +186,7 @@ class TestTransferGapMemoization:
 
 class TestShelloutPythonUtf8:
     def test_shellout_sets_pythonutf8_even_when_capture_false(self, tmp_path):
-        from commontrace.commands import _shellout
+        from unimem.commands import _shellout
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = types.SimpleNamespace(returncode=0)
             with patch("os.path.isfile", return_value=True):
@@ -198,19 +198,19 @@ class TestShelloutPythonUtf8:
 
 class TestIndexCmd:
     def test_index_cmd_missing_deps_exits_1(self, capsys):
-        from commontrace.commands import index_cmd
+        from unimem.commands import index_cmd
         args = types.SimpleNamespace(force=False, dest=None)
-        with patch("commontrace.commands.index_cmd.has_attention_deps", return_value=False):
+        with patch("unimem.commands.index_cmd.has_attention_deps", return_value=False):
             rc = index_cmd.run(args)
             assert rc == 1
             captured = capsys.readouterr()
-            assert "pip install commontrace[attention]" in captured.err
+            assert "pip install unimem[attention]" in captured.err
 
     def test_index_cmd_with_deps_runs_script(self):
-        from commontrace.commands import index_cmd
+        from unimem.commands import index_cmd
         args = types.SimpleNamespace(force=True, dest="/tmp/test_store")
-        with patch("commontrace.commands.index_cmd.has_attention_deps", return_value=True):
-            with patch("commontrace.commands.index_cmd.run_script", return_value=0) as mock_run:
+        with patch("unimem.commands.index_cmd.has_attention_deps", return_value=True):
+            with patch("unimem.commands.index_cmd.run_script", return_value=0) as mock_run:
                 rc = index_cmd.run(args)
                 assert rc == 0
                 assert mock_run.called
@@ -220,11 +220,11 @@ class TestIndexCmd:
 
 class TestInstallCmdTargets:
     @pytest.mark.parametrize("target,expected_file", [
-        ("cursor", ".cursor/rules/commontrace.mdc"),
-        ("windsurf", ".windsurf/rules/commontrace.md"),
-        ("devin", ".devin/skills/commontrace/SKILL.md"),
-        ("generic-mcp", "commontrace.hub.mcp.json.example"),
-        ("generic", "COMMONTRACE.md"),
+        ("cursor", ".cursor/rules/unimem.mdc"),
+        ("windsurf", ".windsurf/rules/unimem.md"),
+        ("devin", ".devin/skills/unimem/SKILL.md"),
+        ("generic-mcp", "unimem.hub.mcp.json.example"),
+        ("generic", "UNIMEM.md"),
     ])
     def test_install_cmd_all_targets(self, tmp_path, target, expected_file):
         args = types.SimpleNamespace(target=target, dest=str(tmp_path))
@@ -238,7 +238,7 @@ class TestInstallCmdTargets:
 
 class TestReportHtml:
     def test_wrap_page_structure(self):
-        from commontrace import report_html
+        from unimem import report_html
         html = report_html.wrap_page("Test Title", "<p>Body</p>", "2026-09-05")
         assert "<!DOCTYPE html>" in html
         assert "<title>Test Title — 2026-09-05</title>" in html
@@ -246,7 +246,7 @@ class TestReportHtml:
         assert "</html>" in html
 
     def test_stat_card_generation(self):
-        from commontrace import report_html
+        from unimem import report_html
         card = report_html.stat_card("Metric", "99%", note="High accuracy")
         assert 'class="card"' in card
         assert 'class="label">Metric<' in card
@@ -256,7 +256,7 @@ class TestReportHtml:
 
 class TestApprovalPolicyUnknownKeys:
     def test_load_policy_rejects_typo_keys(self, tmp_path):
-        from commontrace import approval
+        from unimem import approval
         policy_file = tmp_path / "memory" / "approval-policy.yaml"
         policy_file.parent.mkdir(parents=True, exist_ok=True)
         policy_file.write_text("mode: single\nrequire-human: true\n", encoding="utf-8")
@@ -264,7 +264,7 @@ class TestApprovalPolicyUnknownKeys:
             approval.load_policy(str(tmp_path))
 
     def test_load_policy_accepts_valid_keys(self, tmp_path):
-        from commontrace import approval
+        from unimem import approval
         policy_file = tmp_path / "memory" / "approval-policy.yaml"
         policy_file.parent.mkdir(parents=True, exist_ok=True)
         policy_file.write_text("mode: two-person\nrequire_human: true\n", encoding="utf-8")
@@ -277,7 +277,7 @@ class TestImportCmdFileCheck:
     def test_import_missing_file_does_not_create_directory(self, tmp_path, capsys):
         import argparse
 
-        from commontrace.commands import import_cmd
+        from unimem.commands import import_cmd
         dest = tmp_path / "target_store"
         args = argparse.Namespace(
             file=str(tmp_path / "nonexistent.jsonl"),
@@ -300,8 +300,8 @@ class TestImportCmdFileCheck:
 class TestMcpServerDraftLessonErrorHandling:
     def test_draft_lesson_handles_validation_exception(self, tmp_path):
         import asyncio
-        pytest.importorskip("mcp", reason="`commontrace serve` needs the MCP SDK: pip install 'commontrace[serve]'")
-        from commontrace import mcp_server
+        pytest.importorskip("mcp", reason="`unimem serve` needs the MCP SDK: pip install 'unimem[serve]'")
+        from unimem import mcp_server
 
         lessons_dir = tmp_path / "memory" / "lessons"
         lessons_dir.mkdir(parents=True, exist_ok=True)
@@ -315,7 +315,7 @@ class TestMcpServerDraftLessonErrorHandling:
         tools = asyncio.run(server.list_tools())
         assert any(tool.name == "draft_lesson" for tool in tools), "draft_lesson tool must be registered"
 
-        with patch("commontrace.validate.validate", side_effect=RuntimeError("disk read failure")):
+        with patch("unimem.validate.validate", side_effect=RuntimeError("disk read failure")):
             res = asyncio.run(
                 server.call_tool(
                     "draft_lesson",
@@ -345,7 +345,7 @@ class TestMcpServerDraftLessonErrorHandling:
 
 class TestTraceIoFallback:
     def test_trace_io_read_falls_back_when_frontmatter_empty_or_none(self, tmp_path):
-        from commontrace import trace_io
+        from unimem import trace_io
         trace_file = tmp_path / "test_trace.md"
         content = (
             "---\n"

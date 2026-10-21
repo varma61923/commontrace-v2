@@ -7,7 +7,7 @@ import subprocess
 import pytest
 
 NODE = shutil.which("node")
-SOURCE = pathlib.Path(__file__).resolve().parents[1] / "commontrace" / "ui" / "app.js"
+SOURCE = pathlib.Path(__file__).resolve().parents[1] / "unimem" / "ui" / "app.js"
 pytestmark = pytest.mark.skipif(NODE is None, reason="Node is needed to execute the frontend controller")
 
 
@@ -127,3 +127,18 @@ console.log(JSON.stringify({token,cleared:Object.values(state).every(value=>valu
 """)
     assert result == {"token": "", "cleared": True, "selected": [], "notice": None,
                       "lastPaint": "", "lastOk": 0, "capabilitiesToken": ""}
+
+
+def test_empty_credentials_are_checked_by_the_gateway_and_never_retain_data():
+    result = run("""
+token=''; state.status={private:'old'};
+api = function(path) {
+  requested.push(path);
+  const error=new Error('unauthorized'); error.auth=true;
+  return Promise.reject(error);
+};
+await refresh();
+console.log(JSON.stringify({requested,connection,cleared:Object.values(state).every(value=>value===null)}));
+""")
+    assert result == {"requested": ["/v1/status", "/v1/capabilities", "/v1/memories", "/v1/agents"],
+                      "connection": "bad", "cleared": True}

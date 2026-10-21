@@ -1,17 +1,17 @@
 <idea-plugin>
-  <id>io.commontrace.memory</id>
-  <name>CommonTrace</name>
-  <vendor url="https://github.com/varma61923/commontrace-v2">CommonTrace</vendor>
+  <id>io.unimem.memory</id>
+  <name>UniMem</name>
+  <vendor url="https://github.com/varma61923/unimem">UniMem</vendor>
   <description>Initialize workspace memory, check store health, and copy native MCP configuration for AI Assistant.</description>
   <depends>com.intellij.modules.platform</depends>
   <actions>
-    <action id="CommonTrace.Initialize" class="io.commontrace.StoreAction" text="CommonTrace: Initialize Store">
+    <action id="UniMem.Initialize" class="io.unimem.StoreAction" text="UniMem: Initialize Store">
       <add-to-group group-id="ToolsMenu" anchor="last"/>
     </action>
-    <action id="CommonTrace.Doctor" class="io.commontrace.StoreAction" text="CommonTrace: Check Store Health">
+    <action id="UniMem.Doctor" class="io.unimem.StoreAction" text="UniMem: Check Store Health">
       <add-to-group group-id="ToolsMenu" anchor="last"/>
     </action>
-    <action id="CommonTrace.CopyConfig" class="io.commontrace.StoreAction" text="CommonTrace: Copy MCP Configuration">
+    <action id="UniMem.CopyConfig" class="io.unimem.StoreAction" text="UniMem: Copy MCP Configuration">
       <add-to-group group-id="ToolsMenu" anchor="last"/>
     </action>
   </actions>

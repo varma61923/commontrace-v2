@@ -11,11 +11,11 @@ from dataclasses import dataclass
 
 from sqlalchemy import select, text
 
-from commontrace import configuration, embeddings
-from commontrace.vector_store import PostgresVectorIndex
 from hub.db import session_scope
 from hub.memory_projection import HostedProjection, ProjectionIdentity
 from hub.models import MemoryChangeClock, MemoryProjectionState
+from unimem import configuration, embeddings
+from unimem.vector_store import PostgresVectorIndex
 
 
 class LocalEmbedder:
@@ -96,7 +96,7 @@ class ProjectionFactory:
                     "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname='vector')"))).scalar_one()
             if not installed:
                 raise embeddings.EmbeddingError("pgvector extension is unavailable")
-            tag = configuration.getenv("COMMONTRACE_FACT_EMBEDDER", "bge-small")
+            tag = configuration.getenv("UNIMEM_FACT_EMBEDDER", "bge-small")
             if tag in ("none", "off"):
                 raise embeddings.EmbeddingError("dense retrieval is disabled in server configuration")
             self._embedder = await LocalEmbedder.load(tag)
@@ -146,7 +146,7 @@ class ProjectionFactory:
         """
         async with session_scope(self.factory, org_id=org) as session:
             await session.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:owner, 61923))"),
-                                  {"owner": "commontrace-memory:" + org})
+                                  {"owner": "unimem-memory:" + org})
             states = (await session.execute(select(MemoryProjectionState).where(
                 MemoryProjectionState.org_id == org))).scalars().all()
             clock = await session.get(MemoryChangeClock, org)

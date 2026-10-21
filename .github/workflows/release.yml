@@ -44,9 +44,9 @@ jobs:
           python -m venv /tmp/wheel-env
           /tmp/wheel-env/bin/pip install dist/*.whl
           cd /tmp
-          /tmp/wheel-env/bin/commontrace --version
-          /tmp/wheel-env/bin/commontrace init --dest /tmp/smoke-store
-          /tmp/wheel-env/bin/commontrace --offline doctor --dest /tmp/smoke-store
+          /tmp/wheel-env/bin/unimem --version
+          /tmp/wheel-env/bin/unimem init --dest /tmp/smoke-store
+          /tmp/wheel-env/bin/unimem --offline doctor --dest /tmp/smoke-store
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: python-dist

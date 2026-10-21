@@ -14,7 +14,7 @@ def identifier_for(line: dict, org_id: str) -> str:
     """Stable across retries: the same evidence for the same org is one charge."""
     ev = line.get("evidence") or {}
     seed = "|".join(str(x) for x in (org_id, ev.get("experiment"), ev.get("ledger_root"), ev.get("data_digest")))
-    return "ct-value-" + hashlib.sha256(seed.encode()).hexdigest()[:40]
+    return "unimem-value-" + hashlib.sha256(seed.encode()).hexdigest()[:40]
 
 
 def check(settings: billing.StripeSettings, plan: str, line: dict, *, allow_live: bool = False) -> int:
@@ -57,7 +57,7 @@ def warranty_line(root: str, certificate: dict, *, contract: str, memory: str,
     Existing positive usage meter events and their canonical hashes stay intact.
     A refund consumer uses the stable ledger id as its provider idempotency key.
     """
-    from commontrace import valuation
+    from unimem import valuation
 
     credit = valuation.warranty_credit(root, certificate, contract=contract, memory=memory,
                                       minimum_lift=minimum_lift, paid_cents=paid_cents)

@@ -18,9 +18,9 @@ def payload(result):
 @pytest.mark.asyncio
 async def test_batch_scopes_and_per_item_write_privacy(config, session_factory):
     server = build_mcp_server(config, session_factory, make_rate_limiter(config))
-    assert server.commontrace_tool_scopes['get_traces_batch'] == scopes.SCOPE_READ
-    assert server.commontrace_tool_scopes['contribute_traces_batch'] == scopes.SCOPE_WRITE
-    assert server.commontrace_tool_scopes['delete_traces_batch'] == scopes.SCOPE_ADMIN
+    assert server.unimem_tool_scopes['get_traces_batch'] == scopes.SCOPE_READ
+    assert server.unimem_tool_scopes['contribute_traces_batch'] == scopes.SCOPE_WRITE
+    assert server.unimem_tool_scopes['delete_traces_batch'] == scopes.SCOPE_ADMIN
     async with session_scope(session_factory) as session:
         organization = Organization(name='batch-org')
         session.add(organization)

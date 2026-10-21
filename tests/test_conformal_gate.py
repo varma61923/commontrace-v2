@@ -5,8 +5,8 @@ import random
 
 import pytest
 
-from commontrace import conformal_gate as gate
-from commontrace import dosage
+from unimem import conformal_gate as gate
+from unimem import dosage
 
 
 def test_seeded_marginal_and_stratum_harm_budget():
@@ -91,7 +91,7 @@ def test_malformed_calibration_refused(number):
 
 
 def _log_trial(root, rng, n, *, start=0, scorer="lexical", context="Support"):
-    from commontrace import holdout_io
+    from unimem import holdout_io
 
     for i in range(start, start + n):
         relevance = rng.random()
@@ -103,7 +103,7 @@ def _log_trial(root, rng, n, *, start=0, scorer="lexical", context="Support"):
 
 
 def test_gate_snapshot_excludes_gated_rows_and_is_cached(tmp_path, monkeypatch):
-    from commontrace import holdout_io
+    from unimem import holdout_io
 
     root = str(tmp_path)
     holdout_io.configure(root, rate=.3, salt="gate")
@@ -115,7 +115,7 @@ def test_gate_snapshot_excludes_gated_rows_and_is_cached(tmp_path, monkeypatch):
     threshold = configured["strata"]["support"]["threshold"]
     assert gate.score(.2) < threshold <= gate.score(.35)
     # Admission reads the snapshot: no assignment log is parsed on the hot path.
-    import commontrace.commands.experiment_cmd as experiment_cmd
+    import unimem.commands.experiment_cmd as experiment_cmd
 
     monkeypatch.setattr(experiment_cmd, "_load", lambda root: (_ for _ in ()).throw(AssertionError("hot path")))
     candidate = dosage.Candidate("memory", "text", relevance=.9)
@@ -144,8 +144,8 @@ def test_core_and_hazard_memories_bypass_the_budget(tmp_path):
 
 def test_recall_gates_only_the_calibrated_lessons_channel(tmp_path):
     pytest.importorskip("mcp")
-    from commontrace import hierarchical, recall
     from tests.test_mcp_server import _write_lesson
+    from unimem import hierarchical, recall
 
     root = str(tmp_path)
     _write_lesson(root, "torque", body="Limit gripper torque to five newton metres on glass.")

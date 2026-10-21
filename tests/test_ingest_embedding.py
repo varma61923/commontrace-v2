@@ -7,11 +7,11 @@ import time
 
 import pytest
 
-from commontrace import embeddings
-from commontrace.conversation import store as conv_store
-from commontrace.ingest import Chunk, catalog
-from commontrace.ingest import embedding as ingest_embedding
-from commontrace.ingest import pipeline as pl
+from unimem import embeddings
+from unimem.conversation import store as conv_store
+from unimem.ingest import Chunk, catalog
+from unimem.ingest import embedding as ingest_embedding
+from unimem.ingest import pipeline as pl
 
 
 class FakeProvider:

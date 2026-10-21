@@ -9,7 +9,7 @@ from hub.abuse import make_named_limiter, rate_limit_key
 from hub.config import HubConfig
 from hub.connectors import service
 
-logger = logging.getLogger("commontrace.hub.connectors")
+logger = logging.getLogger("unimem.hub.connectors")
 
 CONNECTOR_EVENTS_PATH = "/connectors/{connector_id}/events"
 

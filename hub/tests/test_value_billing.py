@@ -5,7 +5,7 @@ from hub import billing, plans, value_billing
 pytestmark = pytest.mark.asyncio
 
 LINE = {"kind": "value", "amount": 123.456, "evidence": {
-    "experiment": "salt-1", "ledger_root": "r" * 64, "data_digest": "d" * 64, "verify": "commontrace proof verify x"}}
+    "experiment": "salt-1", "ledger_root": "r" * 64, "data_digest": "d" * 64, "verify": "unimem proof verify x"}}
 TEST = billing.StripeSettings(secret_key="sk_test_123")
 
 

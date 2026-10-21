@@ -2,15 +2,15 @@ from __future__ import annotations
 
 import argparse
 
-from commontrace import hub_client
-from commontrace.commands import sync_cmd
+from unimem import hub_client
+from unimem.commands import sync_cmd
 
 
 def _args(**over):
     base = dict(
         push=False, pull=False, push_traces=False, query="", tags="",
-        hub_url="http://hub.invalid/mcp", hub_api_key="ct_live_test",
-        dest="/tmp/commontrace-sync-cmd-test-root",
+        hub_url="http://hub.invalid/mcp", hub_api_key="unimem_live_test",
+        dest="/tmp/unimem-sync-cmd-test-root",
     )
     base.update(over)
     return argparse.Namespace(**base)
@@ -23,8 +23,8 @@ class TestNoHubConfigured:
         assert "sync" in capsys.readouterr().out.lower()
 
     def test_falls_back_to_environment_variables(self, monkeypatch):
-        monkeypatch.setenv("COMMONTRACE_HUB_URL", "http://hub.invalid/mcp")
-        monkeypatch.setenv("COMMONTRACE_HUB_API_KEY", "ct_live_env")
+        monkeypatch.setenv("UNIMEM_HUB_URL", "http://hub.invalid/mcp")
+        monkeypatch.setenv("UNIMEM_HUB_API_KEY", "unimem_live_env")
         calls = []
 
         async def fake_push(hub, key, root):
@@ -38,7 +38,7 @@ class TestNoHubConfigured:
         monkeypatch.setattr(hub_client, "pull_search_results", fake_pull)
         args = _args(hub_url=None, hub_api_key=None)
         assert sync_cmd.run(args) == 0
-        assert calls == [("http://hub.invalid/mcp", "ct_live_env")]
+        assert calls == [("http://hub.invalid/mcp", "unimem_live_env")]
 
 
 class TestCliKeyWarning:
@@ -55,7 +55,7 @@ class TestCliKeyWarning:
         assert "visible to other local users" in capsys.readouterr().err
 
     def test_no_warning_when_the_key_comes_only_from_the_environment(self, monkeypatch, capsys):
-        monkeypatch.setenv("COMMONTRACE_HUB_API_KEY", "ct_live_env")
+        monkeypatch.setenv("UNIMEM_HUB_API_KEY", "unimem_live_env")
 
         async def fake_push(hub, key, root):
             return []
@@ -253,7 +253,7 @@ class TestPullReporting:
         out = capsys.readouterr().out
         assert "3 trace(s) found, 1 new candidate(s)" in out
         assert "wrote /tmp/a.md" in out
-        assert "Promote a candidate with `commontrace lesson new`" in out
+        assert "Promote a candidate with `unimem lesson new`" in out
 
     def test_ignored_terms_are_reported_even_with_results(self, monkeypatch, capsys):
         result = hub_client.PullResult(written_paths=["/tmp/a.md"], n_found=1, ignored_terms=["the"])

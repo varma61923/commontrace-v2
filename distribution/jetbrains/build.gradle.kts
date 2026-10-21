@@ -2,8 +2,8 @@ plugins {
     java
     id("org.jetbrains.intellij.platform") version "2.19.0"
 }
-group = "io.commontrace"
-version = "2.0.0"
+group = "io.unimem"
+version = "1.0.0"
 repositories {
     mavenCentral()
     intellijPlatform { defaultRepositories() }
@@ -16,7 +16,7 @@ java { toolchain { languageVersion.set(JavaLanguageVersion.of(21)) } }
 tasks.test { useJUnitPlatform() }
 intellijPlatform {
     pluginConfiguration {
-        name = "CommonTrace"
+        name = "UniMem"
         ideaVersion { sinceBuild = "253" }
     }
 }

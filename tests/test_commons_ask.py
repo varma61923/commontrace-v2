@@ -5,8 +5,8 @@ import json
 
 import pytest
 
-from commontrace import overlap
-from commontrace.commands import commons_cmd
+from unimem import overlap
+from unimem.commands import commons_cmd
 
 
 class TestQuestionSigning:

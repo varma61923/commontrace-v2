@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from benchmarks import completeness as bench
-from commontrace import completeness
+from unimem import completeness
 
 
 def test_the_benchmark_reexports_the_shared_functions_unchanged():
@@ -35,7 +35,7 @@ def test_runtime_grade_uses_the_questions_own_terms():
 
 
 def test_inflections_of_a_question_term_count_as_present():
-    from commontrace import completeness
+    from unimem import completeness
 
     context = "The billing database failed over to the replica and recovered in nine minutes."
     graded = completeness.grade_question("what should I do when the billing database fails over?", context)
@@ -46,11 +46,11 @@ def test_inflections_of_a_question_term_count_as_present():
 
 
 def test_the_benchmark_grader_keeps_exact_token_matching():
-    from commontrace import completeness
+    from unimem import completeness
 
     exact = completeness.grade_context_completeness("failed", {"e": "fails"})
     assert exact["bucket"] == completeness.INSUFFICIENT  # no stemming unless a caller opts in
-    from commontrace._stem import stem
+    from unimem._stem import stem
 
     folded = completeness.grade_context_completeness("failed", {"e": "fails"}, normalize=stem)
     assert folded["bucket"] == completeness.COMPLETE  # the opt-in used by the runtime grade

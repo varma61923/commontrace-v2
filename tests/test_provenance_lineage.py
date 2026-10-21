@@ -8,7 +8,7 @@ import sys
 
 import pytest
 
-from commontrace import _jsonl, hierarchical, memory_control, provenance
+from unimem import _jsonl, hierarchical, memory_control, provenance
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -90,7 +90,7 @@ def test_cli_lineage(root):
     fact, _other, proposal = _chain(root)
 
     def cli(*argv):
-        return subprocess.run([sys.executable, "-m", "commontrace.cli", "graph", "provenance", *argv,
+        return subprocess.run([sys.executable, "-m", "unimem.cli", "graph", "provenance", *argv,
                                "--dest", root], capture_output=True, text=True, cwd=REPO, check=False)
 
     res = cli("--lineage", proposal["id"], "--up", "--json")

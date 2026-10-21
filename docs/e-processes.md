@@ -1,6 +1,6 @@
 # Sequential e-value evidence
 
-`commontrace experiment --evidence e-values` exports predictable AIPW betting
+`unimem experiment --evidence e-values` exports predictable AIPW betting
 evidence and signed per-allocation-era snapshots in `value-evidence.jsonl`.
 It does not replace the billing ledger: `experiment.analyze` and `integrity.audit`
 remain the evidence of record. Never multiply overlapping snapshots of an era.

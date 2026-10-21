@@ -72,7 +72,7 @@ def _heterogeneous_task_fixture(tmp_path):
 
 
 def test_multi_task_effects_report_weighted_stratified_uplift_with_simultaneous_ci(tmp_path):
-    from commontrace import experiment
+    from unimem import experiment
 
     tasks, runner = _heterogeneous_task_fixture(tmp_path)
     result = run(tasks, [sys.executable, str(runner)], occasions=81, seed=61923)
@@ -129,7 +129,7 @@ def test_multi_task_effects_report_weighted_stratified_uplift_with_simultaneous_
 
 
 def test_benchmark_reports_the_preplanned_horizon_when_outcome_rate_changes(tmp_path, monkeypatch):
-    from commontrace import experiment
+    from unimem import experiment
 
     task = {
         "id": "parser",
@@ -329,7 +329,7 @@ def test_multi_task_gate_fails_closed_on_unresolved_randomized_outcome(tmp_path,
 
 
 def test_harmful_lesson_retirement_uses_the_real_causal_lifecycle(tmp_path, monkeypatch):
-    from commontrace import holdout_io, memory_journal
+    from unimem import holdout_io, memory_journal
 
     repo = tmp_path / "task"
     repo.mkdir()

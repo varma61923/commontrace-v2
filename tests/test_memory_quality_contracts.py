@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from benchmarks.memory_contracts import WORKFLOWS, Case, execute, execute_workflow, fixtures, main, score
-from commontrace.conversation import Options, Store, recall
+from unimem.conversation import Options, Store, recall
 
 
 @pytest.mark.parametrize("case", fixtures(), ids=lambda case: case.name)

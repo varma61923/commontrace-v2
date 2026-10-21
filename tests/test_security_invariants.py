@@ -8,8 +8,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from commontrace import injection_guard, memory_guard
-from commontrace.sql_guard import SqlGuardError, execute_guarded_sql
+from unimem import injection_guard, memory_guard
+from unimem.sql_guard import SqlGuardError, execute_guarded_sql
 
 # Synthetic credentials only. Every high-confidence scanner family has a
 # representative, including families absent from the original unit tests.

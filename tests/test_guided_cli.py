@@ -5,9 +5,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from commontrace import cli, gateway, hierarchical, ui_commands
-from commontrace.conversation import Store
 from tests.test_workbench import TOKEN, call
+from unimem import cli, gateway, hierarchical, ui_commands
+from unimem.conversation import Store
 
 
 def test_all_commands_are_categorized_and_topic_discovery_is_useful(capsys):
@@ -54,7 +54,7 @@ def test_guided_ingestion_preserves_argument_boundaries_and_writes_evidence(tmp_
     source.write_text("# Release\nThe reviewed release location is Oslo.\n")
     destination = tmp_path / "store"
     destination.mkdir()
-    (destination / "commontrace.yaml").write_text("profiles:\n  local:\n    embedding: none\n")
+    (destination / "unimem.yaml").write_text("profiles:\n  local:\n    embedding: none\n")
     assert cli.main(["setup", "--workflow", "ingest", "--source", str(source), "--context", "release",
                      "--space", "notes", "--dest", str(destination), "--non-interactive", "--apply", "--json"]) == 0
     result = json.loads(capsys.readouterr().out)
@@ -106,7 +106,7 @@ def test_cli_capture_bounds_memory_while_preserving_write_contract():
 
 @pytest.mark.parametrize("command", sorted(cli._COMMANDS))
 def test_every_command_has_lazy_help_without_store_mutation(command, tmp_path, monkeypatch):
-    monkeypatch.setenv("COMMONTRACE_ROOT", str(tmp_path / "no-store"))
+    monkeypatch.setenv("UNIMEM_ROOT", str(tmp_path / "no-store"))
     with pytest.raises(SystemExit) as caught:
         cli.build_parser(only=command).parse_args([command, "--help"])
     assert caught.value.code == 0

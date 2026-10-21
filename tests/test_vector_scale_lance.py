@@ -6,7 +6,7 @@ import pytest
 
 
 def test_lance_scale_records_paired_recall_and_cleans_temporary_store(tmp_path):
-    if os.environ.get("COMMONTRACE_TEST_LANCE") != "1":
+    if os.environ.get("UNIMEM_TEST_LANCE") != "1":
         pytest.skip("requires the optional LanceDB engine")
     from benchmarks import vector_scale_bench as benchmark
 
@@ -18,13 +18,13 @@ def test_lance_scale_records_paired_recall_and_cleans_temporary_store(tmp_path):
     assert len(report["exact_samples_ms"]) == len(report["sweep"][0]["samples_ms"]) == 5
     assert 0 <= report["sweep"][0]["recall_at_k"] <= 1
     assert all(value >= 0 for value in report["exact_samples_ms"])
-    assert report["source_files_sha256"]["commontrace/vector_lance.py"]
+    assert report["source_files_sha256"]["unimem/vector_lance.py"]
     assert report["hybrid_gate"] == "unverified: vector component only"
     assert not list(tmp_path.iterdir())
 
 
 def test_lance_scale_rejects_invalid_workload_before_creating_store(tmp_path):
-    if os.environ.get("COMMONTRACE_TEST_LANCE") != "1":
+    if os.environ.get("UNIMEM_TEST_LANCE") != "1":
         pytest.skip("requires the optional LanceDB engine")
     from benchmarks import vector_scale_bench as benchmark
 
@@ -44,7 +44,7 @@ def test_lance_scale_rejects_invalid_workload_before_creating_store(tmp_path):
     (1_000_000, 10., float("nan"), False),
 ])
 def test_lance_component_gate_preserves_scale_latency_and_recall_thresholds(n, p95, recall, passed):
-    if os.environ.get("COMMONTRACE_TEST_LANCE") != "1":
+    if os.environ.get("UNIMEM_TEST_LANCE") != "1":
         pytest.skip("requires the optional LanceDB engine")
     from benchmarks import vector_scale_bench as benchmark
 

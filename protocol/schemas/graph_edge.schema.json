@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://commontrace.dev/schemas/graph_edge.schema.json",
-  "title": "CommonTrace Graph Edge",
-  "description": "A directed property edge linking two entities in the CommonTrace temporal knowledge graph with bitemporal validity bounds and connection weight.",
+  "$id": "https://unimem.dev/schemas/graph_edge.schema.json",
+  "title": "UniMem Graph Edge",
+  "description": "A directed property edge linking two entities in the UniMem temporal knowledge graph with bitemporal validity bounds and connection weight.",
   "type": "object",
   "required": [
     "source",

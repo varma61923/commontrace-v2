@@ -1,9 +1,9 @@
 
-from commontrace.litellm_wrapper import CommonTraceLiteLLM, wrap_completion
+from unimem.litellm_wrapper import UniMemLiteLLM, wrap_completion
 
 
 def test_augment_messages_prepends_system():
-    wrapper = CommonTraceLiteLLM()
+    wrapper = UniMemLiteLLM()
     messages = [{"role": "user", "content": "How do I deploy?"}]
     augmented = wrapper._augment_messages(messages, "User prefers Docker over Kubernetes.")
 
@@ -14,7 +14,7 @@ def test_augment_messages_prepends_system():
 
 
 def test_augment_messages_extends_existing_system():
-    wrapper = CommonTraceLiteLLM()
+    wrapper = UniMemLiteLLM()
     messages = [
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "Hello"},
@@ -29,7 +29,7 @@ def test_augment_messages_extends_existing_system():
 
 def test_completion_with_custom_fn(tmp_path):
     root = str(tmp_path / "store")
-    wrapper = CommonTraceLiteLLM(root=root, auto_extract=False)
+    wrapper = UniMemLiteLLM(root=root, auto_extract=False)
 
     called_with = {}
 

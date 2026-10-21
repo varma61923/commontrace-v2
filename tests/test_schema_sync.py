@@ -6,7 +6,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PROTOCOL_SCHEMAS = REPO_ROOT / "protocol" / "schemas"
-PACKAGE_SCHEMAS = REPO_ROOT / "commontrace" / "schemas"
+PACKAGE_SCHEMAS = REPO_ROOT / "unimem" / "schemas"
 
 
 def _schema_names() -> list[str]:
@@ -17,11 +17,11 @@ def _schema_names() -> list[str]:
 def test_packaged_schema_matches_protocol_schema(name):
     protocol_text = (PROTOCOL_SCHEMAS / name).read_text(encoding="utf-8")
     package_path = PACKAGE_SCHEMAS / name
-    assert package_path.exists(), f"commontrace/schemas/{name} is missing (protocol/schemas/ has it)"
+    assert package_path.exists(), f"unimem/schemas/{name} is missing (protocol/schemas/ has it)"
     package_text = package_path.read_text(encoding="utf-8")
     assert protocol_text == package_text, (
-        f"protocol/schemas/{name} and commontrace/schemas/{name} have drifted. "
-        "commontrace/validate.py loads the commontrace/schemas/ copy at runtime, "
+        f"protocol/schemas/{name} and unimem/schemas/{name} have drifted. "
+        "unimem/validate.py loads the unimem/schemas/ copy at runtime, "
         "so a fix applied only to protocol/ is not actually enforced."
     )
 

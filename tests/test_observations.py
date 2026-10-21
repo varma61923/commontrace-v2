@@ -9,7 +9,7 @@ import sys
 import pytest
 import yaml
 
-from commontrace import hierarchical, observations
+from unimem import hierarchical, observations
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NOW = "2026-10-04T00:00:00+00:00"
@@ -17,7 +17,7 @@ NOW = "2026-10-04T00:00:00+00:00"
 
 def cli(*argv: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [sys.executable, "-m", "commontrace.cli", *argv],
+        [sys.executable, "-m", "unimem.cli", *argv],
         capture_output=True,
         text=True,
         cwd=REPO_ROOT,
@@ -128,7 +128,7 @@ def test_observations_file_atomic_and_bounded(store):
 
 def test_mcp_observation_evidence_round_trip(store):
     pytest.importorskip("mcp", reason="MCP SDK not installed")
-    from commontrace import mcp_server
+    from unimem import mcp_server
 
     _seed(store, "MCP observable claim.", [("m1", "2026-10-01"), ("m2", "2026-10-02")])
     observation = observations.consolidate_facts(store, now=NOW)[0]

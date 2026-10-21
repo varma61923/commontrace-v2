@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from commontrace import gateway, trace_io, workbench
+from unimem import gateway, trace_io, workbench
 
 TOKEN = "history-contract-credential"
 AUTH = {"Authorization": "Bearer " + TOKEN}
@@ -87,7 +87,7 @@ def test_history_pagination_validation(tmp_path, query):
 
 
 def test_operator_history_refuses_container_scope(tmp_path):
-    from commontrace import telemetry
+    from unimem import telemetry
 
     app = gateway.Gateway(str(tmp_path), token=TOKEN)
     with telemetry.bind(container_tag="tenant-a"):

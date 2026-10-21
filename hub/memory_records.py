@@ -18,9 +18,13 @@ from sqlalchemy import DateTime, cast, delete, func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 
-from commontrace import capabilities, memory_guard
-from commontrace.fact_evidence import MAX_CHECKS, EvidenceResolver
-from commontrace.memory_record import (
+from hub import audit, delegation
+from hub.db import session_scope
+from hub.memory_vector_events import append_change, redact_changes
+from hub.models import MemoryRecordEvent, MemoryRecordProjection, MemoryVectorErasure
+from unimem import capabilities, memory_guard
+from unimem.fact_evidence import MAX_CHECKS, EvidenceResolver
+from unimem.memory_record import (
     MemoryRecord,
     atomic_fact_from_record,
     facet_observation,
@@ -28,14 +32,10 @@ from commontrace.memory_record import (
     preference_statistics,
     rerank_profile_results,
 )
-from commontrace.record_visibility import GroundingState, bind_capture_sources, now, sanitize_record_content, visible
-from hub import audit, delegation
-from hub.db import session_scope
-from hub.memory_vector_events import append_change, redact_changes
-from hub.models import MemoryRecordEvent, MemoryRecordProjection, MemoryVectorErasure
+from unimem.record_visibility import GroundingState, bind_capture_sources, now, sanitize_record_content, visible
 
 _VECTOR_CANDIDATE_BATCH = 500
-_ATOMIC_FACT_FORMAT = "commontrace.atomic-fact.v1"
+_ATOMIC_FACT_FORMAT = "unimem.atomic-fact.v1"
 
 
 def _erasure_closure(rows, identity):
@@ -94,7 +94,7 @@ class PostgresJournal:
         server-side SDK operation, not a client-controlled verification callback.
         Ordinary record writes do not constitute fleet promotion.
         """
-        from commontrace import frontier_protocol as fp
+        from unimem import frontier_protocol as fp
 
         if not verify_policy(policy):
             raise PermissionError("fleet transfer requires an authenticated uplift policy")
@@ -124,7 +124,7 @@ class PostgresJournal:
             replace(sanitize_record_content(record), scope={**record.scope, "tenant": self.org_id})
         )
         if capabilities.CURRENT.get() is not None:
-            from commontrace import capability_io
+            from unimem import capability_io
 
             record = capability_io.runtime_prepare(delegation.ROOT.get(), record)
         if "atomic_fact_format" in record.provenance:
@@ -144,16 +144,16 @@ class PostgresJournal:
         # In particular, a remote erasure retry must not delete a newly reused identifier.
         await session.execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:owner, 61923))"),
-            {"owner": "commontrace-memory:" + self.org_id},
+            {"owner": "unimem-memory:" + self.org_id},
         )
 
     async def _put(self, session, record):
         if capabilities.CURRENT.get() is not None:
-            from commontrace import capability_io
+            from unimem import capability_io
 
             record = capability_io.runtime_prepare(delegation.ROOT.get(), record)
-        from commontrace.capability_io import runtime_descriptor
         from hub import policies
+        from unimem.capability_io import runtime_descriptor
 
         policy = await policies.active(session, self.org_id)
         if not policies.permits(policy, runtime_descriptor(record), action="write"):
@@ -209,8 +209,8 @@ class PostgresJournal:
                       "record": record.to_dict(), "scope": record.scope},
             )
         )
-        from commontrace import frontier_protocol as fp
         from hub import audit
+        from unimem import frontier_protocol as fp
 
         if session.info.get("transparency_key"):
             await audit.record(session, actor="memory-runtime", action="memory_record.put", org_id=self.org_id,
@@ -219,7 +219,7 @@ class PostgresJournal:
 
     async def _refresh_facet(self, session, record):
         if capabilities.CURRENT.get() is not None:
-            from commontrace import capability_io
+            from unimem import capability_io
 
             if not capability_io.permits(delegation.ROOT.get(), {"scopes": capability_io.scope_labels(record.scope),
                                           "memory_type": "observation"}, namespace="records", operation="write"):
@@ -252,8 +252,8 @@ class PostgresJournal:
         if not sources:
             return
         observation = facet_observation(entity, facet, sources)
-        from commontrace.capability_io import runtime_descriptor
         from hub import policies
+        from unimem.capability_io import runtime_descriptor
 
         policy = await policies.active(session, self.org_id)
         if not policies.permits(policy, runtime_descriptor(observation), action="write"):
@@ -311,9 +311,9 @@ class PostgresJournal:
         return _HostedEvidenceResolver("", facts), invalid
 
     async def _cap_allowed_ids(self, session, context, reference, kinds):
-        from commontrace import frontier_protocol as fp
-        from commontrace.capability_io import runtime_descriptor
         from hub import policies
+        from unimem import frontier_protocol as fp
+        from unimem.capability_io import runtime_descriptor
 
         policy = await policies.active(session, self.org_id)
 
@@ -541,7 +541,7 @@ class PostgresJournal:
     async def runtime_profile(
         self, query: str, *, scope: dict, limit=10, occasion_id=None, include_preference_rankers=False
     ):
-        from commontrace.record_visibility import moment
+        from unimem.record_visibility import moment
 
         if type(limit) is not int or not 0 <= limit <= 1000:
             raise ValueError("profile result limit must be in 0..1000")
@@ -604,8 +604,8 @@ class PostgresJournal:
     async def runtime_turn(
         self, session_id: str, query: str, *, scope: dict, text_value="", budget=600, event=None, payload=None
     ):
-        from commontrace.context_template import render_context
-        from commontrace.memory_guard import scan_injection
+        from unimem.context_template import render_context
+        from unimem.memory_guard import scan_injection
 
         source = await self.capture_turn(
             session_id, query, text_value=text_value, scope=scope, event=event, payload=payload
@@ -682,7 +682,7 @@ class PostgresJournal:
 
     async def reap_due(self, *, limit: int = 16) -> list[dict]:
         """Erase a bounded batch of tenant-owned records whose forget_after has passed."""
-        from commontrace.frontier_protocol import digest
+        from unimem.frontier_protocol import digest
 
         if type(limit) is not int or not 1 <= limit <= 100:
             raise ValueError("expiration batch must be in 1..100")
@@ -748,7 +748,7 @@ class PostgresJournal:
                 if current.scope != {**scope, "tenant": self.org_id}:
                     raise PermissionError("only the owning scoped principal can erase this record")
             if capabilities.CURRENT.get() is not None:
-                from commontrace import capability_io
+                from unimem import capability_io
 
                 current = await session.get(MemoryRecordProjection, (self.org_id, identity))
                 if current is None:
@@ -758,7 +758,7 @@ class PostgresJournal:
             if await retention.active_holds(session, self.org_id):
                 raise PermissionError("an active legal hold blocks record erasure; release it explicitly")
             if expected_version is not None or _expected_digest is not None:
-                from commontrace.frontier_protocol import digest
+                from unimem.frontier_protocol import digest
 
                 current = await session.get(
                     MemoryRecordProjection,
@@ -898,7 +898,7 @@ def add_memory_routes(app, session_factory, *, authenticate, require_scope):
             payload = json.loads(raw)
             if not isinstance(payload, dict):
                 raise ValueError("record request must be an object")
-            from commontrace.api_schema import validate_request
+            from unimem.api_schema import validate_request
 
             name = request.path_params["operation"]
             if name in (

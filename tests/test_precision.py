@@ -2,8 +2,8 @@ import json
 
 import pytest
 
-from commontrace import precision
-from commontrace.cli import main
+from unimem import precision
+from unimem.cli import main
 
 
 def _row(oid, truth, returncode):

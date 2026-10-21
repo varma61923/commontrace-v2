@@ -6,13 +6,13 @@ import os
 import pytest
 import yaml
 
-from commontrace import frontmatter, lesson_io, llm, paths
-from commontrace.cli import main
+from unimem import frontmatter, lesson_io, llm, paths
+from unimem.cli import main
 
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
-    monkeypatch.delenv("COMMONTRACE_ROOT", raising=False)
+    monkeypatch.delenv("UNIMEM_ROOT", raising=False)
     monkeypatch.chdir(tmp_path)
     return tmp_path
 
@@ -195,7 +195,7 @@ class TestDraftingARevision:
 class TestDraftWithLLM:
     def test_llm_assisted_draft_fills_in_applies_when(self, store, monkeypatch, capsys):
         _miscalibrated_lesson(store)
-        monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "k")
+        monkeypatch.setenv("UNIMEM_LLM_API_KEY", "k")
 
         def fake_call(cfg, prompt):
             payload = dict(_GOOD_DRAFT_JSON, evidence=["ep0", "ep1"])
@@ -216,7 +216,7 @@ class TestDraftWithLLM:
 
     def test_falls_back_to_todo_scaffold_when_no_llm_is_configured(self, store, monkeypatch, capsys):
         _miscalibrated_lesson(store)
-        monkeypatch.delenv("COMMONTRACE_LLM_API_KEY", raising=False)
+        monkeypatch.delenv("UNIMEM_LLM_API_KEY", raising=False)
         rc = main(["lesson", "suggest-revision", "broad", "--draft", "--dest", str(store)])
         assert rc == 0
         assert "falling back to the template scaffold" in capsys.readouterr().err
@@ -228,7 +228,7 @@ class TestDraftWithLLM:
 
     def test_falls_back_when_the_model_cites_nothing_verifiable(self, store, monkeypatch, capsys):
         _miscalibrated_lesson(store)
-        monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "k")
+        monkeypatch.setenv("UNIMEM_LLM_API_KEY", "k")
 
         def fake_call(cfg, prompt):
             payload = dict(_GOOD_DRAFT_JSON, evidence=["made-up-occasion"])
@@ -245,7 +245,7 @@ class TestDraftWithLLM:
 
     def test_without_the_draft_flag_no_llm_is_called_even_if_configured(self, store, monkeypatch):
         _miscalibrated_lesson(store)
-        monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "k")
+        monkeypatch.setenv("UNIMEM_LLM_API_KEY", "k")
 
         def boom(cfg, prompt):
             raise AssertionError("the LLM must not be called without --draft")
@@ -263,7 +263,7 @@ class TestSuggestRewrite:
 
     def test_writes_a_review_draft_and_leaves_the_original_untouched(self, store, monkeypatch, capsys):
         _harmful_lesson(store)
-        monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "k")
+        monkeypatch.setenv("UNIMEM_LLM_API_KEY", "k")
 
         def fake_call(cfg, prompt):
             payload = dict(_GOOD_DRAFT_JSON, rule="Never do the thing for gadgets.",
@@ -291,7 +291,7 @@ class TestSuggestRewrite:
 
     def test_falls_back_to_a_todo_rule_without_an_llm(self, store, monkeypatch, capsys):
         _harmful_lesson(store)
-        monkeypatch.delenv("COMMONTRACE_LLM_API_KEY", raising=False)
+        monkeypatch.delenv("UNIMEM_LLM_API_KEY", raising=False)
         rc = main(["lesson", "suggest-rewrite", "bad", "--dest", str(store)])
         assert rc == 0
         _draft_fm, draft_body = frontmatter.read(
@@ -302,7 +302,7 @@ class TestSuggestRewrite:
 
     def test_the_draft_is_refused_at_approval_until_edited(self, store, monkeypatch, capsys):
         _harmful_lesson(store)
-        monkeypatch.delenv("COMMONTRACE_LLM_API_KEY", raising=False)
+        monkeypatch.delenv("UNIMEM_LLM_API_KEY", raising=False)
         main(["lesson", "suggest-rewrite", "bad", "--dest", str(store)])
         capsys.readouterr()
         rc = main(["lesson", "approve", "bad-rewrite", "--dest", str(store)])
@@ -311,7 +311,7 @@ class TestSuggestRewrite:
 
     def test_refuses_a_second_draft_while_one_is_pending(self, store, monkeypatch, capsys):
         _harmful_lesson(store)
-        monkeypatch.delenv("COMMONTRACE_LLM_API_KEY", raising=False)
+        monkeypatch.delenv("UNIMEM_LLM_API_KEY", raising=False)
         assert main(["lesson", "suggest-rewrite", "bad", "--dest", str(store)]) == 0
         capsys.readouterr()
         rc = main(["lesson", "suggest-rewrite", "bad", "--dest", str(store)])

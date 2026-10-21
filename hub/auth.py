@@ -36,8 +36,8 @@ from hub.secrets_provider import env_secret
 
 logger = logging.getLogger(__name__)
 
-_KEY_PREFIX = "ct_live_"
-_PREFIX_LEN = 12
+_KEY_PREFIX = "unimem_live_"
+_PREFIX_LEN = len(_KEY_PREFIX) + 4
 
 if _has_argon2 and PasswordHasher is not None:
     _hasher: PasswordHasher | None = PasswordHasher()
@@ -213,7 +213,7 @@ def clear_auth_cache() -> None:
     _AUTH_CACHE.clear()
 
 
-AUTH_INVALIDATION_CHANNEL = "commontrace_auth_invalidate"
+AUTH_INVALIDATION_CHANNEL = "unimem_auth_invalidate"
 
 
 async def announce_auth_change(session: AsyncSession) -> None:
@@ -439,7 +439,9 @@ async def verify_user_token(
     if not await _region_ok(session, row.org_id):
         return None
 
-    row.last_login_at = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc)
+    if row.last_login_at is None or (now - row.last_login_at) >= _LAST_USED_AT_UPDATE_INTERVAL:
+        row.last_login_at = now
     return AuthenticatedUser(id=row.id, org_id=row.org_id, role=row.role, email=row.email)
 
 

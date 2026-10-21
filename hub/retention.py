@@ -22,7 +22,7 @@ from hub.models import (
     Vote,
 )
 
-_DIGEST_DOMAIN = "commontrace-retention-plan-v1"
+_DIGEST_DOMAIN = "unimem-retention-plan-v1"
 _FIELD_SEP = "\x1f"
 
 STATUS_ANY = "any"

@@ -17,7 +17,7 @@ from hub.crud import _is_uuid
 from hub.db import session_scope
 from hub.models import Organization, ScimGroup, ScimGroupMembership, User
 
-logger = logging.getLogger("commontrace.hub")
+logger = logging.getLogger("unimem.hub")
 
 SCIM_USER_SCHEMA = "urn:ietf:params:scim:schemas:core:2.0:User"
 SCIM_GROUP_SCHEMA = "urn:ietf:params:scim:schemas:core:2.0:Group"
@@ -303,6 +303,9 @@ async def _add_members(session: AsyncSession, org_id: str, group_id: str, user_i
 
 
 async def _remove_members(session: AsyncSession, group_id: str, user_ids: set[str]) -> None:
+    # Member ids are UUID columns; an IdP-sent external id cannot be a member,
+    # and binding it would raise a driver error (a 500 the IdP retries forever).
+    user_ids = {uid for uid in user_ids if _is_uuid(uid)}
     if not user_ids:
         return
     await session.execute(

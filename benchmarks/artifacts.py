@@ -30,7 +30,7 @@ def package_source(package):
 
 def model_artifact(name):
     if name.startswith("fastembed:"):
-        from commontrace import embeddings
+        from unimem import embeddings
 
         provider = embeddings.provider(name, local_files_only=True)
         identity, dimensions = provider.projection_identity()

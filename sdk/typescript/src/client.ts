@@ -22,7 +22,7 @@ import type {
  * `HubConfigurationError`. The key goes out as a Bearer token on every
  * call, and a Hub URL is usually set once in configuration and trusted
  * from then on, so the same rules as the Python client apply
- * (commontrace/hub_client.py): http or https only; plaintext http only to
+ * (unimem/hub_client.py): http or https only; plaintext http only to
  * loopback, where traffic never leaves the host; and never a link-local
  * or cloud-metadata address (169.254.169.254, fe80::/10, fd00:ec2::254),
  * which would hand the key to the host's own credential service.
@@ -74,7 +74,7 @@ export interface ToolCaller {
 export interface HubClientOptions {
   /** How many times `call()` will retry a `rate_limited` tool-level
    * refusal before giving up and raising `HubToolError`. Default 3,
-   * matching commontrace/hub_client.py's own default attempt budget for
+   * matching unimem/hub_client.py's own default attempt budget for
    * the same failure mode (see `call`'s docstring below). */
   maxAttempts?: number;
   /** Override fetch (e.g. for a proxy, or a mock in tests). Passed
@@ -136,7 +136,7 @@ export function clampRetryAfter(retryAfter?: unknown): number {
 }
 
 /**
- * A thin, typed client for one CommonTrace Hub deployment's MCP tool
+ * A thin, typed client for one UniMem Hub deployment's MCP tool
  * surface (hub/server.py) -- audit §6.4: "Python only, plus MCP... a
  * TypeScript client is the first [non-Python SDK] worth building."
  *
@@ -146,11 +146,11 @@ export function clampRetryAfter(retryAfter?: unknown): number {
  * shapes for the tools an integrator reaches for first, one generic
  * `call()` for everything else (including any tool added after this
  * package was published), and the one retry behaviour
- * commontrace/hub_client.py's own module history says is worth having
+ * unimem/hub_client.py's own module history says is worth having
  * by default (see `call`).
  *
  * Deliberately thin compared to hub_client.py: that module also drives
- * `commontrace sync`'s bulk local<->Hub reconciliation (idempotency-key
+ * `unimem sync`'s bulk local<->Hub reconciliation (idempotency-key
  * bookkeeping, adaptive pacing across hundreds of files, a five-way
  * error taxonomy for a batch CLI's exit code). None of that is part of
  * being an MCP client for a Hub; a caller that needs bulk sync still
@@ -173,7 +173,7 @@ export class HubClient {
    */
   static async connect(url: string, apiKey: string, options: HubClientOptions = {}): Promise<HubClient> {
     const hubUrl = checkHubUrl(url);
-    const mcpClient = new Client({ name: "commontrace-hub-client-ts", version: "0.1.0" });
+    const mcpClient = new Client({ name: "unimem-hub-client-ts", version: "0.1.0" });
     const transport = new StreamableHTTPClientTransport(hubUrl, {
       requestInit: { headers: { Authorization: `Bearer ${apiKey}` } },
       fetch: options.fetch,
@@ -213,7 +213,7 @@ export class HubClient {
    * Retries ONLY a `rate_limited` tool-level refusal (hub/server.py
    * returns this INSIDE a 200 response for a write-limiter refusal, not
    * as an HTTP-level 429), waiting `retry_after` seconds if the server
-   * sent one. commontrace/hub_client.py's own module docstring
+   * sent one. unimem/hub_client.py's own module docstring
    * documents why this default exists: without it, a bulk write that
    * hits a shared write limiter reads every "come back in two seconds"
    * as a permanent per-call failure -- measured there at losing most of

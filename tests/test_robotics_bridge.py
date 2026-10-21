@@ -6,12 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from commontrace import evidence, gateway, holdout_io, paths
-from commontrace import frontier_protocol as fp
-from commontrace import transparency_log as log
-from commontrace.robotics import bridge, edge, ingest
 from tests.test_gateway import AUTH, TOKEN
 from tests.test_safety import protected_fact
+from unimem import evidence, gateway, holdout_io, paths
+from unimem import frontier_protocol as fp
+from unimem import transparency_log as log
+from unimem.robotics import bridge, edge, ingest
 
 
 class LocalTransport:
@@ -132,19 +132,19 @@ def test_lerobot_and_mcap_metadata_ingest(tmp_path):
     with mpath.open("wb") as stream:
         writer = mcap.Writer(stream)
         writer.start()
-        channel = writer.register_channel(topic="/commontrace/episode", message_encoding="json", schema_id=0)
+        channel = writer.register_channel(topic="/unimem/episode", message_encoding="json", schema_id=0)
         writer.add_message(channel_id=channel, log_time=1, publish_time=1, data=json.dumps(rows[0]).encode())
         writer.finish()
     assert ingest.mcap_file(str(tmp_path / "mcap-store"), str(mpath), environment="real", robot="r7")[0]["env"] == "real"
 
 
 def test_protected_lesson_can_be_provisioned_to_edge(tmp_path):
-    from commontrace import safety
+    from unimem import safety
     pytest.importorskip("mcp")
     from tests.test_mcp_server import _write_lesson
     root = str(tmp_path / "origin")
     path = _write_lesson(root, "hazard", body="Stop motion when a human enters the work cell.")
-    from commontrace import frontmatter, lesson_admission
+    from unimem import frontmatter, lesson_admission
     fm, body = frontmatter.read(path)
     fm["approval_receipt"] = lesson_admission.issue(root, path, fm, body, actor="engineer")
     frontmatter.write(path, fm, body)
@@ -226,7 +226,7 @@ def test_bridge_accepts_realistic_labels_and_contains_bad_ros_messages(tmp_path)
 def test_ros_stl_service_blocks_violating_action_and_contains_malformed_input(tmp_path):
     from types import SimpleNamespace
 
-    from commontrace.robotics import shield
+    from unimem.robotics import shield
 
     root = str(tmp_path)
     shield.register(root, "clearance", memory_id="stop-memory", embodiment="arm",
@@ -261,8 +261,8 @@ def test_ros_stl_service_blocks_violating_action_and_contains_malformed_input(tm
                        shield_service_type=object)
     request = SimpleNamespace(request_json=json.dumps({"spec_id": "clearance", "action": {"grasp": True},
         "source_memory_ids": ["stop-memory"], "trace": [{"t": 0, "distance": 0.8}, {"t": 1, "distance": 0.2}]}))
-    response = services[f"/commontrace/robot_{fp.digest('r7')[:16]}/shield"](request, SimpleNamespace())
+    response = services[f"/unimem/robot_{fp.digest('r7')[:16]}/shield"](request, SimpleNamespace())
     assert not response.allowed and json.loads(response.verdict_json)["verdict"] == "violated"
-    malformed = services[f"/commontrace/robot_{fp.digest('r7')[:16]}/shield"](
+    malformed = services[f"/unimem/robot_{fp.digest('r7')[:16]}/shield"](
         SimpleNamespace(request_json="not-json"), SimpleNamespace())
     assert not malformed.allowed and malformed.error == "JSONDecodeError" and errors

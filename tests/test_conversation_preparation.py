@@ -4,7 +4,7 @@ import threading
 
 import pytest
 
-from commontrace.conversation import Store, embed
+from unimem.conversation import Store, embed
 
 
 @pytest.fixture
@@ -105,7 +105,7 @@ def test_failed_preparation_can_resume_without_reencoding_completed_batches(tmp_
 
 
 def test_index_cli_prepares_local_vectors_and_disabled_embedder_fails_clearly(tmp_path, encoder, monkeypatch, capsys):
-    from commontrace.cli import main
+    from unimem.cli import main
 
     root = str(tmp_path)
     with Store(root, "cli") as store:
@@ -113,6 +113,6 @@ def test_index_cli_prepares_local_vectors_and_disabled_embedder_fails_clearly(tm
     monkeypatch.setattr(embed, "available", lambda: True)
     assert main(["conversation", "index", "cli", "--model", "minilm", "--json", "--dest", root]) == 0
     assert '"units": 1' in capsys.readouterr().out
-    monkeypatch.setenv("COMMONTRACE_CONVERSATION_EMBEDDER", "none")
+    monkeypatch.setenv("UNIMEM_CONVERSATION_EMBEDDER", "none")
     assert main(["conversation", "index", "cli", "--dest", root]) == 2
     assert "enabled embedder" in capsys.readouterr().err

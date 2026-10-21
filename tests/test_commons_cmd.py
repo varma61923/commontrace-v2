@@ -6,8 +6,8 @@ import os
 
 import pytest
 
-from commontrace import overlap
-from commontrace.commands import commons_cmd
+from unimem import overlap
+from unimem.commands import commons_cmd
 
 
 def _write_trace(root, name, title, context, tags, repeated_error):
@@ -81,13 +81,13 @@ class TestResolveHubWarnsOnCliApiKey:
         return type("A", (), base)()
 
     def test_warns_when_key_passed_as_a_cli_flag(self, capsys):
-        commons_cmd._resolve_hub(self._args(hub_api_key="ct_live_test"))
+        commons_cmd._resolve_hub(self._args(hub_api_key="unimem_live_test"))
         err = capsys.readouterr().err
         assert "WARN" in err
         assert "--hub-api-key" in err
 
     def test_no_warning_when_key_comes_from_the_environment(self, capsys, monkeypatch):
-        monkeypatch.setenv("COMMONTRACE_HUB_API_KEY", "ct_live_from_env")
+        monkeypatch.setenv("UNIMEM_HUB_API_KEY", "unimem_live_from_env")
         commons_cmd._resolve_hub(self._args(hub_api_key=None))
         err = capsys.readouterr().err
         assert "WARN" not in err
@@ -123,7 +123,7 @@ class TestSignCommandWritesSignaturesOnly:
 
 class TestUsageShowsBonus:
     def _args(self, **over):
-        base = dict(hub_url="http://hub.invalid/mcp", hub_api_key="ct_live_test")
+        base = dict(hub_url="http://hub.invalid/mcp", hub_api_key="unimem_live_test")
         base.update(over)
         return type("A", (), base)()
 
@@ -160,7 +160,7 @@ class TestSubmit:
             title="Stripe webhooks retry", context_text="duplicate delivery on 500",
             solution_text="use an idempotency key", tags="stripe,webhooks", agent_type="code",
             rationale="substrate, not our business logic",
-            hub_url="http://hub.invalid/mcp", hub_api_key="ct_live_test",
+            hub_url="http://hub.invalid/mcp", hub_api_key="unimem_live_test",
         )
         base.update(over)
         return type("A", (), base)()
@@ -195,7 +195,7 @@ class TestSubmit:
 
 class TestSubmissions:
     def _args(self, **over):
-        base = dict(limit=None, json=False, hub_url="http://hub.invalid/mcp", hub_api_key="ct_live_test")
+        base = dict(limit=None, json=False, hub_url="http://hub.invalid/mcp", hub_api_key="unimem_live_test")
         base.update(over)
         return type("A", (), base)()
 
@@ -359,7 +359,7 @@ class TestSignFromAnExistingExport:
                      "Duplicate charge,webhook redelivered after a timeout\n")
         return p
 
-    def test_signs_without_any_commontrace_store(self, tmp_path, capsys):
+    def test_signs_without_any_unimem_store(self, tmp_path, capsys):
         out = os.path.join(str(tmp_path), "sig.json")
         rc = commons_cmd.run_sign(argparse.Namespace(
             out=out, from_file=self._export(tmp_path), dest=str(tmp_path),
@@ -404,7 +404,7 @@ def _report_args(**kw):
         signatures=None, from_file=None, from_format=None, threshold=None,
         counts_only=False, candidates=False,
         candidate_limit=commons_cmd.DEFAULT_CANDIDATE_LOOKUPS,
-        json=False, hub_url="http://hub.test/mcp", hub_api_key="ct_live_test", dest=None,
+        json=False, hub_url="http://hub.test/mcp", hub_api_key="unimem_live_test", dest=None,
     )
     base.update(kw)
     return argparse.Namespace(**base)
@@ -692,7 +692,7 @@ class TestFetchingTheCorpus:
     def _args(self, tmp_path, **kw):
         base = dict(
             out=str(tmp_path / "corpus.jsonl"), limit=None,
-            hub_url="http://hub.test/mcp", hub_api_key="ct_live_test",
+            hub_url="http://hub.test/mcp", hub_api_key="unimem_live_test",
         )
         base.update(kw)
         return argparse.Namespace(**base)

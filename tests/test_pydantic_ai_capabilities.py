@@ -96,13 +96,13 @@ def _parts(messages, kind):
 
 def test_integration_module_imports_without_the_optional_sdk():
     # The adapter module itself must remain usable to dependency-light clients.
-    module = importlib.import_module("commontrace.integrations.pydantic_ai")
+    module = importlib.import_module("unimem.integrations.pydantic_ai")
     assert callable(module.memory_capabilities)
 
 
 def test_capabilities_dedupe_each_run_inject_context_as_system_and_capture_result(monkeypatch):
     _install_fake_sdk(monkeypatch)
-    from commontrace.integrations.pydantic_ai import memory_capabilities
+    from unimem.integrations.pydantic_ai import memory_capabilities
 
     memory = FakeMemory("alice")
     process_history, after_run = memory_capabilities(memory, budget=123)
@@ -134,7 +134,7 @@ def test_capabilities_dedupe_each_run_inject_context_as_system_and_capture_resul
 
 def test_distinct_run_and_user_scopes_do_not_share_cached_context(monkeypatch):
     _install_fake_sdk(monkeypatch)
-    from commontrace.integrations.pydantic_ai import memory_capabilities
+    from unimem.integrations.pydantic_ai import memory_capabilities
 
     alice = FakeMemory("alice")
     bob = FakeMemory("bob")
@@ -155,7 +155,7 @@ def test_distinct_run_and_user_scopes_do_not_share_cached_context(monkeypatch):
 
 def test_memory_failures_leave_history_and_result_unchanged(monkeypatch):
     _install_fake_sdk(monkeypatch)
-    from commontrace.integrations.pydantic_ai import memory_capabilities
+    from unimem.integrations.pydantic_ai import memory_capabilities
 
     memory = FakeMemory("alice", fail_read=True, fail_write=True)
     process_history, hooks = memory_capabilities(memory)
@@ -176,7 +176,7 @@ def test_memory_failures_leave_history_and_result_unchanged(monkeypatch):
 
 def test_stalled_memory_reads_and_capture_return_within_hook_deadlines(monkeypatch):
     _install_fake_sdk(monkeypatch)
-    from commontrace.integrations.pydantic_ai import memory_capabilities
+    from unimem.integrations.pydantic_ai import memory_capabilities
 
     class StalledMemory(FakeMemory):
         def __init__(self):
@@ -232,7 +232,7 @@ def test_stalled_memory_reads_and_capture_return_within_hook_deadlines(monkeypat
 
 def test_memory_wait_limits_are_configurable_and_must_be_positive(monkeypatch):
     _install_fake_sdk(monkeypatch)
-    from commontrace.integrations.pydantic_ai import memory_capabilities
+    from unimem.integrations.pydantic_ai import memory_capabilities
 
     assert len(memory_capabilities(FakeMemory("alice"), retrieval_timeout=0.01, capture_timeout=0.02)) == 2
     with pytest.raises(ValueError, match="retrieval_timeout"):
@@ -242,7 +242,7 @@ def test_memory_wait_limits_are_configurable_and_must_be_positive(monkeypatch):
 
 
 def test_missing_sdk_is_reported_only_when_constructing_capabilities(monkeypatch):
-    from commontrace.integrations import pydantic_ai as ct
+    from unimem.integrations import pydantic_ai as unimem_integration
 
     original_import = builtins.__import__
 
@@ -253,4 +253,4 @@ def test_missing_sdk_is_reported_only_when_constructing_capabilities(monkeypatch
 
     monkeypatch.setattr(builtins, "__import__", reject_pydantic_ai)
     with pytest.raises(ImportError, match="pydantic-ai"):
-        ct.memory_capabilities(FakeMemory("alice"))
+        unimem_integration.memory_capabilities(FakeMemory("alice"))

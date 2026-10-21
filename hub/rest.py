@@ -1,4 +1,4 @@
-"""The `/api/v1/*` REST surface the CommonTrace Claude Code plugin speaks."""
+"""The `/api/v1/*` REST surface the UniMem Claude Code plugin speaks."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from hub.market import add_market_routes
 from hub.models import Organization
 from hub.plans import EntitlementExceeded
 
-logger = logging.getLogger("commontrace.hub.rest")
+logger = logging.getLogger("unimem.hub.rest")
 
 API_PREFIX = "/api/v1"
 
@@ -43,7 +43,7 @@ def _json_error(status: int, error: str, detail: str = "") -> JSONResponse:
 
 async def _read_json(request: Request) -> dict | None:
     try:
-        from commontrace.frontier_protocol import validate_json_tree
+        from unimem.frontier_protocol import validate_json_tree
 
         def unique_object(pairs):
             result = {}
@@ -360,7 +360,7 @@ def add_rest_routes(
         if denied is not None:
             return denied
         try:
-            from commontrace import oblivious
+            from unimem import oblivious
 
             ceiling = oblivious_clearance_resolver(authenticated)
             replica = oblivious_replica_resolver(authenticated.org_id, ceiling)

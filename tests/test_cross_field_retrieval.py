@@ -6,12 +6,12 @@ import sys
 import pytest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FIXTURES = os.path.join(REPO_ROOT, "commontrace", "fixtures", "fields")
+FIXTURES = os.path.join(REPO_ROOT, "unimem", "fixtures", "fields")
 
-sys.path.insert(0, os.path.join(REPO_ROOT, "commontrace", "reference"))
+sys.path.insert(0, os.path.join(REPO_ROOT, "unimem", "reference"))
 import measure_retrieval  # noqa: E402
 
-from commontrace import retrieval  # noqa: E402
+from unimem import retrieval  # noqa: E402
 
 MAX_POLLUTION = 1.06
 MAX_SPREAD = 1.06
@@ -95,7 +95,7 @@ class TestTheGateActuallyCatchesTheRegressionItExistsFor:
 class TestItRunsAsACommand:
     def test_bench_retrieval_emits_parseable_json(self, tmp_path):
         result = subprocess.run(
-            [sys.executable, "-m", "commontrace", "bench", "--retrieval", "--json",
+            [sys.executable, "-m", "unimem", "bench", "--retrieval", "--json",
              "--dest", str(tmp_path)],
             cwd=REPO_ROOT, capture_output=True, text=True,
         )
@@ -106,7 +106,7 @@ class TestItRunsAsACommand:
 
     def test_the_gate_flags_are_honoured_by_the_exit_code(self, tmp_path):
         result = subprocess.run(
-            [sys.executable, "-m", "commontrace", "bench", "--retrieval",
+            [sys.executable, "-m", "unimem", "bench", "--retrieval",
              "--max-pollution", "0.5", "--dest", str(tmp_path)],
             cwd=REPO_ROOT, capture_output=True, text=True,
         )
@@ -115,7 +115,7 @@ class TestItRunsAsACommand:
 
     def test_retrieval_and_pilot_are_not_silently_combined(self, tmp_path):
         result = subprocess.run(
-            [sys.executable, "-m", "commontrace", "bench", "--retrieval", "--pilot",
+            [sys.executable, "-m", "unimem", "bench", "--retrieval", "--pilot",
              "--dest", str(tmp_path)],
             cwd=REPO_ROOT, capture_output=True, text=True,
         )

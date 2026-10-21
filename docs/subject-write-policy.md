@@ -15,9 +15,9 @@ in the review ledger; the proposed private content is not persisted there.
 Compile bindings from an undelegated operator terminal:
 
 ```sh
-commontrace person policy compile '{"bindings":[{"id":"office","scopes":["project:office"],"subject_class":"adult","context":"workplace"}]}' --dest ./store
-commontrace person policy test '{"record":{"id":"example","scopes":["project:office"]},"source":{"modality":"voice","labels":["emotion"],"inferred":true}}' --dest ./store
-commontrace person policy explain --dest ./store
+unimem person policy compile '{"bindings":[{"id":"office","scopes":["project:office"],"subject_class":"adult","context":"workplace"}]}' --dest ./store
+unimem person policy test '{"record":{"id":"example","scopes":["project:office"]},"source":{"modality":"voice","labels":["emotion"],"inferred":true}}' --dest ./store
+unimem person policy explain --dest ./store
 ```
 
 Bindings select `child-under-13`, `adult` or `care-resident` and `workplace`,

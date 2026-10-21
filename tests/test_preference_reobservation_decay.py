@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from commontrace.memory_record import MemoryRecord, preference_candidates, preference_statistics
+from unimem.memory_record import MemoryRecord, preference_candidates, preference_statistics
 
 AT = "2026-10-12T00:00:00Z"
 
@@ -56,7 +56,7 @@ def test_invalid_decay_metadata_cannot_revive_prior_accumulation(change):
 
 
 def test_local_capture_uses_shared_decay_before_replacing_observation_time():
-    from commontrace.framework_middleware import maintain_preferences
+    from unimem.framework_middleware import maintain_preferences
 
     scope = {"user": "alice", "agent": "writer"}
     identity, content = preference_candidates("I prefer concise answers.", scope)[0]

@@ -13,9 +13,9 @@ except ImportError:  # Python 3.10 remains supported by the package.
     except ImportError:
         tomllib = None
 
-from commontrace.bootstrap_runtime import merge_hooks, native_hooks, setup
-from commontrace.hook_bridge import EVENTS
-from commontrace.native_hooks import normalize
+from unimem.bootstrap_runtime import merge_hooks, native_hooks, setup
+from unimem.hook_bridge import EVENTS
+from unimem.native_hooks import normalize
 
 
 def test_setup_is_idempotent_and_merges_native_hooks(tmp_path):
@@ -52,7 +52,7 @@ def test_setup_kimi_updates_the_active_config_and_preserves_host_settings(tmp_pa
     assert result["agents"][0]["activation"] == "kimi"
     assert second["agents"][0]["activation"] == "kimi"
     text = config_path.read_text(encoding="utf-8")
-    assert text.count("# BEGIN COMMONTRACE HOOKS") == 1
+    assert text.count("# BEGIN UNIMEM HOOKS") == 1
     assert text.count("command = \"user-hook\"") == 1
     assert not (root / "distribution" / "kimi" / "config.toml").exists()
     if tomllib is not None:
@@ -80,18 +80,18 @@ def test_setup_kimi_uses_explicit_external_config_path_without_touching_default(
 
     assert host_config.read_text(encoding="utf-8") == 'default_model = "host-default"\n'
     assert override_config.is_file()
-    assert "# BEGIN COMMONTRACE HOOKS" in override_config.read_text(encoding="utf-8")
+    assert "# BEGIN UNIMEM HOOKS" in override_config.read_text(encoding="utf-8")
 
 
 def test_up_first_reviewed_lesson_reaches_first_prompt_hook(tmp_path, capsys):
     """A reviewed, scoped lesson is available on the first prompt after setup."""
     from types import SimpleNamespace
 
-    from commontrace import holdout_io
-    from commontrace.commands.up_cmd import run as run_up
-    from commontrace.hook_kit import HookKit
-    from commontrace.memory_journal import Journal
-    from commontrace.memory_record import MemoryRecord
+    from unimem import holdout_io
+    from unimem.commands.up_cmd import run as run_up
+    from unimem.hook_kit import HookKit
+    from unimem.memory_journal import Journal
+    from unimem.memory_record import MemoryRecord
 
     root = str(tmp_path)
     repo = hashlib.sha256(os.path.realpath(root).encode()).hexdigest()[:24]
@@ -136,7 +136,7 @@ def test_up_first_reviewed_lesson_reaches_first_prompt_hook(tmp_path, capsys):
 def test_up_empty_store_does_not_claim_or_fabricate_a_first_lesson(tmp_path, capsys):
     from types import SimpleNamespace
 
-    from commontrace.commands.up_cmd import run as run_up
+    from unimem.commands.up_cmd import run as run_up
 
     assert run_up(
         SimpleNamespace(dest=str(tmp_path), host=None, profile="local", setup_only=True, agent=["claude"], port=None)
@@ -150,7 +150,7 @@ def test_up_empty_store_does_not_claim_or_fabricate_a_first_lesson(tmp_path, cap
     assert result["fabricated_lessons"] == 0
 
 
-@pytest.mark.parametrize("previous", ["python -m commontrace.hook_kit", "node hook-bridge.mjs", "python hook_bridge.py"])
+@pytest.mark.parametrize("previous", ["python -m unimem.hook_kit", "node hook-bridge.mjs", "python hook_bridge.py"])
 def test_reinstall_replaces_previous_transport_and_preserves_other_hooks(tmp_path, previous):
     path = tmp_path / "hooks.json"
     path.write_text(json.dumps({"hooks": {"SessionStart": [{"command": previous}, {"command": "other-tool"}]}}))
@@ -178,9 +178,9 @@ def test_codex_post_tool_events_route_failures_through_supported_native_hook(tmp
     assert event == "PostToolUseFailure"
     assert payload["error"] == {"exit_code": 1, "stderr": "AssertionError"}
 
-    from commontrace.hook_kit import HookKit
-    from commontrace.memory_journal import Journal
-    from commontrace.memory_record import MemoryRecord
+    from unimem.hook_kit import HookKit
+    from unimem.memory_journal import Journal
+    from unimem.memory_record import MemoryRecord
 
     root = str(tmp_path)
     Journal(root).put(
@@ -218,10 +218,10 @@ def test_codex_post_tool_normalization_only_marks_explicit_failures(response, ex
 
 def test_a_lesson_approved_after_onboarding_reaches_the_injector_and_revocation_removes_it(tmp_path):
     """The learner-to-injector loop: `up` ran once, a lesson is approved later, no re-run of `up`."""
-    from commontrace import frontmatter, holdout_io
-    from commontrace.bootstrap_runtime import bridge_all, lessons_signature
-    from commontrace.cli import main
-    from commontrace.hook_kit import HookKit
+    from unimem import frontmatter, holdout_io
+    from unimem.bootstrap_runtime import bridge_all, lessons_signature
+    from unimem.cli import main
+    from unimem.hook_kit import HookKit
 
     root = str(tmp_path)
     repo = hashlib.sha256(os.path.realpath(root).encode()).hexdigest()[:24]
@@ -266,17 +266,17 @@ def test_a_lesson_approved_after_onboarding_reaches_the_injector_and_revocation_
 
 def test_the_dense_relevance_gate_defaults_to_the_calibrated_value_and_can_be_overridden(tmp_path, monkeypatch):
     """Cosine scales differ by embedding model, so a relevant lesson at 0.5 needs the gate lowered."""
-    from commontrace import holdout_io
-    from commontrace.hook_kit import HOOK_MIN_COSINE, HookKit, min_cosine
-    from commontrace.memory_journal import Journal
-    from commontrace.memory_record import MemoryRecord
+    from unimem import holdout_io
+    from unimem.hook_kit import HOOK_MIN_COSINE, HookKit, min_cosine
+    from unimem.memory_journal import Journal
+    from unimem.memory_record import MemoryRecord
 
-    monkeypatch.delenv("COMMONTRACE_HOOK_MIN_COSINE", raising=False)
+    monkeypatch.delenv("UNIMEM_HOOK_MIN_COSINE", raising=False)
     assert min_cosine() == HOOK_MIN_COSINE == 0.6
     for bad in ("not-a-number", "nan", "7", "-3"):
-        monkeypatch.setenv("COMMONTRACE_HOOK_MIN_COSINE", bad)
+        monkeypatch.setenv("UNIMEM_HOOK_MIN_COSINE", bad)
         assert min_cosine() == HOOK_MIN_COSINE  # a bad override never disables or breaks the gate
-    monkeypatch.setenv("COMMONTRACE_HOOK_MIN_COSINE", "0.4")
+    monkeypatch.setenv("UNIMEM_HOOK_MIN_COSINE", "0.4")
     assert min_cosine() == 0.4
 
     root = str(tmp_path)
@@ -294,7 +294,7 @@ def test_the_dense_relevance_gate_defaults_to_the_calibrated_value_and_can_be_ov
         kit = HookKit(root, "agent-x", scope={"repo": "r"}, embedder=HalfRelevant())
         return kit.handle("UserPromptSubmit", {"session_id": session, "prompt": "check pytest before changing parser boundaries"})
 
-    monkeypatch.delenv("COMMONTRACE_HOOK_MIN_COSINE", raising=False)
+    monkeypatch.delenv("UNIMEM_HOOK_MIN_COSINE", raising=False)
     assert inject("default-gate")["injected"] == []
-    monkeypatch.setenv("COMMONTRACE_HOOK_MIN_COSINE", "0.4")
+    monkeypatch.setenv("UNIMEM_HOOK_MIN_COSINE", "0.4")
     assert inject("lowered-gate")["injected"] == ["parser-rule"]

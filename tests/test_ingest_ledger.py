@@ -1,8 +1,8 @@
 """Ledger resumption + manifest accounting for every ingestor, and fingerprint equivalence.
 
 The hardcoded digests below were generated from the pre-move implementations in
-hub/crud.py and commontrace/hub_client.py; they prove the move to
-commontrace.fingerprints kept every output identical.
+hub/crud.py and unimem/hub_client.py; they prove the move to
+unimem.fingerprints kept every output identical.
 """
 from __future__ import annotations
 
@@ -12,8 +12,8 @@ import struct
 
 import pytest
 
-from commontrace import fingerprints as fp
-from commontrace.ingest import pipeline as pl
+from unimem import fingerprints as fp
+from unimem.ingest import pipeline as pl
 
 CONTRIBUTE_DIGEST = "9e0dfed304997679be8297ba998266284111b4482ba82a7f9ff6d864496fad9c"
 CONTRIBUTE_EMPTY_DIGEST = "0d92436fde5e0860c31b00ca5c43915647581a8a48d3671766af8dba7a2e1bc6"
@@ -30,7 +30,7 @@ FILE_DIGEST = "sha256:35e9dba52033ffeaa9b127e9d367e8901c49f54fd7a39c0e57d601e6ac
 @pytest.fixture()
 def store(tmp_path):
     root = str(tmp_path / "store")
-    from commontrace import paths
+    from unimem import paths
 
     os.makedirs(paths.lessons_dir(root), exist_ok=True)
     os.makedirs(paths.traces_dir(root), exist_ok=True)
@@ -65,8 +65,8 @@ class TestFingerprintEquivalence:
 
         sys.path.insert(0, "hub")
         try:
-            from commontrace import hub_client
             from hub import crud
+            from unimem import hub_client
         finally:
             sys.path.remove("hub")
         assert crud._contribute_request_hash("T", "C", "S", ["b", "a"], "agent", {"k": 1}, "prof") == CONTRIBUTE_DIGEST
@@ -77,7 +77,7 @@ class TestFingerprintEquivalence:
 
 class TestIngestorResumption:
     def test_code_resume_skips_unchanged(self, store, tmp_path):
-        from commontrace.ingest import ingest_code_repository
+        from unimem.ingest import ingest_code_repository
 
         src = tmp_path / "src"
         src.mkdir()
@@ -91,7 +91,7 @@ class TestIngestorResumption:
         assert forced.chunks_extracted == first.chunks_extracted and forced.skipped_unchanged == 0
 
     def test_markdown_resume_skips_unchanged(self, store, tmp_path):
-        from commontrace.ingest import ingest_markdown_documentation
+        from unimem.ingest import ingest_markdown_documentation
 
         docs = tmp_path / "docs"
         docs.mkdir()
@@ -104,7 +104,7 @@ class TestIngestorResumption:
         assert second.facts_written == 0 and second.skipped_unchanged == 1
 
     def test_json_logs_resume_skips_unchanged(self, store, tmp_path):
-        from commontrace.ingest import ingest_json_logs
+        from unimem.ingest import ingest_json_logs
 
         log = tmp_path / "svc.jsonl"
         log.write_text(
@@ -118,7 +118,7 @@ class TestIngestorResumption:
         assert second.traces_written == 0 and second.skipped_unchanged == 1
 
     def test_transcript_resume_skips_unchanged(self, store, tmp_path):
-        from commontrace.ingest import ingest_failure_transcript
+        from unimem.ingest import ingest_failure_transcript
 
         run = tmp_path / "run.jsonl"
         run.write_text(json.dumps({"step_index": 1, "status": "ERROR", "content": "database is unreachable"}) + "\n",
@@ -129,7 +129,7 @@ class TestIngestorResumption:
         assert second.traces_written == 0 and second.skipped_unchanged == 1
 
     def test_triples_file_resume_skips_unchanged(self, store, tmp_path):
-        from commontrace.ingest import ingest_fact_triples
+        from unimem.ingest import ingest_fact_triples
 
         path = tmp_path / "triples.json"
         path.write_text(json.dumps([{"subject": "svc:api", "predicate": "depends_on", "object": "svc:db"}]),
@@ -140,13 +140,13 @@ class TestIngestorResumption:
         assert second.facts_written == 0 and second.skipped_unchanged == 1
 
     def test_triples_list_input_still_works_without_ledger(self, store):
-        from commontrace.ingest import ingest_fact_triples
+        from unimem.ingest import ingest_fact_triples
 
         res = ingest_fact_triples([{"subject": "svc:a", "predicate": "depends_on", "object": "svc:b"}], store)
         assert res.facts_written == 1
 
     def test_multimodal_resume_skips_unchanged(self, store, tmp_path):
-        from commontrace.ingest import ingest_multimodal_document
+        from unimem.ingest import ingest_multimodal_document
 
         page = tmp_path / "page.html"
         page.write_text("<html><head><title>Runbook</title></head><body><p>" + ("Retry with backoff. " * 40)
@@ -159,8 +159,8 @@ class TestIngestorResumption:
 
 class TestManifestAccounting:
     def test_manifest_round_trips(self, store, tmp_path):
-        from commontrace import _jsonl
-        from commontrace.ingest import ingest_markdown_documentation
+        from unimem import _jsonl
+        from unimem.ingest import ingest_markdown_documentation
 
         docs = tmp_path / "docs"
         docs.mkdir()
@@ -180,19 +180,19 @@ class TestManifestAccounting:
         assert {r["path"]: r for r in second.manifest()} == on_disk
 
     def test_commit_leaves_no_temp_files(self, store, tmp_path):
-        from commontrace.ingest import ingest_code_repository
+        from unimem.ingest import ingest_code_repository
 
         src = tmp_path / "src"
         src.mkdir()
         (src / "m.py").write_text("x = 1\n", encoding="utf-8")
         ingest_code_repository(store, str(src))
-        from commontrace import paths
+        from unimem import paths
 
         memdir = paths.memory_dir(store)
         assert not [f for f in os.listdir(memdir) if f.endswith(".tmp")]
 
     def test_max_files_truncation_is_counted(self, store, tmp_path):
-        from commontrace.ingest import ingest_code_repository
+        from unimem.ingest import ingest_code_repository
 
         src = tmp_path / "src"
         src.mkdir()
@@ -203,7 +203,7 @@ class TestManifestAccounting:
         assert res.to_dict()["truncated"] == 3
 
     def test_large_files_are_counted_not_silent(self, store, tmp_path, monkeypatch):
-        import commontrace.ingest as ingest
+        import unimem.ingest as ingest
 
         monkeypatch.setattr(ingest, "MAX_TEXT_FILE_BYTES", 10)
         src = tmp_path / "src"
@@ -215,7 +215,7 @@ class TestManifestAccounting:
         assert manifest[os.path.abspath(str(src / "big.py"))]["status"] == "skipped_large"
 
     def test_unsupported_formats_are_counted_not_silent(self, store, tmp_path):
-        from commontrace.ingest import ingest_multimodal_document
+        from unimem.ingest import ingest_multimodal_document
 
         blob = tmp_path / "blob"
         blob.mkdir()
@@ -226,7 +226,7 @@ class TestManifestAccounting:
         assert manifest[os.path.abspath(str(blob / "data.parquet"))]["status"] == "skipped_unsupported"
 
     def test_document_pipeline_counts_gaps(self, store, tmp_path, monkeypatch):
-        import commontrace.ingest as ingest
+        import unimem.ingest as ingest
 
         monkeypatch.setattr(ingest, "MAX_TEXT_FILE_BYTES", 10)
         docs = tmp_path / "docs"
@@ -249,7 +249,7 @@ class TestManifestAccounting:
         assert res.truncated == 3
 
     def test_pdf_extraction_quality_in_manifest(self, store, tmp_path):
-        from commontrace.ingest import ingest_multimodal_document
+        from unimem.ingest import ingest_multimodal_document
 
         pdf = tmp_path / "note.pdf"
         pdf.write_bytes(b"%PDF-1.4\nBT /F1 12 Tf 72 712 Td (Hello ledger quality world) Tj ET\n%%EOF")
@@ -261,7 +261,7 @@ class TestManifestAccounting:
         assert detail["chars"] > 0
 
     def test_image_extensions_only_stdlib_decodable(self, tmp_path):
-        from commontrace.ingest import multimodal as mm
+        from unimem.ingest import multimodal as mm
 
         assert set(mm.IMAGE_EXTENSIONS) <= {".png", ".jpg", ".jpeg"}
         gif = tmp_path / "anim.gif"
@@ -278,7 +278,7 @@ class TestManifestAccounting:
 
 class TestConversationSessionKeys:
     def test_same_basename_different_dirs_get_distinct_sessions(self, tmp_path):
-        from commontrace.conversation import Store
+        from unimem.conversation import Store
 
         store = str(tmp_path / "store")
         os.makedirs(os.path.join(store, "memory"), exist_ok=True)
@@ -297,7 +297,7 @@ class TestConversationSessionKeys:
         assert all(s.startswith("doc:notes.md-") and len(s) > len("doc:notes.md-") for s in sessions)
 
     def test_rerun_reuses_session_without_duplicates(self, tmp_path):
-        from commontrace.conversation import Store
+        from unimem.conversation import Store
 
         store = str(tmp_path / "store")
         os.makedirs(os.path.join(store, "memory"), exist_ok=True)

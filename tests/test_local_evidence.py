@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from commontrace import evidence, holdout_io, mcp_server
 from tests.test_mcp_server import _curate, call, cli
+from unimem import evidence, holdout_io, mcp_server
 
-pytest.importorskip("mcp", reason="`commontrace serve` needs the MCP SDK: pip install 'commontrace[serve]'")
+pytest.importorskip("mcp", reason="`unimem serve` needs the MCP SDK: pip install 'unimem[serve]'")
 
 TASK = "password reset email"
 

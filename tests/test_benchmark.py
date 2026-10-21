@@ -5,7 +5,7 @@ import measure_performance as bm
 import pytest
 
 _conftest_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "conftest.py")
-_conftest_spec = importlib.util.spec_from_file_location("commontrace_tests_conftest", _conftest_path)
+_conftest_spec = importlib.util.spec_from_file_location("unimem_tests_conftest", _conftest_path)
 _conftest = importlib.util.module_from_spec(_conftest_spec)
 _conftest_spec.loader.exec_module(_conftest)
 write_episode = _conftest.write_episode

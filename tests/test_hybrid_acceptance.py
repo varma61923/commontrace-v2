@@ -10,7 +10,7 @@ def test_synthetic_hybrid_acceptance_measures_production_api_and_fresh_restart(t
     report = benchmark.measure(source=source, count=64, trials=2, embedder=benchmark.EMBEDDER,
                                synthetic=True, run_restart=True, work_dir=str(tmp_path))
 
-    assert report["api_path"] == "commontrace.search_recipes.search"
+    assert report["api_path"] == "unimem.search_recipes.search"
     assert report["measurement_class"] == "production_api_with_synthetic_adapter"
     assert report["embedding_provider_kind"] == "synthetic_adapter"
     assert report["index_build"]["projection"]["processed"] == 64

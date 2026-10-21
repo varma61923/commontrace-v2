@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-DEST="${HOME}/.commontrace"
+DEST="${HOME}/.unimem"
 INSTALL_DEPS=true
 BUILD_INDEX=true
 IN_PLACE=false
@@ -23,10 +23,10 @@ while [[ $# -gt 0 ]]; do
     --python=*)   PYTHON="${1#--python=}"; shift ;;
     --help|-h)
       cat <<'USAGE'
-install.sh — commontrace setup script
+install.sh — unimem setup script
 
 Usage:
-  ./install.sh                  # install to ~/.commontrace (default)
+  ./install.sh                  # install to ~/.unimem (default)
   ./install.sh --dest /my/path  # install to a custom path
   ./install.sh --in-place       # skip copy, install deps for repo checkout
   ./install.sh --no-deps        # skip pip install (deps already present)
@@ -34,7 +34,7 @@ Usage:
   ./install.sh --help
 
 After install, scripts auto-detect their root from their own location.
-Only set COMMONTRACE_ROOT if you need to override the auto-detected path.
+Only set UNIMEM_ROOT if you need to override the auto-detected path.
 USAGE
       exit 0 ;;
     *) echo "[ERROR] Unknown argument: $1" >&2; exit 1 ;;
@@ -67,7 +67,7 @@ fi
 PY_VERSION=$("${PYTHON}" --version 2>&1)
 
 echo ""
-echo "=== commontrace installer ==="
+echo "=== unimem installer ==="
 echo "  Source  : ${SCRIPT_DIR}"
 echo "  Dest    : ${DEST}"
 echo "  Python  : ${PYTHON} (${PY_VERSION})"
@@ -139,7 +139,7 @@ if [[ "${INSTALL_DEPS}" == "true" ]]; then
       || { echo "      [WARN] pip install failed. You may need to install manually:"; \
            echo "             ${PYTHON} -m pip install -r ${REQS}"; }
   fi
-  echo "      Installing the commontrace package (registers the 'commontrace' command) ..."
+  echo "      Installing the unimem package (registers the 'unimem' command) ..."
   "${PYTHON}" -m pip install --quiet -e "${DEST}" \
     && echo "      Done." \
     || { echo "      [WARN] pip install -e failed. You may need to install manually:"; \
@@ -171,14 +171,14 @@ if [[ "${BUILD_INDEX}" == "true" ]]; then
   fi
   if [[ "${lesson_count}" -eq 0 ]]; then
     echo "      No active lessons found — skipping index build."
-    echo "      (Re-run later: commontrace index)"
+    echo "      (Re-run later: unimem index)"
   else
-    if [[ -f "${DEST}/commontrace/reference/build_index.py" ]]; then
-      COMMONTRACE_ROOT="${DEST}" "${PYTHON}" "${DEST}/commontrace/reference/build_index.py" \
+    if [[ -f "${DEST}/unimem/reference/build_index.py" ]]; then
+      UNIMEM_ROOT="${DEST}" "${PYTHON}" "${DEST}/unimem/reference/build_index.py" \
         && echo "      Index built." \
         || echo "      [WARN] Index build failed (sentence-transformers may not be installed yet)."
     else
-      COMMONTRACE_ROOT="${DEST}" "${PYTHON}" -m commontrace.cli index \
+      UNIMEM_ROOT="${DEST}" "${PYTHON}" -m unimem.cli index \
         && echo "      Index built." \
         || echo "      [WARN] Index build failed (sentence-transformers may not be installed yet)."
     fi
@@ -193,16 +193,16 @@ echo ""
 echo "  Skill root : ${DEST}"
 echo ""
 echo "  Scripts auto-detect their root from their own file location."
-echo "  COMMONTRACE_ROOT env var is only needed to override the auto-detected path."
+echo "  UNIMEM_ROOT env var is only needed to override the auto-detected path."
 echo ""
 echo "  Quick start:"
 echo "    # Run benchmark"
-echo "    commontrace bench            # memory health"
-echo "    commontrace bench --pilot    # business-outcome metrics"
+echo "    unimem bench            # memory health"
+echo "    unimem bench --pilot    # business-outcome metrics"
 echo ""
 echo "    # Query memory"
-echo "    commontrace query \"my task description\""
+echo "    unimem query \"my task description\""
 echo ""
 echo "    # Rebuild attention index"
-echo "    commontrace index"
+echo "    unimem index"
 echo ""

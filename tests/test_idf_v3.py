@@ -4,11 +4,11 @@ import importlib.util
 import json
 import os
 
-from commontrace import holdout_io, retrieval, retrieval_io
-from commontrace.cli import main
+from unimem import holdout_io, retrieval, retrieval_io
+from unimem.cli import main
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FIXTURES = os.path.join(REPO, "commontrace", "fixtures", "fields")
+FIXTURES = os.path.join(REPO, "unimem", "fixtures", "fields")
 
 LESSON = ("p", {"name": "retry-uploads",
                 "description": "retry the failed upload with backoff",
@@ -68,7 +68,7 @@ def test_a_config_file_naming_v3_without_a_floor_gets_v3s_floor(tmp_path):
 def test_the_holdout_log_records_v3_when_the_store_uses_it(tmp_path):
     root = str(tmp_path)
     assert main(["init", "--dest", root]) == 0
-    from commontrace import lesson_io, paths
+    from unimem import lesson_io, paths
     lesson_path = os.path.join(paths.lessons_dir(root), "lesson_retry-uploads.md")
     os.makedirs(os.path.dirname(lesson_path), exist_ok=True)
     fm = {
@@ -90,7 +90,7 @@ def test_the_holdout_log_records_v3_when_the_store_uses_it(tmp_path):
 
 def _field_report(scorer):
     spec = importlib.util.spec_from_file_location(
-        "measure_retrieval", os.path.join(REPO, "commontrace", "reference", "measure_retrieval.py"))
+        "measure_retrieval", os.path.join(REPO, "unimem", "reference", "measure_retrieval.py"))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module.compute(FIXTURES, scorer=scorer)

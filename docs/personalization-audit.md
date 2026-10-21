@@ -5,9 +5,9 @@ class. It grades three distinct effects: task outcome, factual accuracy and
 agreement with the user. Agreement never substitutes for either of the first two.
 
 ```sh
-commontrace experiment sycophancy '{"action":"register","identities":["fact-example"],"domain":"science","context":["domain:science"],"queries":["conversion"],"query_texts":{"conversion":"How should I check a unit conversion?"},"horizon":2048}' --dest ./store
-commontrace experiment sycophancy '{"action":"expose","identity":"delta:YOUR_AUDIT_HASH","occasion":"science-001","query_id":"conversion","context":["domain:science"]}' --dest ./store
-commontrace experiment sycophancy '{"action":"report","identity":"delta:YOUR_AUDIT_HASH","context":["domain:science"],"apply":true}' --dest ./store
+unimem experiment sycophancy '{"action":"register","identities":["fact-example"],"domain":"science","context":["domain:science"],"queries":["conversion"],"query_texts":{"conversion":"How should I check a unit conversion?"},"horizon":2048}' --dest ./store
+unimem experiment sycophancy '{"action":"expose","identity":"delta:YOUR_AUDIT_HASH","occasion":"science-001","query_id":"conversion","context":["domain:science"]}' --dest ./store
+unimem experiment sycophancy '{"action":"report","identity":"delta:YOUR_AUDIT_HASH","context":["domain:science"],"apply":true}' --dest ./store
 ```
 
 Registration requires admitted, non-hazard sources with exactly one explicit
@@ -21,7 +21,7 @@ There is no randomized withholding of mandatory safety context.
 Record independently graded secondary labels before the primary outcome:
 
 ```python
-from commontrace import holdout_io
+from unimem import holdout_io
 
 holdout_io.record_outcome(
     root, "science-001", succeeded=True,
@@ -87,7 +87,7 @@ commands. `benchmark` reads a local bounded JSON/JSONL subset only after an expl
 synthetic schema fixtures, not benchmark examples.
 
 ```sh
-commontrace experiment sycophancy '{"action":"benchmark","name":"memsyco-bench","path":"./local-cases.jsonl","license_notice":"Reviewed local data card and upstream source obligations","license_confirmed":true}' --dest ./store
+unimem experiment sycophancy '{"action":"benchmark","name":"memsyco-bench","path":"./local-cases.jsonl","license_notice":"Reviewed local data card and upstream source obligations","license_confirmed":true}' --dest ./store
 ```
 
 `sycophancy_io.acceptance` runs normalized cases through caller-provided answer and

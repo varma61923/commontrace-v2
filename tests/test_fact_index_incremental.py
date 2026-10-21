@@ -8,8 +8,8 @@ import threading
 
 import pytest
 
-from commontrace import _jsonl, fact_index, hierarchical
-from commontrace.runtime_cache import RuntimeCache
+from unimem import _jsonl, fact_index, hierarchical
+from unimem.runtime_cache import RuntimeCache
 
 
 @pytest.fixture(autouse=True)

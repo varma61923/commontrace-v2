@@ -1,6 +1,6 @@
 # Living robot safety cases
 
-`commontrace fleet safetycase` stores immutable claims, arguments, scenario records,
+`unimem fleet safetycase` stores immutable claims, arguments, scenario records,
 and evidence references in a local append-only journal. Evidence binds its
 source digest and model/software/world-model digests. When a dependency changes,
 affected evidence is marked stale and queued for a fresh simulation gate; a
@@ -24,8 +24,8 @@ grammar, semantics, and simulator validation. No simulator is bundled.
 Example:
 
 ```sh
-commontrace fleet safetycase claim '{"claim_id":"stops_for_person","hazard":"person_crossing","statement":"The configured robot stops before entering the pedestrian zone."}'
-commontrace fleet safetycase coverage '{"required_hazards":["person_crossing"]}'
+unimem fleet safetycase claim '{"claim_id":"stops_for_person","hazard":"person_crossing","statement":"The configured robot stops before entering the pedestrian zone."}'
+unimem fleet safetycase coverage '{"required_hazards":["person_crossing"]}'
 ```
 
 Evidence registration is an assertion by the caller about an external artifact.

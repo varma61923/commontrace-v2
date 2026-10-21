@@ -4,8 +4,8 @@ import random
 
 import pytest
 
-from commontrace import experiment as ex
-from commontrace import integrity, value
+from unimem import experiment as ex
+from unimem import integrity, value
 
 
 def effect(slug, verdict, n_injected, size, lo, hi):

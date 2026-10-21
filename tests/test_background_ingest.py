@@ -6,8 +6,8 @@ import subprocess
 import sys
 import time
 
-from commontrace import jobs
-from commontrace.cli import main
+from unimem import jobs
+from unimem.cli import main
 
 
 def test_background_ingest_queues_a_job_that_the_worker_completes(tmp_path, capsys):
@@ -38,7 +38,7 @@ def test_background_refuses_preview_and_non_document_types(tmp_path, capsys):
 
 def test_watching_worker_drains_on_sigterm(tmp_path):
     env = {**os.environ, "PYTHONPATH": os.getcwd()}
-    proc = subprocess.Popen([sys.executable, "-m", "commontrace.cli", "jobs", "run", "--watch", "--interval", "0.5",
+    proc = subprocess.Popen([sys.executable, "-m", "unimem.cli", "jobs", "run", "--watch", "--interval", "0.5",
                              "--dest", str(tmp_path)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
     time.sleep(3)
     proc.send_signal(signal.SIGTERM)

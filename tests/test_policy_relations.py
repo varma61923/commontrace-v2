@@ -5,10 +5,10 @@ import json
 
 import pytest
 
-from commontrace import hierarchical, memory_authority, search_recipes
-from commontrace import policy_relations as relations
-from commontrace.memory_journal import Journal
-from commontrace.memory_record import MemoryRecord
+from unimem import hierarchical, memory_authority, search_recipes
+from unimem import policy_relations as relations
+from unimem.memory_journal import Journal
+from unimem.memory_record import MemoryRecord
 
 
 def config(provider="openfga", namespaces=None):
@@ -73,7 +73,7 @@ def test_operator_only_immutable_enrollment_binds_configuration(tmp_path):
     assert relations.configure(root, config()) == relations.configure(root, config())
     with pytest.raises(PermissionError, match="immutable"):
         relations.configure(root, {**config(), "relation": "writer"})
-    from commontrace import frontier_protocol as fp
+    from unimem import frontier_protocol as fp
 
     filename = fp.filename(root, relations.CONFIG)
     value = json.loads(open(filename).read())
@@ -112,7 +112,7 @@ def test_native_runtime_filters_before_top_k_and_refreshes_provider_every_search
 
 
 def test_indexed_facts_pass_authorized_ids_to_native_ann_before_top_k(tmp_path, monkeypatch):
-    from commontrace import fact_store
+    from unimem import fact_store
 
     root = str(tmp_path)
     facts = hierarchical.append_facts(root, [{"statement": "Hidden wrist note."}, {"statement": "Visible wrist note."}])

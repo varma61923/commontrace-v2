@@ -2,7 +2,7 @@ from collections import Counter
 
 import pytest
 
-from commontrace import oblivious
+from unimem import oblivious
 
 
 def test_server_share_transcript_is_query_independent():

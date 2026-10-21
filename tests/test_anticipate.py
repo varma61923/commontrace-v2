@@ -5,14 +5,14 @@ import json
 
 import pytest
 
-from commontrace import cli
-from commontrace.conversation import Options, Store, anticipate, graph_walk, recall
+from unimem import cli
+from unimem.conversation import Options, Store, anticipate, graph_walk, recall
 
 
 @pytest.fixture(autouse=True)
 def _offline(monkeypatch):
-    monkeypatch.setenv("COMMONTRACE_CONVERSATION_EMBEDDER", "none")
-    monkeypatch.delenv("COMMONTRACE_ANTICIPATE", raising=False)
+    monkeypatch.setenv("UNIMEM_CONVERSATION_EMBEDDER", "none")
+    monkeypatch.delenv("UNIMEM_ANTICIPATE", raising=False)
 
 
 def _seed(root):
@@ -90,16 +90,16 @@ def test_idle_pass_hook_is_opt_in(tmp_path, monkeypatch):
     _seed(root).close()
     model = fake_model(keys)
     assert anticipate.run_if_enabled(root, complete=model) is None and not model.calls
-    monkeypatch.setenv("COMMONTRACE_ANTICIPATE", "on")
+    monkeypatch.setenv("UNIMEM_ANTICIPATE", "on")
     assert anticipate.run_if_enabled(root, complete=model)["ana"]["indexed"] == 2
     assert anticipate.run_if_enabled(root, complete=model) == {}  # nothing pending
-    monkeypatch.setenv("COMMONTRACE_ANTICIPATE", "sometimes")
+    monkeypatch.setenv("UNIMEM_ANTICIPATE", "sometimes")
     with pytest.raises(ValueError):
         anticipate.run_if_enabled(root, complete=model)
 
 
 def test_cli_indexes_with_the_configured_model(tmp_path, monkeypatch, capsys):
-    from commontrace import llm
+    from unimem import llm
 
     root = str(tmp_path)
     _seed(root).close()

@@ -73,9 +73,9 @@ trusting a key embedded in the bundle.
 Install the optional signature support:
 
 ```sh
-python -m pip install 'commontrace[security]'
-commontrace person identity --dest ./sender
-commontrace person export export-request.json --dest ./sender
+python -m pip install 'unimem[security]'
+unimem person identity --dest ./sender
+unimem person export export-request.json --dest ./sender
 ```
 
 An export request contains `identities`, `model_digest`, optional `source_agent`,
@@ -107,7 +107,7 @@ For a pasted assistant summary, use `person stage` with `text`, `source` and an
 optional `context`. A local file can be staged from the operator terminal:
 
 ```sh
-commontrace person stage '{"source":"assistant-summary"}' --file ./summary.txt --dest ./receiver
+unimem person stage '{"source":"assistant-summary"}' --file ./summary.txt --dest ./receiver
 ```
 
 JSON string lists, `{"memories": ["..."]}` and paragraph-separated text are

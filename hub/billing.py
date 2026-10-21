@@ -19,7 +19,7 @@ from hub import plans
 from hub.db import session_scope
 from hub.models import Organization, ProcessedWebhookEvent
 
-logger = logging.getLogger("commontrace.hub.billing")
+logger = logging.getLogger("unimem.hub.billing")
 
 STRIPE_API_BASE = "https://api.stripe.com/v1"
 

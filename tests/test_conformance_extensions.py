@@ -8,13 +8,13 @@ from pathlib import Path
 
 import pytest
 
-from commontrace import api_schema, holdout_io
-from commontrace.hook_kit import HookKit
-from commontrace.memory_journal import Journal
-from commontrace.memory_record import MemoryRecord
-from commontrace.record_api import operate
-from commontrace.record_visibility import visible
-from commontrace.session_learning import learn
+from unimem import api_schema, holdout_io
+from unimem.hook_kit import HookKit
+from unimem.memory_journal import Journal
+from unimem.memory_record import MemoryRecord
+from unimem.record_api import operate
+from unimem.record_visibility import visible
+from unimem.session_learning import learn
 
 _VECTORS = Path(__file__).resolve().parents[1] / "protocol" / "conformance"
 _GOVERNANCE = json.loads((_VECTORS / "governance-vectors.json").read_text(encoding="utf-8"))

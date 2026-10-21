@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 import os
 
-from commontrace import graph
 from e2e_tests.harness.cli_runner import run_cli
+from unimem import graph
 
 
 def test_t1_graph_add_nodes(isolated_store: str):

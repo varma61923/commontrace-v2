@@ -97,9 +97,9 @@ async def test_webhook_ignores_response_bodies_and_closes_streams(monkeypatch, s
     send = events.http_transport()
     if status >= 300:
         with pytest.raises(httpx.HTTPStatusError):
-            await send("https://example.test/hook", "{}", {"X-CommonTrace-Signature": "signed"})
+            await send("https://example.test/hook", "{}", {"X-UniMem-Signature": "signed"})
     else:
-        await send("https://example.test/hook", "{}", {"X-CommonTrace-Signature": "signed"})
+        await send("https://example.test/hook", "{}", {"X-UniMem-Signature": "signed"})
     assert stream.closed
     assert len(requests) == 1
     assert str(requests[0].url) == "https://example.test/hook"

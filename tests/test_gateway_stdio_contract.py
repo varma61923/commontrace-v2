@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from commontrace.gateway import Gateway, serve_stdio
+from unimem.gateway import Gateway, serve_stdio
 
 
 @pytest.mark.parametrize("message", [

@@ -1,26 +1,26 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: commontrace-hub-migrate
+  name: unimem-hub-migrate
   labels:
-    app: commontrace-hub
+    app: unimem-hub
 spec:
   backoffLimit: 2
   ttlSecondsAfterFinished: 3600
   template:
     metadata:
       labels:
-        app: commontrace-hub
+        app: unimem-hub
         job: migrate
     spec:
       restartPolicy: Never
       containers:
         - name: migrate
-          image: REPLACE_ME/commontrace-hub:REPLACE_ME
+          image: REPLACE_ME/unimem-hub:REPLACE_ME
           command: ["python", "-m", "alembic", "-c", "hub/alembic.ini", "upgrade", "head"]
           envFrom:
             - secretRef:
-                name: commontrace-hub-secrets
+                name: unimem-hub-secrets
           resources:
             requests:
               cpu: "100m"

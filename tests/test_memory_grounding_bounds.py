@@ -2,8 +2,8 @@ from dataclasses import replace
 
 import pytest
 
-from commontrace.memory_journal import Journal
-from commontrace.memory_record import MemoryRecord
+from unimem.memory_journal import Journal
+from unimem.memory_record import MemoryRecord
 
 
 def _layered_records(journal, layers=12):
@@ -58,8 +58,8 @@ def test_grounding_cycles_and_depth_are_not_admitted(tmp_path):
 
 
 def test_grounding_has_a_total_work_budget_and_deduplicates_edges(tmp_path, monkeypatch):
-    import commontrace.memory_journal as memory_journal
-    from commontrace.record_visibility import GroundingState
+    import unimem.memory_journal as memory_journal
+    from unimem.record_visibility import GroundingState
 
     journal = Journal(str(tmp_path))
     leaves = [f"leaf-{index}" for index in range(10)]

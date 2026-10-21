@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-from commontrace import fact_index, hierarchical, recall
+from unimem import fact_index, hierarchical, recall
 
 Rows = list[tuple[hierarchical.AtomicFact, float]]
 
@@ -84,7 +84,7 @@ def _rows(rows: Rows) -> str:
 def _implementation_sha256() -> str:
     """Bind measurements to this harness and the complete Python product source."""
     repository = Path(__file__).resolve().parent.parent
-    paths = sorted((repository / 'commontrace').rglob('*.py')) + [Path(__file__).resolve()]
+    paths = sorted((repository / 'unimem').rglob('*.py')) + [Path(__file__).resolve()]
     digest = hashlib.sha256()
     for path in paths:
         digest.update(str(path.relative_to(repository)).encode('utf-8') + b'\0')
@@ -177,7 +177,7 @@ def check(outputs: list[dict[str, Any]]) -> None:
 
 def measure(*, facts: int, trials: int) -> list[dict[str, Any]]:
     implementation = _implementation_sha256()
-    with tempfile.TemporaryDirectory(prefix='commontrace-fact-benchmark-') as root:
+    with tempfile.TemporaryDirectory(prefix='unimem-fact-benchmark-') as root:
         seed(root, facts)
         fact_index.clear_cache()
         started = time.perf_counter_ns()

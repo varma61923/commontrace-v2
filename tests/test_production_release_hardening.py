@@ -4,7 +4,7 @@ import urllib.error
 
 import pytest
 
-from commontrace import retry, telemetry
+from unimem import retry, telemetry
 
 
 @pytest.mark.parametrize('error', [TimeoutError('after commit'), ConnectionResetError('response lost'),
@@ -43,8 +43,8 @@ def test_metrics_have_shared_capacity_and_preserve_existing_series(monkeypatch):
         assert telemetry._COUNTERS[('existing', ())] == 3
         snapshot = telemetry.metrics()
         assert sum(row['value'] for row in snapshot['counters']
-                   if row['name'] == 'commontrace_telemetry_dropped_series') == 986
-        assert 'commontrace_telemetry_dropped_series_total' in telemetry.prometheus()
+                   if row['name'] == 'unimem_telemetry_dropped_series') == 986
+        assert 'unimem_telemetry_dropped_series_total' in telemetry.prometheus()
     finally:
         telemetry.reset()
 

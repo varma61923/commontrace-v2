@@ -1,6 +1,6 @@
 # Value per token and proven cache prefixes
 
-`commontrace retrieval --value-per-token` snapshots the causal gate's posterior
+`unimem retrieval --value-per-token` snapshots the causal gate's posterior
 uplifts outside the retrieval hot path. Admission then uses bounded knapsack
 selection with duplicate adjustment and a relevance-baseline fallback under the
 same estimated-value objective. Refresh the snapshot after material evidence or
@@ -17,5 +17,5 @@ source bytes are unchanged, and versions are scoped to the store. Place the
 prefix before the provider cache breakpoint and volatile memories after it.
 `compression.cache_prefix` accepts deployment-supplied cached/uncached prices and
 latency rates. Missing pricing produces no fabricated dollar savings. `KVReuse`
-is the optional self-hosted interface behind `commontrace[kv-cache]`; actual KV
+is the optional self-hosted interface behind `unimem[kv-cache]`; actual KV
 engines are provider plugins.

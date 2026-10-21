@@ -3,7 +3,7 @@ import random
 
 import pytest
 
-from commontrace.conversation.store import Store, write_txn
+from unimem.conversation.store import Store, write_txn
 
 
 @pytest.mark.parametrize("seed", [0, 17, 91])

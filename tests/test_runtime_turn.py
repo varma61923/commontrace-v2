@@ -1,8 +1,8 @@
 import pytest
 
-from commontrace.client import MemoryClient
-from commontrace.framework_middleware import Middleware
-from commontrace.memory_journal import Journal
+from unimem.client import MemoryClient
+from unimem.framework_middleware import Middleware
+from unimem.memory_journal import Journal
 
 
 def test_save_retrieve_and_read_after_write_scope(tmp_path):
@@ -27,7 +27,7 @@ def test_middleware_native_entry_points_and_outcome(tmp_path):
 def test_record_sdk_rejects_foreign_scope_and_erasure(tmp_path):
     import pytest
 
-    from commontrace.memory_record import MemoryRecord
+    from unimem.memory_record import MemoryRecord
 
     owner = MemoryClient(str(tmp_path), agent_id="a")
     owner.put_record(MemoryRecord("private", "fact", 1, {"text": "parser secret"}, scope={"agent": "a"}))
@@ -75,7 +75,7 @@ def test_actual_openai_and_microsoft_native_callbacks(tmp_path, monkeypatch):
 def test_agent_cannot_erase_owner_shared_record(tmp_path):
     import pytest
 
-    from commontrace.memory_record import MemoryRecord
+    from unimem.memory_record import MemoryRecord
 
     Journal(str(tmp_path)).put(MemoryRecord("shared", "fact", 1, {"text": "public team reference"}))
     agent = MemoryClient(str(tmp_path), agent_id="a")
@@ -85,7 +85,7 @@ def test_agent_cannot_erase_owner_shared_record(tmp_path):
 
 
 def test_undated_custom_profile_is_readable(tmp_path):
-    from commontrace.memory_record import MemoryRecord
+    from unimem.memory_record import MemoryRecord
 
     memory = MemoryClient(str(tmp_path), agent_id="a")
     memory.put_record(MemoryRecord("custom", "profile", 1, {"text": "Use terse answers", "bucket": "custom"}))
@@ -118,7 +118,7 @@ def test_native_history_never_relearns_assistant_preferences_or_old_updates(tmp_
 
 
 def test_openai_native_text_part_array_has_human_authorship():
-    from commontrace.framework_middleware import native_user_text, strip_memory_updates
+    from unimem.framework_middleware import native_user_text, strip_memory_updates
 
     message = {
         "role": "user",
@@ -159,8 +159,8 @@ def test_email_principal_profile_scope_is_preserved(tmp_path):
 
 @pytest.mark.parametrize("observations", ["unknown", None, True, -1, 2**2048])
 def test_preference_capture_recovers_invalid_observation_metadata(tmp_path, observations):
-    from commontrace.framework_middleware import maintain_preferences
-    from commontrace.memory_record import MemoryRecord, preference_candidates
+    from unimem.framework_middleware import maintain_preferences
+    from unimem.memory_record import MemoryRecord, preference_candidates
 
     scope = {"agent": "a"}
     identity, content = preference_candidates("I prefer pytest.", scope)[0]

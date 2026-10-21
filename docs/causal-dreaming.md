@@ -1,6 +1,6 @@
 # Causal dreaming and learned retention
 
-`commontrace dream --causal` reports an itemized budget weighted by historical
+`unimem dream --causal` reports an itemized budget weighted by historical
 retrieval share times positive causal-gate effect. Negative estimates are listed
 for quarantine review; hazards are excluded. The forecast and utility model are
 heuristics, not confidence guarantees.
@@ -10,7 +10,7 @@ pseudo-outcomes, with pooled shrinkage for low-traffic items. `retention.evict` 
 an explicit operator action using predicted value rather than age alone. Legal
 holds and hazards always override eviction. Ordinary retrieval never calls it.
 
-Propose a rewrite with `commontrace frontier rewrite-propose REQUEST.json`
+Propose a rewrite with `unimem frontier rewrite-propose REQUEST.json`
 (`{"slug", "body", "author"}`), then obtain an independent operator review with
 `frontier rewrite-review` (`{"identity", "reviewer"}`); `frontier rewrite-status {}`
 reports the budget and trials. Once reviewed, MCP `retrieve` randomizes the rewrite

@@ -1,6 +1,6 @@
 import pytest
 
-from commontrace.procedural import (
+from unimem.procedural import (
     ProceduralMemory,
     ProceduralStep,
     format_procedural_memory,
@@ -113,7 +113,7 @@ def test_mcp_procedural_tools(tmp_path):
     pytest.importorskip("mcp")
     import asyncio
 
-    from commontrace import mcp_server
+    from unimem import mcp_server
 
     root = str(tmp_path / "store")
     server = mcp_server.build_server(root)

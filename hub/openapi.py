@@ -24,8 +24,8 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Mount, Route
 
-from commontrace import __version__
 from hub import alerts, crud, events, plans, rbac, retention, scopes
+from unimem import __version__
 
 OPENAPI_VERSION = "3.1.0"
 DOCUMENT_PATH = "/api/v1/openapi.json"
@@ -195,7 +195,7 @@ CONNECTOR = [
 _SECURITY_SCHEMES = {
     "apiKey": {
         "type": "apiKey", "in": "header", "name": "X-API-Key",
-        "description": "An org API key (`ct_...`). Each route also requires a scope on that key "
+        "description": "An org API key (`unimem_...`). Each route also requires a scope on that key "
                        "(read, write); a key without it gets 403.",
     },
     "userBearer": {
@@ -215,7 +215,7 @@ _SECURITY_SCHEMES = {
                        "password. Form posts additionally carry a per-action `csrf` token the pages embed.",
     },
     "consoleSession": {
-        "type": "apiKey", "in": "cookie", "name": "ct_console",
+        "type": "apiKey", "in": "cookie", "name": "unimem_console",
         "description": "Signed session cookie set by POST /app/signin (HttpOnly, SameSite=Strict, "
                        "Path=/app, 8 hours). It names the API key used to sign in; revoking that key "
                        "ends the session.",
@@ -273,7 +273,7 @@ def _schemas() -> dict:
         "algorithm": _string("Signature algorithm (`ed25519`, or absent for HMAC).", enum=["ed25519", "hmac-sha256"]),
         "signature": _string("Base64 Ed25519 signature, or HMAC hex."),
     }, ("record", "principal", "organization", "authority", "digest", "signature"), additional=True,
-        description="A signed receipt (commontrace/origin.py `sign`).")
+        description="A signed receipt (unimem/origin.py `sign`).")
     listing_summary = _object({
         "id": _string("Listing id: the signed listing's digest."),
         "name": _string(),
@@ -443,7 +443,7 @@ def _schemas() -> dict:
         "SignedReceipt": signed,
         "SignedListing": {
             "allOf": [signed],
-            "description": "A publisher-signed lesson listing (commontrace/market_listing.py). `record` holds "
+            "description": "A publisher-signed lesson listing (unimem/market_listing.py). `record` holds "
                            "`kind` (`lesson-listing`), `schema_version` (1), `lesson` {frontmatter, body}, "
                            "`lesson_sha256`, `licence` {id, terms, price?, outcome_share?}, `certificate` (a "
                            "referee-signed replicated-lift certificate) and `listed_at`.",
@@ -473,8 +473,8 @@ def _schemas() -> dict:
                                "gen_ai.request.messages / traceloop.entity.input / input.value (context); "
                                "gen_ai.completion / gen_ai.output.messages / gen_ai.response.messages / "
                                "traceloop.entity.output / output.value (solution); gen_ai.system and "
-                               "gen_ai.request.model (tags); commontrace.occasion_id / session.id / "
-                               "gen_ai.conversation.id with commontrace.occasion.succeeded (occasion outcome).",
+                               "gen_ai.request.model (tags); unimem.occasion_id / session.id / "
+                               "gen_ai.conversation.id with unimem.occasion.succeeded (occasion outcome).",
                 "oneOf": [
                     _array(_object({"key": _string(), "value": _free_object("OTLP AnyValue.")}, ("key",),
                                    additional=True)),
@@ -643,7 +643,7 @@ _TAGS = [
         "The MCP streamable-HTTP endpoint (path HUB_STREAMABLE_HTTP_PATH, default /mcp). Tools are "
         "discovered with `tools/list`; their arguments are described by the server itself.",
     ),
-    ("REST", "The /api/v1 REST API (HUB_REST_API_ENABLED) the CommonTrace client plugin speaks. X-API-Key."),
+    ("REST", "The /api/v1 REST API (HUB_REST_API_ENABLED) the UniMem client plugin speaks. X-API-Key."),
     (
         "Marketplace",
         "The lesson marketplace under /api/v1/market (HUB_REST_API_ENABLED). Uploads are verified "
@@ -1227,9 +1227,9 @@ def _operations() -> dict[tuple[str, str], dict]:
             body=_form_body({"api_key": _string("An org API key; checked once, never stored in the cookie.")},
                             ("api_key",)),
             responses={
-                "303": {"description": "Signed in: sets the ct_console cookie and redirects to /app.",
+                "303": {"description": "Signed in: sets the unimem_console cookie and redirects to /app.",
                         "headers": {"Location": {"$ref": "#/components/headers/Location"},
-                                    "Set-Cookie": {"description": "ct_console session cookie.",
+                                    "Set-Cookie": {"description": "unimem_console session cookie.",
                                                    "schema": {"type": "string"}}}},
                 "200": _html("The form with an error (rejected key, or too many attempts)."),
                 "403": _response_ref("CrossOriginRefused"),
@@ -1274,7 +1274,7 @@ def _operations() -> dict[tuple[str, str], dict]:
         ),
         ("GET", "/app/proof/assignments.csv"): _op(
             "consoleAssignmentsCsv", "Console", "Download holdout assignments as CSV", security=CONSOLE,
-            responses={"200": {"description": "Attachment `commontrace-assignments.csv`.",
+            responses={"200": {"description": "Attachment `unimem-assignments.csv`.",
                                "content": {"text/csv": {"schema": {"type": "string"}}}},
                        "303": _response_ref("SignInRedirect")},
         ),
@@ -1688,7 +1688,7 @@ def reference_app():
     from hub.server import build_app
 
     saved = (auth._DEPLOYMENT_REGION, auth._AUTH_CACHE_TTL, auth._AUTH_CACHE_REQUIRES_LISTENER)
-    server_logger = logging.getLogger("commontrace.hub")
+    server_logger = logging.getLogger("unimem.hub")
     quiet = _DropRecord("rate limiting is in-process")
     server_logger.addFilter(quiet)
     try:
@@ -1732,7 +1732,7 @@ def document(app=None) -> dict:
         if path in {"/mcp", "/api/v1/traces", "/api/v1/traces/search", "/v1/memory/record-put",
                     "/v1/memory/record-search", "/v1/memory/record-forget",
                     "/api/v1/memory/records/{operation}"}:
-            from commontrace import capabilities
+            from unimem import capabilities
 
             operation["parameters"] = list(operation.get("parameters", ())) + capabilities.header_parameters()
         responses = dict(operation["responses"])
@@ -1746,9 +1746,9 @@ def document(app=None) -> dict:
     return {
         "openapi": OPENAPI_VERSION,
         "info": {
-            "title": "CommonTrace Hub",
+            "title": "UniMem Hub",
             "version": __version__,
-            "summary": "Every HTTP route the CommonTrace Hub serves.",
+            "summary": "Every HTTP route the UniMem Hub serves.",
             "description": (
                 "Generated from the Hub's live route table by hub/openapi.py. Optional surfaces are "
                 "registered only when their setting is on (see each tag); a disabled surface answers 404. "

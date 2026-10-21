@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import random
 
-from commontrace import experiment
+from unimem import experiment
 
 PER_ARM = 500
 TRIALS = 300

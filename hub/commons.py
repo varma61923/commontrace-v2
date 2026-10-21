@@ -1,10 +1,10 @@
-"""The CommonTrace Knowledge Base: signature helpers and input validation."""
+"""The UniMem Knowledge Base: signature helpers and input validation."""
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from commontrace import overlap
+from unimem import overlap
 
 COMMONS_NUM_PERM = overlap.DEFAULT_NUM_PERM
 

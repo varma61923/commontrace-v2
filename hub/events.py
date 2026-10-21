@@ -15,7 +15,7 @@ from sqlalchemy import select
 from hub.encryption import NULL_CIPHER, EnvelopeCipher
 from hub.models import WebhookDelivery, WebhookEndpoint
 
-_SECRET_DOMAIN = "commontrace-webhook-secret-v1"
+_SECRET_DOMAIN = "unimem-webhook-secret-v1"
 _SIGNATURE_VERSION = "v1"
 
 REPLAY_TOLERANCE_SECONDS = 300
@@ -236,7 +236,7 @@ def derive_secret(signing_key: str, endpoint_id: str, key_version: int) -> str:
 
 
 def signature_header(secret: str, timestamp: int, body: str) -> str:
-    """The `X-CommonTrace-Signature` value for one delivery."""
+    """The `X-UniMem-Signature` value for one delivery."""
     signed = f"{timestamp}.{body}".encode("utf-8")
     digest = hmac.new(secret.encode("utf-8"), signed, hashlib.sha256).hexdigest()
     return f"t={timestamp},{_SIGNATURE_VERSION}={digest}"
@@ -354,6 +354,13 @@ class DeliveryResult:
     delivered: int = 0
     retrying: int = 0
     gave_up: int = 0
+    deferred: int = 0
+
+
+# Endpoints drained at once in one sweep. Each endpoint's own deliveries stay
+# sequential (and in order); the bound keeps a sweep from opening an unbounded
+# number of outbound connections.
+DELIVERY_CONCURRENCY = 16
 
 
 async def deliver_pending(
@@ -369,7 +376,7 @@ async def deliver_pending(
             WebhookDelivery.status == STATUS_PENDING,
             WebhookDelivery.next_attempt_at <= moment,
         )
-        .order_by(WebhookDelivery.created_at)
+        .order_by(WebhookDelivery.created_at, WebhookDelivery.id)
         .limit(limit)
         # Several replicas may run the delivery scheduler at once. Without a
         # row lock each one selects the same due rows and POSTs them, so a
@@ -377,24 +384,36 @@ async def deliver_pending(
         # due row to exactly one sweep and lets the others move on.
         .with_for_update(skip_locked=True)
     )
-    attempted = delivered = retrying = gave_up = 0
-    for delivery in rows.scalars():
-        endpoint = await session.get(WebhookEndpoint, delivery.endpoint_id)
+    deliveries = list(rows.scalars())
+    endpoint_ids = {delivery.endpoint_id for delivery in deliveries}
+    endpoints = {
+        endpoint.id: endpoint for endpoint in (await session.execute(
+            select(WebhookEndpoint).where(WebhookEndpoint.id.in_(endpoint_ids))
+        )).scalars()
+    } if endpoint_ids else {}
+
+    counts = {"attempted": 0, "delivered": 0, "retrying": 0, "gave_up": 0, "deferred": 0}
+    queues: dict[str, list[WebhookDelivery]] = {}
+    for delivery in deliveries:
+        endpoint = endpoints.get(delivery.endpoint_id)
         if endpoint is None or not endpoint.enabled:
             delivery.status = STATUS_FAILED
             delivery.last_error = "endpoint removed or disabled before delivery"
-            gave_up += 1
+            counts["gave_up"] += 1
             continue
+        queues.setdefault(endpoint.id, []).append(delivery)
 
-        attempted += 1
+    timestamp = int(moment.timestamp())
+
+    async def attempt(endpoint: WebhookEndpoint, delivery: WebhookDelivery) -> bool:
+        counts["attempted"] += 1
         delivery.attempts += 1
         body = json.dumps(envelope(delivery), ensure_ascii=False, sort_keys=True)
-        timestamp = int(moment.timestamp())
         headers = {
             "Content-Type": "application/json",
-            "X-CommonTrace-Event": delivery.event_type,
-            "X-CommonTrace-Event-Id": delivery.id,
-            "X-CommonTrace-Signature": signature_header(
+            "X-UniMem-Event": delivery.event_type,
+            "X-UniMem-Event-Id": delivery.id,
+            "X-UniMem-Signature": signature_header(
                 derive_secret(signing_key, endpoint.id, endpoint.key_version),
                 timestamp, body,
             ),
@@ -406,19 +425,41 @@ async def deliver_pending(
             delivery.last_error = type(exc).__name__[:100]
             if delivery.attempts >= MAX_ATTEMPTS:
                 delivery.status = STATUS_FAILED
-                gave_up += 1
+                counts["gave_up"] += 1
             else:
                 delivery.next_attempt_at = moment + datetime.timedelta(
                     seconds=_backoff(delivery.attempts)
                 )
-                retrying += 1
-            continue
+                counts["retrying"] += 1
+            return False
         delivery.status = STATUS_DELIVERED
         delivery.delivered_at = moment
         delivery.last_error = ""
-        delivered += 1
+        counts["delivered"] += 1
+        return True
 
-    return DeliveryResult(attempted, delivered, retrying, gave_up)
+    # No session I/O happens below: an AsyncSession is not safe for concurrent
+    # use, so the coroutines only mutate already-loaded rows.
+    gate = asyncio.Semaphore(DELIVERY_CONCURRENCY)
+
+    async def drain(endpoint_id: str, queue: list[WebhookDelivery]) -> None:
+        # A dead or slow receiver used to stall every other tenant's deliveries
+        # in the sweep, one transport timeout per queued row. Now it delays only
+        # its own queue, and after its first failure the rest of that queue waits
+        # for the same retry instead of each spending another timeout.
+        async with gate:
+            for index, delivery in enumerate(queue):
+                if await attempt(endpoints[endpoint_id], delivery):
+                    continue
+                retry_at = (delivery.next_attempt_at if delivery.status == STATUS_PENDING
+                            else moment + datetime.timedelta(seconds=_backoff(0)))
+                for later in queue[index + 1:]:
+                    later.next_attempt_at = max(later.next_attempt_at, retry_at)
+                    counts["deferred"] += 1
+                return
+
+    await asyncio.gather(*(drain(endpoint_id, queue) for endpoint_id, queue in queues.items()))
+    return DeliveryResult(**counts)
 
 
 async def pending_count(session, org_id: str | None = None) -> int:

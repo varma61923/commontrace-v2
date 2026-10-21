@@ -3,8 +3,8 @@ import sqlite3
 
 import pytest
 
-from commontrace.memory_journal import Journal
-from commontrace.memory_record import MemoryRecord
+from unimem.memory_journal import Journal
+from unimem.memory_record import MemoryRecord
 
 
 def test_idle_journal_connection_reuse_and_nested_ownership(tmp_path):
@@ -130,7 +130,7 @@ def test_injection_claims_are_session_scoped_and_inherited(tmp_path):
 
 
 def test_observation_versions_and_grounding_retraction(tmp_path):
-    from commontrace.observations import consolidate_record_facet
+    from unimem.observations import consolidate_record_facet
 
     journal = Journal(str(tmp_path))
     journal.put(MemoryRecord("f", "fact", 1, {"text": "Parser validates 2 fields"}))
@@ -234,7 +234,7 @@ def test_facet_projection_is_atomic_revision_bound_and_scope_isolated(tmp_path):
 def test_manual_facet_withholds_after_source_revision(tmp_path):
     from dataclasses import replace
 
-    from commontrace.observations import consolidate_record_facet
+    from unimem.observations import consolidate_record_facet
 
     journal = Journal(str(tmp_path))
     source = journal.put(MemoryRecord("a", "fact", 1, {"text": "Parser uses two fields"}))

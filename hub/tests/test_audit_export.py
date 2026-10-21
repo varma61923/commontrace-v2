@@ -29,7 +29,7 @@ class TestFormats:
 
     def test_cef_header_and_extension(self):
         line = audit_export.to_cef(_entry())
-        assert line.startswith("CEF:0|CommonTrace|Hub|")
+        assert line.startswith("CEF:0|UniMem|Hub|")
         assert "|purge_trace|purge_trace|8|" in line
         assert "suser=operator-cli" in line and "cs1=o1" in line and "cs2=trace:t1" in line
         assert "rt=1790856000000" in line

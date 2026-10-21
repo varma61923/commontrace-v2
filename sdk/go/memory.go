@@ -1,5 +1,5 @@
-// Package commontrace implements the same memory API for local and hosted gateways.
-package commontrace
+// Package unimem implements the same memory API for local and hosted gateways.
+package unimem
 
 import (
 	"bytes"

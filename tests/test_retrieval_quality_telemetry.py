@@ -5,7 +5,7 @@ from contextlib import contextmanager
 
 import pytest
 
-from commontrace import fact_store, hierarchical, recall, telemetry
+from unimem import fact_store, hierarchical, recall, telemetry
 
 
 class _RecordingSpan:
@@ -44,7 +44,7 @@ def test_recall_span_reports_raw_fused_score_and_heuristic_assessment(tmp_path, 
     fact, _ = hierarchical.add_fact(root, "The parser validates JSON before execution.")
     hierarchical.add_fact(root, "The parser validates YAML before saving operations.")
     query = "how does the parser validate JSON before execution"
-    monkeypatch.setenv("COMMONTRACE_FACT_EMBEDDER", "none")
+    monkeypatch.setenv("UNIMEM_FACT_EMBEDDER", "none")
     tracer = _install_tracer(monkeypatch)
 
     result = recall.recall(root, query, channels=("facts",), reranker="none")
@@ -52,11 +52,11 @@ def test_recall_span_reports_raw_fused_score_and_heuristic_assessment(tmp_path, 
     fields = _recall_span(tracer)
     assert len(result.items) >= 2
     scores = sorted((item.fused for item in result.items), reverse=True)
-    assert fields["commontrace.recall_top_score_raw"] == max(item.fused for item in result.items)
-    assert fields["commontrace.recall_score_scale"] == "weighted_rrf"
-    assert fields["commontrace.recall_score_margin_raw"] == pytest.approx(scores[0] - scores[1])
-    assert fields["commontrace.recall_assessment_confidence"] == result.assessment.confidence
-    assert fields["commontrace.recall_abstained"] is result.assessment.abstain
+    assert fields["unimem.recall_top_score_raw"] == max(item.fused for item in result.items)
+    assert fields["unimem.recall_score_scale"] == "weighted_rrf"
+    assert fields["unimem.recall_score_margin_raw"] == pytest.approx(scores[0] - scores[1])
+    assert fields["unimem.recall_assessment_confidence"] == result.assessment.confidence
+    assert fields["unimem.recall_abstained"] is result.assessment.abstain
     assert not any(key.endswith("recall_hit") for key in fields)
     wire = repr(fields)
     assert query not in wire and fact.statement not in wire and fact.id not in wire
@@ -65,22 +65,22 @@ def test_recall_span_reports_raw_fused_score_and_heuristic_assessment(tmp_path, 
 def test_empty_recall_reports_zero_raw_score_without_claiming_a_hit(tmp_path, monkeypatch):
     root = str(tmp_path)
     fact_store.migrate(root)
-    monkeypatch.setenv("COMMONTRACE_FACT_EMBEDDER", "none")
+    monkeypatch.setenv("UNIMEM_FACT_EMBEDDER", "none")
     tracer = _install_tracer(monkeypatch)
 
     result = recall.recall(root, "unrelated zebra question", channels=("facts",), reranker="none")
 
     fields = _recall_span(tracer)
     assert not result.items
-    assert fields["commontrace.recall_top_score_raw"] == 0.0
-    assert fields["commontrace.recall_score_scale"] == "weighted_rrf"
-    assert fields["commontrace.recall_score_margin_raw"] == 0.0
-    assert fields["commontrace.recall_abstained"] is True
+    assert fields["unimem.recall_top_score_raw"] == 0.0
+    assert fields["unimem.recall_score_scale"] == "weighted_rrf"
+    assert fields["unimem.recall_score_margin_raw"] == 0.0
+    assert fields["unimem.recall_abstained"] is True
     assert not any(key.endswith("recall_hit") for key in fields)
 
 
 def _conversation_options(**changes):
-    from commontrace.conversation import Options
+    from unimem.conversation import Options
 
     return Options(**{
         "embedder": None, "rerank": None, "entity_boost": 0.0, "recency_boost": 0.0,
@@ -94,8 +94,8 @@ def _conversation_spans(tracer):
 
 
 def test_direct_conversation_quality_is_identical_on_fresh_and_cached_paths(tmp_path, monkeypatch):
-    from commontrace.conversation import Store
-    from commontrace.conversation import recall as conversation_recall
+    from unimem.conversation import Store
+    from unimem.conversation import recall as conversation_recall
 
     tracer = _install_tracer(monkeypatch)
     query = "parser validates JSON"
@@ -113,25 +113,25 @@ def test_direct_conversation_quality_is_identical_on_fresh_and_cached_paths(tmp_
         fields = _conversation_spans(tracer)
         assert len(fields) == 2
         for values in fields:
-            assert values["commontrace.recall_top_score_raw"] == pytest.approx(1 / 61)
-            assert values["commontrace.recall_score_margin_raw"] == pytest.approx(1 / 61 - 1 / 62)
-            assert values["commontrace.recall_score_scale"] == "conversation_weighted_rrf"
-            assert values["commontrace.recall_score_stage"] == "first_stage"
-            assert values["commontrace.recall_assessment_confidence"] == cached.explain["confidence"]
-            assert values["commontrace.recall_abstained"] is False
+            assert values["unimem.recall_top_score_raw"] == pytest.approx(1 / 61)
+            assert values["unimem.recall_score_margin_raw"] == pytest.approx(1 / 61 - 1 / 62)
+            assert values["unimem.recall_score_scale"] == "conversation_weighted_rrf"
+            assert values["unimem.recall_score_stage"] == "first_stage"
+            assert values["unimem.recall_assessment_confidence"] == cached.explain["confidence"]
+            assert values["unimem.recall_abstained"] is False
             assert not any(key.endswith("recall_hit") for key in values)
             wire = repr(values)
             for private in (query, private_space, "private-session-uncaptured", "private-secret-uncaptured",
                             "The parser validates JSON before execution in the private vault."):
                 assert private not in wire
-        assert fields[1]["commontrace.cached"] is True
+        assert fields[1]["unimem.cached"] is True
         assert cached.explain["retrieval_score"]["top"] == pytest.approx(1 / 61)
 
 
 @pytest.mark.parametrize("query", ["", "unrelated zebra question"])
 def test_direct_empty_conversation_quality_is_zero_and_abstained(tmp_path, monkeypatch, query):
-    from commontrace.conversation import Store
-    from commontrace.conversation import recall as conversation_recall
+    from unimem.conversation import Store
+    from unimem.conversation import recall as conversation_recall
 
     tracer = _install_tracer(monkeypatch)
     with Store(str(tmp_path), "empty") as store:
@@ -139,17 +139,17 @@ def test_direct_empty_conversation_quality_is_zero_and_abstained(tmp_path, monke
             result = conversation_recall(store, query, options=_conversation_options())
             assert not result.context and not result.turns
     for fields in _conversation_spans(tracer):
-        assert fields["commontrace.recall_top_score_raw"] == 0.0
-        assert fields["commontrace.recall_score_margin_raw"] == 0.0
-        assert fields["commontrace.recall_score_scale"] == "conversation_weighted_rrf"
-        assert fields["commontrace.recall_assessment_confidence"] == 0.0
-        assert fields["commontrace.recall_abstained"] is True
+        assert fields["unimem.recall_top_score_raw"] == 0.0
+        assert fields["unimem.recall_score_margin_raw"] == 0.0
+        assert fields["unimem.recall_score_scale"] == "conversation_weighted_rrf"
+        assert fields["unimem.recall_assessment_confidence"] == 0.0
+        assert fields["unimem.recall_abstained"] is True
         assert not any(key.endswith("recall_hit") for key in fields)
 
 
 def test_direct_conversation_reports_delivered_evidence_not_unpacked_candidates(tmp_path, monkeypatch):
-    from commontrace.conversation import Store
-    from commontrace.conversation import recall as conversation_recall
+    from unimem.conversation import Store
+    from unimem.conversation import recall as conversation_recall
 
     tracer = _install_tracer(monkeypatch)
     with Store(str(tmp_path), "tiny") as store:
@@ -157,14 +157,14 @@ def test_direct_conversation_reports_delivered_evidence_not_unpacked_candidates(
         result = conversation_recall(store, "parser validates JSON", options=_conversation_options(budget=0))
         assert result.ranked and not result.turns
     fields = _conversation_spans(tracer)[0]
-    assert fields["commontrace.recall_top_score_raw"] == 0.0
-    assert fields["commontrace.recall_score_margin_raw"] == 0.0
-    assert fields["commontrace.recall_abstained"] is True
+    assert fields["unimem.recall_top_score_raw"] == 0.0
+    assert fields["unimem.recall_score_margin_raw"] == 0.0
+    assert fields["unimem.recall_abstained"] is True
 
 
 def test_direct_conversation_quality_includes_delivered_second_pass_scores(tmp_path, monkeypatch):
-    from commontrace.conversation import Store
-    from commontrace.conversation import recall as conversation_recall
+    from unimem.conversation import Store
+    from unimem.conversation import recall as conversation_recall
 
     tracer = _install_tracer(monkeypatch)
     query = "Which tomatoes and peppers are on the trellis?"
@@ -186,18 +186,18 @@ def test_direct_conversation_quality_includes_delivered_second_pass_scores(tmp_p
         assert second.explain["coverage"]["missing_subject_terms"] == []
         assert cached.turns == second.turns
     fields = _conversation_spans(tracer)
-    assert fields[0]["commontrace.recall_score_margin_raw"] == pytest.approx(1 / 61 - 1 / 62)
+    assert fields[0]["unimem.recall_score_margin_raw"] == pytest.approx(1 / 61 - 1 / 62)
     # The newly delivered facet's first-ranked turn ties the original top turn.
     # Omitting second-pass scores would incorrectly retain the positive margin.
     for values in fields[1:]:
-        assert values["commontrace.recall_top_score_raw"] == pytest.approx(1 / 61)
-        assert values["commontrace.recall_score_margin_raw"] == 0.0
-        assert values["commontrace.recall_abstained"] is False
+        assert values["unimem.recall_top_score_raw"] == pytest.approx(1 / 61)
+        assert values["unimem.recall_score_margin_raw"] == 0.0
+        assert values["unimem.recall_abstained"] is False
 
 
 def test_direct_profile_only_context_has_no_invented_ranking_score(tmp_path, monkeypatch):
-    from commontrace.conversation import Store
-    from commontrace.conversation import recall as conversation_recall
+    from unimem.conversation import Store
+    from unimem.conversation import recall as conversation_recall
 
     tracer = _install_tracer(monkeypatch)
     with Store(str(tmp_path), "profile") as store:
@@ -208,17 +208,17 @@ def test_direct_profile_only_context_has_no_invented_ranking_score(tmp_path, mon
             assert "London" in result.context and not result.ranked
             assert result.explain["confidence"] == 1.0
     for fields in _conversation_spans(tracer):
-        assert fields["commontrace.recall_top_score_raw"] == 0.0
-        assert fields["commontrace.recall_score_margin_raw"] == 0.0
-        assert fields["commontrace.recall_assessment_confidence"] == 1.0
-        assert fields["commontrace.recall_abstained"] is False
+        assert fields["unimem.recall_top_score_raw"] == 0.0
+        assert fields["unimem.recall_score_margin_raw"] == 0.0
+        assert fields["unimem.recall_assessment_confidence"] == 1.0
+        assert fields["unimem.recall_abstained"] is False
 
 
 def test_direct_conversation_does_not_enable_export(tmp_path, monkeypatch):
-    from commontrace.conversation import Store
-    from commontrace.conversation import recall as conversation_recall
+    from unimem.conversation import Store
+    from unimem.conversation import recall as conversation_recall
 
-    monkeypatch.delenv("COMMONTRACE_OTEL", raising=False)
+    monkeypatch.delenv("UNIMEM_OTEL", raising=False)
     monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
     monkeypatch.setattr(telemetry, "_TRACER", None)
     monkeypatch.setitem(telemetry._TRACER_STATE, "tried", False)

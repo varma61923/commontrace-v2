@@ -4,13 +4,13 @@ import os
 
 import pytest
 
-from commontrace import frontmatter, trace_io, validate
-from commontrace.cli import main
+from unimem import frontmatter, trace_io, validate
+from unimem.cli import main
 
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
-    monkeypatch.delenv("COMMONTRACE_ROOT", raising=False)
+    monkeypatch.delenv("UNIMEM_ROOT", raising=False)
     monkeypatch.chdir(tmp_path)
     main(["init", "--agent-type", "support", "--dest", str(tmp_path)])
     return tmp_path
@@ -97,7 +97,7 @@ class TestHubClientForwardsAgentId:
     def test_sync_payload_includes_agent_id(self, store, monkeypatch):
         import asyncio
 
-        from commontrace import frontmatter, hub_client, paths
+        from unimem import frontmatter, hub_client, paths
 
         ldir = paths.lessons_dir(str(store))
         fm = {
@@ -124,7 +124,7 @@ class TestHubClientForwardsAgentId:
     def test_sync_payload_defaults_agent_id_to_empty_string(self, store, monkeypatch):
         import asyncio
 
-        from commontrace import frontmatter, hub_client, paths
+        from unimem import frontmatter, hub_client, paths
 
         ldir = paths.lessons_dir(str(store))
         fm = {

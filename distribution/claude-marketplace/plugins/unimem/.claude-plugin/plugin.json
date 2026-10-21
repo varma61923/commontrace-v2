@@ -1,0 +1,15 @@
+{
+  "name": "unimem",
+  "version": "1.0.0",
+  "description": "Measure whether your agent's learned memory actually improves outcomes, withdraw what hurts, and keep an auditable trail.",
+  "author": {
+    "name": "UniMem"
+  },
+  "license": "AGPL-3.0-only",
+  "keywords": [
+    "memory",
+    "agents",
+    "evaluation",
+    "governance"
+  ]
+}

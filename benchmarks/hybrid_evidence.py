@@ -18,7 +18,7 @@ from typing import Any
 
 
 def fingerprint(source: str) -> dict[str, str]:
-    result = subprocess.run(["git", "ls-files", "-z", "--", "commontrace"], cwd=source,
+    result = subprocess.run(["git", "ls-files", "-z", "--", "unimem"], cwd=source,
                             capture_output=True, check=True)
     hashes = {}
     for relative in result.stdout.decode().split("\0"):
@@ -30,12 +30,12 @@ def fingerprint(source: str) -> dict[str, str]:
 
 def worker(source: str) -> dict[str, Any]:
     sys.path.insert(0, source)
-    from commontrace import fact_store, hierarchical, search_recipes
+    from unimem import fact_store, hierarchical, search_recipes
 
     before = fingerprint(source)
     modules = {}
     for name, module in tuple(sys.modules.items()):
-        if name == "commontrace" or name.startswith("commontrace."):
+        if name == "unimem" or name.startswith("unimem."):
             filename = os.path.abspath(module.__file__)
             if os.path.commonpath([source, filename]) != source:
                 raise RuntimeError("runtime import escaped the requested source: " + name)
@@ -49,7 +49,7 @@ def worker(source: str) -> dict[str, Any]:
             return [{"neighbor_id": identity} for identity in self.edges.get(node_id, ())]
 
     measured = {}
-    with tempfile.TemporaryDirectory(prefix="commontrace-hybrid-evidence-") as directory:
+    with tempfile.TemporaryDirectory(prefix="unimem-hybrid-evidence-") as directory:
         root = os.path.join(directory, "dense-graph")
         fact_store.migrate(root)
         anchor, _ = hierarchical.add_fact(root, "Grammar boundaries need validation", scopes=["agent:a"])
@@ -140,7 +140,7 @@ def worker(source: str) -> dict[str, Any]:
     if before != after:
         raise RuntimeError("source changed during measurement")
     for name, module in tuple(sys.modules.items()):
-        if name == "commontrace" or name.startswith("commontrace."):
+        if name == "unimem" or name.startswith("unimem."):
             filename = os.path.abspath(module.__file__)
             if os.path.commonpath([source, filename]) != source:
                 raise RuntimeError("runtime import escaped the requested source: " + name)

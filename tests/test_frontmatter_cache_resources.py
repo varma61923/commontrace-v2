@@ -8,7 +8,7 @@ from threading import Event
 
 import pytest
 
-from commontrace import frontmatter
+from unimem import frontmatter
 
 
 def _parse_after_fork(result):

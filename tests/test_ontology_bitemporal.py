@@ -5,7 +5,7 @@ import os
 
 import pytest
 
-from commontrace import graph, ontology
+from unimem import graph, ontology
 
 
 @pytest.fixture

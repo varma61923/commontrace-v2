@@ -5,8 +5,8 @@ import os
 
 import pytest
 
-from commontrace import approval, frontmatter, lesson_io, paths
-from commontrace.commands import lesson_cmd
+from unimem import approval, frontmatter, lesson_io, paths
+from unimem.commands import lesson_cmd
 
 
 def _write_policy(root, text: str) -> None:

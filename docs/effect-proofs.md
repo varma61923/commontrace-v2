@@ -26,10 +26,10 @@ physical injury. Missing members block proving. Sources, revisions, scopes,
 consent and export policy are rechecked at use time.
 
 ```sh
-commontrace prove effect '{"action":"register","study":"pilot","entries":[{"episode":"task-1","propensity":500000},{"episode":"task-2","propensity":500000}],"source_ids":["SOURCE_ID"]}' --dest ./store
-commontrace prove effect '{"action":"challenge","study":"pilot","nonce":"VERIFIER_64_HEX_DIGITS"}' --dest ./store
-commontrace prove effect '{"action":"assign","study":"pilot","episode":"task-1"}' --dest ./store
-commontrace prove effect '{"action":"observe","study":"pilot","episode":"task-1","succeeded":true}' --dest ./store
+unimem prove effect '{"action":"register","study":"pilot","entries":[{"episode":"task-1","propensity":500000},{"episode":"task-2","propensity":500000}],"source_ids":["SOURCE_ID"]}' --dest ./store
+unimem prove effect '{"action":"challenge","study":"pilot","nonce":"VERIFIER_64_HEX_DIGITS"}' --dest ./store
+unimem prove effect '{"action":"assign","study":"pilot","episode":"task-1"}' --dest ./store
+unimem prove effect '{"action":"observe","study":"pilot","episode":"task-1","succeeded":true}' --dest ./store
 ```
 
 Resolve every member before `action: "prove"`. `action: "witness"` explicitly
@@ -86,8 +86,8 @@ the local host over stdin; native errors do not echo them.
 python -m pip install -e '.[zk]'
 cargo test --manifest-path zk/Cargo.toml --locked -p unimem-effect-core -p unimem-effect-host
 cargo build --manifest-path zk/Cargo.toml --locked -p unimem-effect-host --features prove
-commontrace prove effect '{"action":"configure-prover","program":"/absolute/path/unimem-effect-host","image_id":"AUDITED_64_HEX_IMAGE_ID"}' --dest ./store
-commontrace prove effect '{"study":"pilot","backend":"risc0"}' --dest ./store
+unimem prove effect '{"action":"configure-prover","program":"/absolute/path/unimem-effect-host","image_id":"AUDITED_64_HEX_IMAGE_ID"}' --dest ./store
+unimem prove effect '{"study":"pilot","backend":"risc0"}' --dest ./store
 ```
 
 Building with `--features prove` requires the separately installed RISC Zero

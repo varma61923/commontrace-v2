@@ -54,13 +54,13 @@ class JsonLogFormatter(logging.Formatter):
                     payload[key] = value
                 except (TypeError, ValueError):
                     payload[key] = repr(value)
-        from commontrace.telemetry import _safe_fields
+        from unimem.telemetry import _safe_fields
 
         return json.dumps(_safe_fields(payload), default=str)
 
 
 def configure_logging(level: str = "INFO") -> None:
-    from commontrace import telemetry
+    from unimem import telemetry
 
     root = logging.getLogger()
     for existing in list(root.handlers):
@@ -82,7 +82,7 @@ def _resolve_request_id(client_supplied: str | None) -> str:
 
 
 class RequestContextMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app, logger_name: str = "commontrace.hub.request"):
+    def __init__(self, app, logger_name: str = "unimem.hub.request"):
         super().__init__(app)
         self._logger = logging.getLogger(logger_name)
 
@@ -165,39 +165,39 @@ class Metrics:
             rate_limited = dict(self._rate_limited)
 
         lines = [
-            "# HELP commontrace_hub_requests_total Requests served, by method, route and status.",
-            "# TYPE commontrace_hub_requests_total counter",
+            "# HELP unimem_hub_requests_total Requests served, by method, route and status.",
+            "# TYPE unimem_hub_requests_total counter",
         ]
         for (method, path, status), count in sorted(requests.items()):
             lines.append(
-                f'commontrace_hub_requests_total{{method="{method}",path="{path}",'
+                f'unimem_hub_requests_total{{method="{method}",path="{path}",'
                 f'status="{status}"}} {count}'
             )
         lines += [
-            "# HELP commontrace_hub_request_duration_ms Request duration in milliseconds, by route.",
-            "# TYPE commontrace_hub_request_duration_ms histogram",
+            "# HELP unimem_hub_request_duration_ms Request duration in milliseconds, by route.",
+            "# TYPE unimem_hub_request_duration_ms histogram",
         ]
         for path in sorted(duration_buckets):
             counts = duration_buckets[path]
             for upper, cumulative in zip(self.BUCKETS_MS, counts):
                 lines.append(
-                    f'commontrace_hub_request_duration_ms_bucket{{path="{path}",le="{upper:g}"}} {cumulative}'
+                    f'unimem_hub_request_duration_ms_bucket{{path="{path}",le="{upper:g}"}} {cumulative}'
                 )
             lines.append(
-                f'commontrace_hub_request_duration_ms_bucket{{path="{path}",le="+Inf"}} {counts[-1]}'
+                f'unimem_hub_request_duration_ms_bucket{{path="{path}",le="+Inf"}} {counts[-1]}'
             )
             lines.append(
-                f'commontrace_hub_request_duration_ms_sum{{path="{path}"}} {duration_sum[path]:.2f}'
+                f'unimem_hub_request_duration_ms_sum{{path="{path}"}} {duration_sum[path]:.2f}'
             )
             lines.append(
-                f'commontrace_hub_request_duration_ms_count{{path="{path}"}} {duration_count[path]}'
+                f'unimem_hub_request_duration_ms_count{{path="{path}"}} {duration_count[path]}'
             )
         lines += [
-            "# HELP commontrace_hub_rate_limited_total Requests refused, by which limiter refused them.",
-            "# TYPE commontrace_hub_rate_limited_total counter",
+            "# HELP unimem_hub_rate_limited_total Requests refused, by which limiter refused them.",
+            "# TYPE unimem_hub_rate_limited_total counter",
         ]
         for limiter, count in sorted(rate_limited.items()):
-            lines.append(f'commontrace_hub_rate_limited_total{{limiter="{limiter}"}} {count}')
+            lines.append(f'unimem_hub_rate_limited_total{{limiter="{limiter}"}} {count}')
         return "\n".join(lines) + "\n"
 
 
@@ -234,7 +234,7 @@ def add_health_routes(
             async with session_factory() as session:
                 await session.execute(text("SELECT 1"))
         except Exception as exc:  # noqa: BLE001 - any failure means "not ready"
-            logging.getLogger("commontrace.hub").warning(
+            logging.getLogger("unimem.hub").warning(
                 "readiness check failed", extra={"error": str(exc)}
             )
             return JSONResponse({"status": "not_ready", "database": "unreachable"}, status_code=503)

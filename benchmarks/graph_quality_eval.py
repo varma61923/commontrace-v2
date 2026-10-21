@@ -17,7 +17,7 @@ import sys
 from collections import defaultdict
 from typing import Any
 
-from commontrace import (
+from unimem import (
     entity_resolution,
     fact_conflicts,
     hierarchical,
@@ -284,10 +284,10 @@ def _endpoint_pair(row: dict[str, Any], side: str) -> tuple[str, str] | None:
 
 
 def _edge_pair_outcome(row: dict[str, Any]) -> tuple[str, str]:
-    """Score only decisions represented by CommonTrace's deterministic paths.
+    """Score only decisions represented by UniMem's deterministic paths.
 
     This intentionally abstains on semantic judgments and on value conflicts,
-    which CommonTrace flags as candidates rather than superseding automatically.
+    which UniMem flags as candidates rather than superseding automatically.
     """
     old_endpoints = _endpoint_pair(row, "existing")
     new_endpoints = _endpoint_pair(row, "new")
@@ -304,7 +304,7 @@ def _edge_pair_outcome(row: dict[str, Any]) -> tuple[str, str]:
     if old_norm == new_norm:
         return "duplicate", "normalized exact statement on the same endpoint pair"
     if hierarchical.near_duplicate(older, newer):
-        return "duplicate", "CommonTrace high-precision lexical near-duplicate on the same endpoint pair"
+        return "duplicate", "UniMem high-precision lexical near-duplicate on the same endpoint pair"
 
     conflict = fact_conflicts.classify(older, newer)
     if conflict == "negation":
@@ -337,7 +337,7 @@ def _edge_pair_report(rows: list[dict]) -> dict[str, Any]:
     resolved = [item for item in details if item["predicted"] != "unknown"]
     correct = sum(item["predicted"] == item["expected"] for item in resolved)
     return {
-        "scope": "deterministic CommonTrace statement deduplication and conflict signals, endpoint-aware",
+        "scope": "deterministic UniMem statement deduplication and conflict signals, endpoint-aware",
         "examples": len(rows),
         "expected_counts": {label: sum(item["expected"] == label for item in details) for label in labels[:-1]},
         "predicted_counts": predicted_counts,
@@ -351,7 +351,7 @@ def _edge_pair_report(rows: list[dict]) -> dict[str, Any]:
         "notes": [
             "Fixture rows without endpoint IDs assume the same endpoint pair; rows with IDs are matched as undirected pairs.",
             "Unknown is an abstention: a non-match is not treated as proof of independence or contradiction.",
-            "Numeric value conflicts remain unknown because CommonTrace requires a judge before acting on them.",
+            "Numeric value conflicts remain unknown because UniMem requires a judge before acting on them.",
             "Labels are hand-authored synthetic examples; coverage and resolved accuracy are fixture diagnostics, not production estimates.",
         ],
     }
@@ -365,9 +365,9 @@ def evaluate(fixture: str) -> dict[str, Any]:
         harness_sha256 = hashlib.sha256(stream.read()).hexdigest()
     implementations = {}
     for name in ("entity_resolution.py", "ontology_classify.py", "relation_extraction.py"):
-        path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "commontrace", name)
+        path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "unimem", name)
         with open(path, "rb") as stream:
-            implementations[f"commontrace/{name}"] = hashlib.sha256(stream.read()).hexdigest()
+            implementations[f"unimem/{name}"] = hashlib.sha256(stream.read()).hexdigest()
     return {
         "schema_version": SCHEMA_VERSION,
         "fixture": os.path.basename(fixture),

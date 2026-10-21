@@ -2,7 +2,7 @@ import time
 
 import pytest
 
-from commontrace import packs
+from unimem import packs
 
 
 def test_all_vertical_packs_have_docs_and_deterministic_offline_demos():
@@ -33,7 +33,7 @@ def test_install_copies_versioned_config_and_pack_docs(tmp_path):
 
 
 def test_sovereign_airgapped_pack_disables_network_dependent_adapters():
-    from commontrace.packs import _load
+    from unimem.packs import _load
 
     data, _ = _load("sovereign-airgapped")
     assert data["defaults"]["network_features_enabled"] is False
@@ -60,7 +60,7 @@ def test_pack_names_are_validated_without_path_coercion(name):
 
 
 def test_pack_demo_executes_real_shield_and_does_not_mask_failure(monkeypatch):
-    from commontrace.robotics import shield
+    from unimem.robotics import shield
 
     def unavailable(*args, **kwargs):
         raise RuntimeError("shield unavailable")
@@ -76,7 +76,7 @@ def test_pack_demos_do_not_use_network_even_with_tracing_configured(monkeypatch)
     def unexpected_network(*args, **kwargs):
         raise AssertionError("offline demo attempted network I/O")
 
-    monkeypatch.setenv("COMMONTRACE_OTEL", "1")
+    monkeypatch.setenv("UNIMEM_OTEL", "1")
     monkeypatch.setattr(socket, "create_connection", unexpected_network)
     monkeypatch.setattr(socket, "getaddrinfo", unexpected_network)
     for item in packs.list_packs():
@@ -87,9 +87,9 @@ def test_scoped_offline_policy_resets_without_affecting_other_threads(monkeypatc
     import os
     from concurrent.futures import ThreadPoolExecutor
 
-    from commontrace import offline
+    from unimem import offline
 
-    monkeypatch.delenv("COMMONTRACE_OFFLINE", raising=False)
+    monkeypatch.delenv("UNIMEM_OFFLINE", raising=False)
     before = dict(os.environ)
     with ThreadPoolExecutor(max_workers=1) as executor:
         with pytest.raises(RuntimeError, match="cleanup"):
@@ -109,10 +109,10 @@ def test_scoped_offline_policy_resets_without_affecting_other_threads(monkeypatc
 
 
 def test_cached_tracer_honors_offline_policy_and_enable_switch(monkeypatch):
-    from commontrace import offline, telemetry
+    from unimem import offline, telemetry
 
-    monkeypatch.delenv("COMMONTRACE_OFFLINE", raising=False)
-    monkeypatch.setenv("COMMONTRACE_OTEL", "1")
+    monkeypatch.delenv("UNIMEM_OFFLINE", raising=False)
+    monkeypatch.setenv("UNIMEM_OTEL", "1")
     tracer = object()
     monkeypatch.setattr(telemetry, "_TRACER", tracer)
     monkeypatch.setattr(telemetry, "_TRACER_STATE", {"tried": True, "error": ""})
@@ -121,5 +121,5 @@ def test_cached_tracer_honors_offline_policy_and_enable_switch(monkeypatch):
         assert telemetry._tracer() is None
         assert telemetry.status()["tracing"] is False
     assert telemetry._tracer() is tracer
-    monkeypatch.setenv("COMMONTRACE_OTEL", "0")
+    monkeypatch.setenv("UNIMEM_OTEL", "0")
     assert telemetry._tracer() is None

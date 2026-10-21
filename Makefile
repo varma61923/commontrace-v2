@@ -11,7 +11,7 @@ test-integration:
 test-e2e:
 	$(PYTHON) -m pytest tests/e2e e2e_tests $(PYTEST_ARGS)
 coverage:
-	$(PYTHON) -m pytest tests e2e_tests --cov=commontrace --cov-report=xml --cov-fail-under=80 $(PYTEST_ARGS)
+	$(PYTHON) -m pytest tests e2e_tests --cov=unimem --cov-report=xml --cov-fail-under=80 $(PYTEST_ARGS)
 lint:
 	$(PYTHON) scripts/dev.py lint
 check:
@@ -26,5 +26,5 @@ benchmark:
 serve:
 	$(PYTHON) scripts/dev.py serve
 deploy-validate:
-	helm lint deploy/helm/commontrace-hub --set image.repository=commontrace-hub --set image.tag=local --set existingSecret=hub-secrets
-	helm template local deploy/helm/commontrace-hub --set image.repository=commontrace-hub --set image.tag=local --set existingSecret=hub-secrets > /dev/null
+	helm lint deploy/helm/unimem-hub --set image.repository=unimem-hub --set image.tag=local --set existingSecret=hub-secrets
+	helm template local deploy/helm/unimem-hub --set image.repository=unimem-hub --set image.tag=local --set existingSecret=hub-secrets > /dev/null

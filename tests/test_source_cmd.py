@@ -5,8 +5,8 @@ import os
 
 import pytest
 
-from commontrace import holdout_io, memory_sources
-from commontrace.cli import main
+from unimem import holdout_io, memory_sources
+from unimem.cli import main
 
 FIXTURE = """# Notes
 
@@ -22,7 +22,7 @@ Closed Fridays.
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
-    monkeypatch.delenv("COMMONTRACE_ROOT", raising=False)
+    monkeypatch.delenv("UNIMEM_ROOT", raising=False)
     monkeypatch.chdir(tmp_path)
     claude_md = tmp_path / "CLAUDE.md"
     claude_md.write_text(FIXTURE, encoding="utf-8")

@@ -5,7 +5,7 @@ import zipfile
 
 import pytest
 
-from commontrace.ingest import Chunk, IngestionResult, office, pipeline
+from unimem.ingest import Chunk, IngestionResult, office, pipeline
 
 S = office._SHEET_NS[0]
 P = office._SLIDE_NS[0]
@@ -220,8 +220,8 @@ def test_parse_error_is_visible_and_retryable(tmp_path):
 
 
 def test_cli_preview_and_background_job_report_parse_failure(tmp_path, capsys):
-    from commontrace import jobs
-    from commontrace.cli import main
+    from unimem import jobs
+    from unimem.cli import main
 
     source = tmp_path / "broken.pptx"
     source.write_bytes(b"not a ZIP")
@@ -239,8 +239,8 @@ def test_cli_preview_and_background_job_report_parse_failure(tmp_path, capsys):
 
 
 def test_provenance_keeps_extraction_and_rejects_invalid_before_writes(tmp_path, monkeypatch):
-    from commontrace import hierarchical, provenance
-    from commontrace.connectors.base import record_chunks
+    from unimem import hierarchical, provenance
+    from unimem.connectors.base import record_chunks
 
     root = str(tmp_path / "store")
     chunk = Chunk("Revenue grew twenty percent.", "deck.pptx", "chunk1", "Revenue", "pptx_text", "pptx",

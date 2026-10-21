@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-from commontrace import frontmatter, skills
+from unimem import frontmatter, skills
 
 
 def _write_skill(skills_dir: str, name: str, description: str, body: str = "Do the thing.",
@@ -107,7 +107,7 @@ class TestDiscoveryOrdering:
         assert "wrong-type" not in names
 
     def test_project_overrides_bundled_on_name_collision(self, tmp_path, isolated_user):
-        from commontrace import kb_packs
+        from unimem import kb_packs
 
         packs = kb_packs.list_packs()
         assert packs, "expected bundled kb_packs for the ordering test"
@@ -136,7 +136,7 @@ class TestDiscoveryOrdering:
 
 class TestAgentLoopInjection:
     def test_context_lists_skill_names_without_bodies(self, tmp_path):
-        from commontrace.agent_loop import _assemble_context
+        from unimem.agent_loop import _assemble_context
 
         root = str(tmp_path / "root")
         os.makedirs(os.path.join(root, "memory", "lessons"), exist_ok=True)
@@ -149,7 +149,7 @@ class TestAgentLoopInjection:
         assert secret_body not in ctx
 
     def test_context_without_skills_still_assembles(self, tmp_path):
-        from commontrace.agent_loop import _assemble_context
+        from unimem.agent_loop import _assemble_context
 
         root = str(tmp_path / "empty")
         os.makedirs(os.path.join(root, "memory", "lessons"), exist_ok=True)

@@ -1,8 +1,8 @@
-"""`commontrace init --agent-caller NAME`: one-command, no-dashboard agent signup."""
+"""`unimem init --agent-caller NAME`: one-command, no-dashboard agent signup."""
 import json
 
-from commontrace import agent_registry
-from commontrace.cli import main
+from unimem import agent_registry
+from unimem.cli import main
 
 
 def _last_json(capsys):

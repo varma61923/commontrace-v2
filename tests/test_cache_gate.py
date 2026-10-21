@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from commontrace.cache_gate import is_trivial_prompt
+from unimem.cache_gate import is_trivial_prompt
 
 TRIVIAL = [
     "ok", "OK!", "okay.", "k", "kk",

@@ -5,12 +5,12 @@ Production-scale example (real local provider, no synthetic adapter):
     python -m benchmarks.hybrid_acceptance --facts 1000000 --trials 30 \
         --embedder bge-small --output /tmp/hybrid-1m.json
 
-The timed operation is ``commontrace.search_recipes.search`` with FTS5,
+The timed operation is ``unimem.search_recipes.search`` with FTS5,
 ``fact_vector_projection.search``, canonical admission and RRF. Index build,
 component timings and restart checks are reported separately. ``--synthetic-
 adapter`` is only a deterministic plumbing fixture; it cannot establish model
 quality or production embedding performance. The facts-channel
-``commontrace.recall.recall`` API is intentionally not measured here.
+``unimem.recall.recall`` API is intentionally not measured here.
 
 The server gate remains unsupported until the governed fact-hybrid path has a
 server-backed full-text + vector projection adapter.
@@ -31,7 +31,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-API_PATH = "commontrace.search_recipes.search"
+API_PATH = "unimem.search_recipes.search"
 EMBEDDER = "synthetic:fixture-v1"
 LOCAL_P95_MS = 50.0
 
@@ -63,7 +63,7 @@ class _SyntheticProvider:
 
 
 def _register_synthetic() -> None:
-    from commontrace import embeddings
+    from unimem import embeddings
 
     if "synthetic" not in embeddings.known()["custom"]:
         embeddings.register("synthetic", _SyntheticProvider)
@@ -97,7 +97,7 @@ def _fixture_rows(count: int) -> list[dict[str, Any]]:
 
 
 def _seed(root: str, count: int) -> dict[str, str]:
-    from commontrace import fact_store, hierarchical
+    from unimem import fact_store, hierarchical
 
     fact_store.migrate(root)
     identities: dict[str, str] = {}
@@ -125,7 +125,7 @@ def _seed_canonical_fixture(root: str, count: int, *, batch_size: int = 10_000) 
     otherwise dominates million-row fixture setup with one file operation per
     fact. Small public-ingestion checks should continue using ``_seed``.
     """
-    from commontrace import fact_store, hierarchical
+    from unimem import fact_store, hierarchical
 
     fact_store.migrate(root)
     identities: dict[str, str] = {}
@@ -163,7 +163,7 @@ def _seed_canonical_fixture(root: str, count: int, *, batch_size: int = 10_000) 
 
 
 def _projection_drain(root: str, embedder: str) -> dict[str, int]:
-    from commontrace import fact_vector_projection
+    from unimem import fact_vector_projection
 
     processed = 0
     last = {"processed": 0}
@@ -176,7 +176,7 @@ def _projection_drain(root: str, embedder: str) -> dict[str, int]:
 
 
 def _hybrid_search(root: str, query: str, embedder: str, *, context: list[str]) -> tuple[list[dict], dict]:
-    from commontrace import search_recipes
+    from unimem import search_recipes
 
     explain: dict = {}
     rows = search_recipes.search(root, query, embedder=embedder, reranker="none", recipe="balanced",
@@ -185,7 +185,7 @@ def _hybrid_search(root: str, query: str, embedder: str, *, context: list[str]) 
 
 
 def _implementation_hash(source: str) -> dict[str, str]:
-    names = sorted(Path(source, "commontrace").rglob("*.py"))
+    names = sorted(Path(source, "unimem").rglob("*.py"))
     names.append(Path(source, "benchmarks/hybrid_acceptance.py"))
     return {
         os.path.relpath(path, source): hashlib.sha256(path.read_bytes()).hexdigest()
@@ -195,7 +195,7 @@ def _implementation_hash(source: str) -> dict[str, str]:
 
 def _restart_worker(source: str, root: str, embedder: str, sample_ids: list[str],
                     excluded_id: str, synthetic: bool) -> dict[str, Any]:
-    from commontrace import fact_embeddings, fact_store, fact_vector_projection
+    from unimem import fact_embeddings, fact_store, fact_vector_projection
 
     counts = {"document_vectors_requested": 0, "query_vectors_requested": 0}
     original_encode = fact_embeddings._encode
@@ -255,7 +255,7 @@ def _run_restart(source: str, root: str, embedder: str, sample_ids: list[str],
 
 def _clear_embedding_memory_cache() -> None:
     """Ensure this corpus populates its own persistent content-hash cache."""
-    from commontrace import fact_embeddings
+    from unimem import fact_embeddings
 
     # The process-local vector cache key omits the store root. Without clearing
     # it, a second benchmark using identical fixture text could reuse vectors
@@ -312,11 +312,11 @@ def measure(*, source: str, count: int, trials: int, embedder: str, synthetic: b
     sys.path.insert(0, source)
     if synthetic:
         _register_synthetic()
-    from commontrace import fact_store, fact_vector_projection
+    from unimem import fact_store, fact_vector_projection
 
     _clear_embedding_memory_cache()
     source_hashes = _implementation_hash(source)
-    with tempfile.TemporaryDirectory(prefix="commontrace-hybrid-", dir=work_dir) as temp_root:
+    with tempfile.TemporaryDirectory(prefix="unimem-hybrid-", dir=work_dir) as temp_root:
         root = os.path.abspath(temp_root)
         seed_started = time.perf_counter_ns()
         if seed_mode == "public":
@@ -346,7 +346,7 @@ def measure(*, source: str, count: int, trials: int, embedder: str, synthetic: b
                 "bm25" not in signals[identities["lexical_only"]]:
             raise RuntimeError("hybrid RRF omitted expected dense or lexical provenance")
 
-        from commontrace import search_recipes
+        from unimem import search_recipes
 
         # Component timings are diagnostic only and excluded from the API p95.
         fts_samples, dense_samples, hybrid_samples = [], [], []
@@ -432,7 +432,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--facts", type=int, default=1000, help="canonical facts, minimum 3; 1M is a long workload")
     parser.add_argument("--trials", type=int, default=5)
     parser.add_argument("--embedder",
-                        help="CommonTrace embedding provider tag (default: bge-small; ignored by the synthetic fixture)")
+                        help="UniMem embedding provider tag (default: bge-small; ignored by the synthetic fixture)")
     parser.add_argument("--synthetic-adapter", action="store_true",
                         help="use a deterministic plumbing fixture; reported separately from real-provider runs")
     parser.add_argument("--skip-restart", action="store_true")
@@ -463,7 +463,7 @@ def main(argv: list[str] | None = None) -> int:
                      run_restart=not args.skip_restart, work_dir=args.work_dir,
                      seed_mode=args.seed_mode)
     report["command"] = " ".join(sys.argv if argv is None else [sys.argv[0], *argv])
-    from commontrace.telemetry import redact_mapping
+    from unimem.telemetry import redact_mapping
 
     safe_report = redact_mapping(report) if isinstance(report, dict) else report
     encoded = json.dumps(safe_report, indent=2, sort_keys=True) + "\n"

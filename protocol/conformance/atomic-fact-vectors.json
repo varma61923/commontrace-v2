@@ -1,6 +1,6 @@
 {
   "extension": "atomic-fact-envelope-v1",
-  "marker": "commontrace.atomic-fact.v1",
+  "marker": "unimem.atomic-fact.v1",
   "roundtrip": [
     {
       "name": "full-fidelity-with-earlier-expiry",
@@ -161,7 +161,7 @@
       "name": "unsupported-format-version",
       "record_patch": {
         "provenance": {
-          "atomic_fact_format": "commontrace.atomic-fact.v2"
+          "atomic_fact_format": "unimem.atomic-fact.v2"
         }
       }
     },

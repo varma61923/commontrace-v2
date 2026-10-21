@@ -4,8 +4,8 @@ import random
 
 import pytest
 
-from commontrace import frontier_protocol as fp
-from commontrace import holdout_io, interference, lineage, search_recipes
+from unimem import frontier_protocol as fp
+from unimem import holdout_io, interference, lineage, search_recipes
 
 
 def _fleet(rng, clusters, tasks, *, design, direct=.1, spillover=.3, base=.3):
@@ -39,7 +39,7 @@ def _difference(rows):
 
 
 def test_write_back_contamination_biases_task_estimates_and_is_flagged():
-    from commontrace import integrity
+    from unimem import integrity
 
     rng = random.Random(71)
     tasks = 20
@@ -83,7 +83,7 @@ def test_treated_derivations_cannot_cross_holdout_read_boundary(tmp_path):
     assignments = [interference.assign_cluster(root, "design", str(i)) for i in range(20)]
     treated = next(row["cluster"] for row in assignments if row["treated"])
     control = next(row["cluster"] for row in assignments if not row["treated"])
-    from commontrace import hierarchical
+    from unimem import hierarchical
     with interference.reader_scope(root, "design", treated):
         fact, _ = hierarchical.add_fact(root, "Shared treated-arm learned workaround")
         body = {"id": fact.id, "statement": fact.statement}

@@ -13,10 +13,10 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.responses import JSONResponse
 
-from commontrace import capabilities as cap
-from commontrace import capability_io as io
-from commontrace import frontier_protocol as fp
 from hub.db import session_scope
+from unimem import capabilities as cap
+from unimem import capability_io as io
+from unimem import frontier_protocol as fp
 
 ROOT = contextvars.ContextVar("unimem_hub_capability_root", default="")
 
@@ -217,7 +217,7 @@ def record_predicate(*, operation="read"):
     value = io.current(root)
     clauses = []
     if value:
-        from commontrace.record_visibility import scope_from_labels
+        from unimem.record_visibility import scope_from_labels
 
         rules = value["verified"]["caveats"]
         if "records" not in rules["namespaces"] or operation not in rules["operations"]:
@@ -239,8 +239,8 @@ async def queue(session, org_id, signed):
 
 
 async def drain(factory, org_id, root):
-    from commontrace import lineage
     from hub.models import CapabilityAttestation
+    from unimem import lineage
 
     async with session_scope(factory, org_id=org_id) as session:
         # Shared DB fence preserves order across worker processes and filesystem drainer retries.
@@ -272,7 +272,7 @@ def idempotency(key):
 async def stamp_trace(session, org_id, trace, *, parent=""):
     if cap.CURRENT.get() is None:
         return
-    from commontrace import lineage
+    from unimem import lineage
 
     root = ROOT.get()
     body = {"id": trace.id, "context": trace.context_text, "solution": trace.solution_text,
@@ -290,7 +290,7 @@ async def stamp_trace(session, org_id, trace, *, parent=""):
 async def stamp_record(session, org_id, record):
     if cap.CURRENT.get() is None:
         return
-    from commontrace import lineage
+    from unimem import lineage
 
     root = ROOT.get()
     body = io.runtime_descriptor(record, root=root)

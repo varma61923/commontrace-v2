@@ -7,7 +7,7 @@ import pytest
 
 from benchmarks import requests as bench_requests
 from benchmarks.cache import CostGuard
-from commontrace import llm
+from unimem import llm
 
 PRICES = {"gemma-4-31b-it": {"input_per_mtok": 1.0, "output_per_mtok": 2.0}}
 
@@ -28,13 +28,13 @@ def test_parse_drops_thoughts_and_bills_them():
 
 
 def test_request_shape_and_key_requirement(monkeypatch):
-    monkeypatch.setenv("COMMONTRACE_LLM_PROVIDER", "gemini")
-    monkeypatch.setenv("COMMONTRACE_LLM_MODEL", "gemma-4-31b-it")
-    monkeypatch.delenv("COMMONTRACE_LLM_API_KEY", raising=False)
-    monkeypatch.delenv("COMMONTRACE_LLM_API_KEY_FILE", raising=False)
+    monkeypatch.setenv("UNIMEM_LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("UNIMEM_LLM_MODEL", "gemma-4-31b-it")
+    monkeypatch.delenv("UNIMEM_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("UNIMEM_LLM_API_KEY_FILE", raising=False)
     with pytest.raises(llm.LLMUnavailable):
         llm.load_config()
-    monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "k")
+    monkeypatch.setenv("UNIMEM_LLM_API_KEY", "k")
     cfg = llm.load_config()
     url, headers, payload = llm.gemini_request(cfg, "hi", max_tokens=64)
     assert url.endswith("/models/gemma-4-31b-it:generateContent") and headers["x-goog-api-key"] == "k"

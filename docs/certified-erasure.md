@@ -19,7 +19,7 @@ The vault must be bound to the same store being erased. The reason, subject,
 request fields and optional probe configuration are validated before deletion;
 invalid requests preserve both source content and subject keys.
 
-From the CLI, `commontrace frontier certified-erase REQUEST.json --dest STORE`
+From the CLI, `unimem frontier certified-erase REQUEST.json --dest STORE`
 takes `{"subject", "identities", "vault_directory", "reason"}` and an optional
 `"probe": {"queries": [...], "forbidden": [...], "threshold": 0}` that runs the
 membership probe against live `recall` after the purge. `frontier certified-verify`
@@ -36,4 +36,4 @@ compaction adapters; the certificate explicitly does not claim remote erasure.
 A bounded `probe` detects retained content through a live retriever and reports a
 pass/fail threshold. It is a diagnostic, not a universal membership-inference or
 GDPR-compliance guarantee. Use the security extra; missing cryptography raises a
-clear `commontrace[security]` error instead of storing plaintext silently.
+clear `unimem[security]` error instead of storing plaintext silently.

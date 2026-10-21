@@ -32,7 +32,7 @@ def cli_runner() -> Callable[..., CLIResult]:
     ) -> CLIResult:
         merged_env = os.environ.copy()
         merged_env["PYTHONUTF8"] = "1"
-        merged_env.pop("COMMONTRACE_ROOT", None)
+        merged_env.pop("UNIMEM_ROOT", None)
         repo_root = str(Path(__file__).resolve().parent.parent.parent)
         existing_pp = merged_env.get("PYTHONPATH", "")
         merged_env["PYTHONPATH"] = f"{repo_root}:{existing_pp}" if existing_pp else repo_root
@@ -48,7 +48,7 @@ def cli_runner() -> Callable[..., CLIResult]:
         else:
             cli_args = [str(a) for a in args]
 
-        cmd = [sys.executable, "-m", "commontrace.cli", *cli_args]
+        cmd = [sys.executable, "-m", "unimem.cli", *cli_args]
         proc = subprocess.run(
             cmd,
             cwd=str(cwd) if cwd else None,
@@ -183,7 +183,7 @@ def episode_factory() -> Callable[..., Path]:
             "name": name,
             "description": "Episode demonstration run",
             "agent_type": agent_type,
-            "task_invocation": "/commontrace test run",
+            "task_invocation": "/unimem test run",
             "tags": ["testing", "example"],
             "project": project,
             "verdict": verdict,

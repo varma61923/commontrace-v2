@@ -51,6 +51,7 @@ class TestConfigRefusesNonsenseAtStartup:
 
     @pytest.mark.parametrize("name", [
         "HUB_REQUIRE_RLS",
+        "HUB_REQUIRE_API_KEY_PEPPER",
         "HUB_ALLOW_RLS_BYPASS",
         "HUB_ALLOW_INSECURE_HTTP",
     ])
@@ -279,10 +280,10 @@ class TestMetricsEndpoint:
         m.observe_request("POST", "/mcp", 200, 7.5)
         m.observe_request("POST", "/mcp", 429, 1.0)
         out = m.render()
-        assert 'commontrace_hub_requests_total{method="POST",path="/mcp",status="200"} 2' in out
-        assert 'commontrace_hub_requests_total{method="POST",path="/mcp",status="429"} 1' in out
-        assert 'commontrace_hub_request_duration_ms_sum{path="/mcp"} 21.00' in out
-        assert 'commontrace_hub_request_duration_ms_count{path="/mcp"} 3' in out
+        assert 'unimem_hub_requests_total{method="POST",path="/mcp",status="200"} 2' in out
+        assert 'unimem_hub_requests_total{method="POST",path="/mcp",status="429"} 1' in out
+        assert 'unimem_hub_request_duration_ms_sum{path="/mcp"} 21.00' in out
+        assert 'unimem_hub_request_duration_ms_count{path="/mcp"} 3' in out
 
     def test_an_arbitrary_path_cannot_inflate_label_cardinality(self):
         m = self._fresh()
@@ -291,7 +292,7 @@ class TestMetricsEndpoint:
         out = m.render()
         assert 'path="other"' in out
         assert "does-not-exist-1" not in out
-        assert out.count("commontrace_hub_requests_total{") == 1
+        assert out.count("unimem_hub_requests_total{") == 1
 
     def test_rate_limit_refusals_are_counted_per_limiter(self):
         m = self._fresh()
@@ -299,15 +300,15 @@ class TestMetricsEndpoint:
         m.observe_rate_limited("write")
         m.observe_rate_limited("write")
         out = m.render()
-        assert 'commontrace_hub_rate_limited_total{limiter="http"} 1' in out
-        assert 'commontrace_hub_rate_limited_total{limiter="write"} 2' in out
+        assert 'unimem_hub_rate_limited_total{limiter="http"} 1' in out
+        assert 'unimem_hub_rate_limited_total{limiter="write"} 2' in out
 
     def test_no_tenant_identifier_ever_appears(self):
         m = self._fresh()
         m.observe_request("POST", "/mcp", 200, 1.0)
         m.observe_rate_limited("write")
         out = m.render()
-        for forbidden in ("org", "ct_live_", "api_key", "query"):
+        for forbidden in ("org", "unimem_live_", "api_key", "query"):
             assert forbidden not in out, f"{forbidden!r} must never be exposed on /metrics"
 
     def test_output_is_valid_prometheus_text_format(self):

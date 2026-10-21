@@ -35,45 +35,45 @@
 -- needs the one-off GRANT over what is already there:
 --
 --     GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public
---         TO commontrace_app;
---     GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO commontrace_app;
+--         TO unimem_app;
+--     GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO unimem_app;
 
 \set app_password `echo "${POSTGRES_APP_PASSWORD:-change-me-not-for-production}"`
 
 DO $$
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'commontrace_app') THEN
-        CREATE ROLE commontrace_app LOGIN;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'unimem_app') THEN
+        CREATE ROLE unimem_app LOGIN;
     END IF;
 END
 $$;
 
-ALTER ROLE commontrace_app WITH PASSWORD :'app_password';
+ALTER ROLE unimem_app WITH PASSWORD :'app_password';
 
 -- Explicitly NOT superuser and NOT bypassrls. Stated rather than assumed:
 -- CREATE ROLE defaults to both off, but this is the single property the
 -- whole file exists to guarantee, so it is written down where an operator
 -- reviewing the deployment can see it.
-ALTER ROLE commontrace_app WITH NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
+ALTER ROLE unimem_app WITH NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
 
 -- :"DBNAME" is psql's own built-in variable for the database this script is
 -- connected to, which the postgres image's entrypoint sets to POSTGRES_DB --
 -- so this stays correct if the database is renamed, with nothing to keep in
 -- sync by hand.
-GRANT CONNECT ON DATABASE :"DBNAME" TO commontrace_app;
+GRANT CONNECT ON DATABASE :"DBNAME" TO unimem_app;
 
 -- USAGE, not CREATE: the runtime role may resolve names in the schema and
 -- may not add objects to it. Migrations are the owner's job, run as a
 -- separate one-shot service.
-GRANT USAGE ON SCHEMA public TO commontrace_app;
+GRANT USAGE ON SCHEMA public TO unimem_app;
 
 -- Every table and sequence the OWNER creates from here on -- i.e. everything
 -- `alembic upgrade head` is about to create, and everything a future
 -- migration adds -- grants these rights to the runtime role automatically.
 ALTER DEFAULT PRIVILEGES IN SCHEMA public
-    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO commontrace_app;
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO unimem_app;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public
-    GRANT USAGE, SELECT ON SEQUENCES TO commontrace_app;
+    GRANT USAGE, SELECT ON SEQUENCES TO unimem_app;
 
 -- hub_rate_limit_buckets is the one table the application itself creates at
 -- runtime rather than alembic (hub/abuse.py:PostgresRateLimiter, used when
@@ -89,4 +89,4 @@ CREATE TABLE IF NOT EXISTS hub_rate_limit_buckets (
     last_refill timestamptz NOT NULL,
     PRIMARY KEY (limiter_name, bucket_key)
 );
-GRANT SELECT, INSERT, UPDATE, DELETE ON hub_rate_limit_buckets TO commontrace_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON hub_rate_limit_buckets TO unimem_app;

@@ -11,7 +11,7 @@ sys.path.insert(0, str(ROOT))
 
 from hub import commons  # noqa: E402
 
-CORPUS = Path(os.environ.get("COMMONTRACE_EVAL_CORPUS", "corpus.jsonl"))  # bring your own corpus
+CORPUS = Path(os.environ.get("UNIMEM_EVAL_CORPUS", "corpus.jsonl"))  # bring your own corpus
 HERE = Path(__file__).resolve().parent
 
 MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
@@ -86,8 +86,8 @@ def main() -> int:
         return 2
 
     corpus = _load(CORPUS)
-    dev = _load(Path(os.environ.get("COMMONTRACE_EVAL_PROBES_V1", "probes-v1.jsonl")))
-    held = _load(Path(os.environ.get("COMMONTRACE_EVAL_PROBES_V2", "probes-v2.jsonl")))
+    dev = _load(Path(os.environ.get("UNIMEM_EVAL_PROBES_V1", "probes-v1.jsonl")))
+    held = _load(Path(os.environ.get("UNIMEM_EVAL_PROBES_V2", "probes-v2.jsonl")))
 
     print(f"loading {MODEL_NAME} ...", file=sys.stderr)
     model = SentenceTransformer(MODEL_NAME)

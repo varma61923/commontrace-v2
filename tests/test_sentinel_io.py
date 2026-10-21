@@ -5,7 +5,9 @@ import json
 
 import pytest
 
-from commontrace import (
+from tests import test_skill_foundry
+from tests.test_contagion import fact
+from unimem import (
     cli,
     contagion,
     holdout_io,
@@ -14,13 +16,11 @@ from commontrace import (
     promotion,
     unit_trials,
 )
-from commontrace import frontier_protocol as fp
-from commontrace import nextwave_store as store
-from commontrace import (
+from unimem import frontier_protocol as fp
+from unimem import nextwave_store as store
+from unimem import (
     sentinel_io as io,
 )
-from tests import test_skill_foundry
-from tests.test_contagion import fact
 
 clock = test_skill_foundry.clock
 
@@ -44,8 +44,8 @@ def transfer_traffic(root, unit, clock, *, n=150, benign=False, prefix="transfer
 
 
 def test_prospective_poison_blocks_induction_compilation_reflection_and_export(tmp_path, clock):
-    from commontrace import compile_memory, memory_control, skill_io
-    from commontrace.commands import dream_cmd, export_cmd
+    from unimem import compile_memory, memory_control, skill_io
+    from unimem.commands import dream_cmd, export_cmd
 
     root = str(tmp_path)
     prepare(root, clock)
@@ -126,7 +126,7 @@ def test_incomplete_unanchored_or_changed_source_cannot_authorize_generalization
         io.assert_generalize(root, [source.id])
     holdout_io.record_outcome(root, "pending", True)
     io.assert_generalize(root, [source.id])
-    from commontrace import hierarchical
+    from unimem import hierarchical
 
     def change(facts):
         from dataclasses import replace
@@ -208,7 +208,7 @@ def test_cli_sentinel_configuration_is_real_and_default_remains_disabled(tmp_pat
 
 
 def test_prefix_commitment_is_streamed_and_canonical_forgery_is_refused(tmp_path, clock):
-    from commontrace import _jsonl, experiment
+    from unimem import _jsonl, experiment
 
     # Each record is bounded independently; a prior cohort larger than 1 MiB
     # must not be squeezed through the single-record digest limit.
@@ -231,8 +231,8 @@ def test_prefix_commitment_is_streamed_and_canonical_forgery_is_refused(tmp_path
 
 
 def test_leaf_namespace_does_not_authorize_sentinel_metadata(tmp_path, clock):
-    from commontrace import capability_io
     from tests import test_capability_io
+    from unimem import capability_io
 
     root, token = test_capability_io.prepare(tmp_path)
     prepare(root, clock)
@@ -245,7 +245,7 @@ def test_leaf_namespace_does_not_authorize_sentinel_metadata(tmp_path, clock):
 
 
 def test_hazard_is_never_a_randomized_or_quarantined_source(tmp_path, clock):
-    from commontrace import safety
+    from unimem import safety
 
     root = str(tmp_path)
     prepare(root, clock)

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import argparse
 
-from commontrace import frontmatter, paths
-from commontrace.commands import lesson_cmd
+from unimem import frontmatter, paths
+from unimem.commands import lesson_cmd
 
 
 def _write_lesson(root, slug: str, *, body: str, **fm_extra) -> str:

@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from commontrace.client import MemoryClient
+from unimem.client import MemoryClient
 
 
 def test_openai_agents_live_input_filter_and_end_hook(monkeypatch, tmp_path):
@@ -16,7 +16,7 @@ def test_openai_agents_live_input_filter_and_end_hook(monkeypatch, tmp_path):
 
         from agents import Agent, RunConfig, Runner
 
-        from commontrace.integrations.openai_agents import OpenAIAgentsMemory
+        from unimem.integrations.openai_agents import OpenAIAgentsMemory
 
         calls = []
 
@@ -84,7 +84,7 @@ def test_pydantic_ai_live_process_history_and_after_run_capabilities(monkeypatch
         from pydantic_ai.messages import SystemPromptPart
         from pydantic_ai.models.test import TestModel
 
-        from commontrace.integrations.pydantic_ai import memory_capabilities
+        from unimem.integrations.pydantic_ai import memory_capabilities
 
         calls = []
 
@@ -110,7 +110,7 @@ def test_pydantic_ai_live_process_history_and_after_run_capabilities(monkeypatch
             part.content
             for message in result.all_messages()
             for part in getattr(message, "parts", [])
-            if isinstance(part, SystemPromptPart) and part.content.startswith("CommonTrace recalled evidence")
+            if isinstance(part, SystemPromptPart) and part.content.startswith("UniMem recalled evidence")
         ]
         assert len(injected) == 1
         assert "Refunds take five business days." in injected[0]

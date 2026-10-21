@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from commontrace import hierarchical
+from unimem import hierarchical
 
 
 def test_t3_bitemporal_supersession_time_travel(isolated_store: str):

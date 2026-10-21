@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from commontrace import _jsonl, fact_index, hierarchical
+from unimem import _jsonl, fact_index, hierarchical
 
 
 def test_serialized_writer_preserves_exact_unicode_and_escaped_newlines(tmp_path: Path) -> None:
@@ -75,7 +75,7 @@ def test_failed_mutation_body_never_commits_or_revises_warm_generation(tmp_path:
 
 
 def test_mutating_fact_identity_moves_history_and_indexes_to_new_id(tmp_path: Path) -> None:
-    from commontrace import fact_store
+    from unimem import fact_store
 
     root = str(tmp_path)
     fact_store.migrate(root)

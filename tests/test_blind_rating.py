@@ -5,7 +5,7 @@ import random
 import pytest
 
 from commons.eval import blind_rating as br
-from commontrace import frontmatter, templates
+from unimem import frontmatter, templates
 
 
 def _write(directory, n, prefix, llm=False):

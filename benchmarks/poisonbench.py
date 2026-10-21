@@ -4,7 +4,7 @@ Memory-poisoning research (MINJA, Trojan Hippo, MemPoison, salami/collusion, and
 the laundering results in arXiv 2606.24322) shows that defenses which judge a
 memory by its *content* fail: a poisoned record can be phrased to look benign,
 summarized by a trusted component, echoed by a tool, or split into innocuous
-fragments. CommonTrace instead binds every record to the authenticated writer at
+fragments. UniMem instead binds every record to the authenticated writer at
 write time, lets derived records inherit the *least* trusted source, signs the
 receipt, and lets an operator require a minimum origin authority per action
 (``memory/authority-policy.yaml``).
@@ -70,7 +70,7 @@ ATTACKS = [
 
 
 def _write(root: str, statement: str, principal: str, authority: str, *, source: str = "") -> str:
-    from commontrace import hierarchical, memory_authority
+    from unimem import hierarchical, memory_authority
 
     with memory_authority.writer(principal, authority):
         [(fact, _action)] = hierarchical.append_facts(
@@ -79,7 +79,7 @@ def _write(root: str, statement: str, principal: str, authority: str, *, source:
 
 
 def _tamper(root: str, fact_id: str, *, strip: bool) -> None:
-    from commontrace import hierarchical
+    from unimem import hierarchical
 
     path = os.path.join(hierarchical._facts_dir(root), "facts.jsonl")
     rows = []
@@ -135,7 +135,7 @@ def _plant(root: str, attack: str, variant: int) -> list[str]:
 
 
 def _delivered(root: str) -> str:
-    from commontrace import memory_control
+    from unimem import memory_control
 
     profile = memory_control.profile(root, QUERY, action_class=ACTION, limit=50)
     reflected = memory_control.reflect(root, QUERY, action_class=ACTION, budget=4000, record_receipt=False)
@@ -144,14 +144,14 @@ def _delivered(root: str) -> str:
 
 
 def _policy(root: str) -> None:
-    from commontrace import paths
+    from unimem import paths
 
     with open(os.path.join(paths.memory_dir(root), "authority-policy.yaml"), "w", encoding="utf-8") as fh:
         fh.write(f"default: external\nactions:\n  {ACTION}: user\n")
 
 
 def run_case(attack: str, variant: int, *, policy: bool) -> dict:
-    from commontrace import holdout_io
+    from unimem import holdout_io
 
     root = tempfile.mkdtemp(prefix="poisonbench-")
     try:

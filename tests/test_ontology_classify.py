@@ -5,7 +5,7 @@ import os
 
 import pytest
 
-from commontrace import cli, entities, kg_similarity, ontology, ontology_classify
+from unimem import cli, entities, kg_similarity, ontology, ontology_classify
 
 ONTOLOGY = """
 entity_types:

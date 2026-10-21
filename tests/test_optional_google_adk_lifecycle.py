@@ -7,11 +7,11 @@ import json
 
 import pytest
 
-from commontrace.client import MemoryClient
-from commontrace.framework_middleware import scope_from_labels
-from commontrace.integrations.google_adk import after_agent_callback, before_model_callback
-from commontrace.memory_journal import Journal
-from commontrace.memory_record import MemoryRecord
+from unimem.client import MemoryClient
+from unimem.framework_middleware import scope_from_labels
+from unimem.integrations.google_adk import after_agent_callback, before_model_callback
+from unimem.memory_journal import Journal
+from unimem.memory_record import MemoryRecord
 
 
 def _content_text(content) -> str:

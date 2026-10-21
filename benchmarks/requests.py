@@ -13,7 +13,7 @@ import urllib.request
 from functools import lru_cache
 
 from benchmarks.cache import CostGuard, completion_binding, get_price
-from commontrace import llm
+from unimem import llm
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -62,7 +62,7 @@ def benchmark_binding(config: llm.Config, *, output_limit: int = 1536) -> dict:
 
 def _local_complete(prompt: str, config: llm.Config, guard: CostGuard, *, output_limit: int):
     """An in-process model: no charge, but the output cap and usage bounds still hold."""
-    from commontrace import local_llm
+    from unimem import local_llm
 
     answer, usage = local_llm.complete(config, prompt, max_new_tokens=output_limit)
     if usage["output_tokens"] > output_limit:

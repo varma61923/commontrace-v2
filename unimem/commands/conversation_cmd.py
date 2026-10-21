@@ -1,0 +1,560 @@
+"""`unimem conversation`: remember what was said, recall it into a small dated context."""
+from __future__ import annotations
+
+import argparse
+import contextlib
+import json
+import os
+import sys
+import tempfile
+
+from unimem import paths
+
+SPACE_HELP = "the conversation space: one user, agent or thread (letters, digits, . _ -)"
+
+
+def add_parser(subparsers: argparse._SubParsersAction) -> None:
+    p = subparsers.add_parser(
+        "conversation",
+        help="Conversation memory: store messages with their dates, recall what answers a question.")
+    sub = p.add_subparsers(dest="subcommand", required=True)
+
+    a = sub.add_parser("add", help="Add messages to a session (JSON list or JSONL on a file or stdin).")
+    a.add_argument("space", help=SPACE_HELP)
+    a.add_argument("--session", required=True, help="session id; messages append to it in order")
+    a.add_argument("--at", default=None, help="when the session took place (ISO, 2023/05/20 10:00, '8 May 2023')")
+    a.add_argument("--file", default="-", help="messages as JSON or JSONL, - for stdin (default)")
+    a.add_argument("--text", default=None, help="add one message with this text instead of reading --file")
+    a.add_argument("--speaker", default="user", help="speaker of --text (default user)")
+    a.add_argument("--cache-vectors", action="store_true",
+                   help="Prepare semantic vectors after committing messages; may invoke the selected provider.")
+    a.add_argument("--embedder", default=None, help="Embedding provider tag for --cache-vectors (default configured).")
+    a.add_argument("--dest", default=None)
+    a.set_defaults(func=run_add)
+
+    ix = sub.add_parser("index", help="Prepare local semantic vectors before serving questions.")
+    ix.add_argument("space", help=SPACE_HELP)
+    ix.add_argument("--model", default=None,
+                    help="Local or registered embedding provider tag (default: UNIMEM_CONVERSATION_EMBEDDER).")
+    ix.add_argument("--session", action="append", default=[], help="only these sessions (repeatable)")
+    ix.add_argument("--json", action="store_true")
+    ix.add_argument("--dest", default=None)
+    ix.set_defaults(func=run_index)
+
+    r = sub.add_parser("recall", help="The turns that answer a question, as a dated, budgeted context.")
+    r.add_argument("space", help=SPACE_HELP)
+    r.add_argument("question")
+    r.add_argument("--budget", type=_budget_arg, default=None,
+                   help="context size in tokens (default 1500), or 'auto' to size it by the question's shape "
+                        "(summaries, orderings, counts and lists get more; see --max-budget)")
+    r.add_argument("--max-budget", type=int, default=None,
+                   help="with --budget auto: the most an adaptive budget may grow to (default 12000)")
+    r.add_argument("--now", default=None,
+                   help="historical cutoff and reference time (default: the latest message, without a cutoff)")
+    r.add_argument("--rerank", choices=("auto", "none", "cross-encoder", "cross-encoder-fast"), default="auto",
+                   help="second-stage reranker (auto: the accurate one when the attention extra is installed)")
+    r.add_argument("--lexical", action="store_true", help="keyword search only, no embedding model")
+    r.add_argument("--context-strategy", choices=("legacy", "coverage-v1", "coverage-v2"), default="legacy",
+                   help="context packing: preserve ranking or diversify delivered query facets")
+    _filters(r)
+    r.add_argument("--json", action="store_true")
+    r.add_argument("--dest", default=None)
+    r.set_defaults(func=run_recall)
+
+    q = sub.add_parser("answer", help="Answer a question from memory with the configured model (UNIMEM_LLM_*).")
+    q.add_argument("space", help=SPACE_HELP)
+    q.add_argument("question")
+    q.add_argument("--rounds", type=int, default=1,
+                   help="up to 4: the model may ask for follow-up searches before answering")
+    q.add_argument("--grounded", action="store_true",
+                   help="require bounded JSON answers with citations to delivered evidence; invalid replies abstain")
+    q.add_argument("--budget", type=_budget_arg, default=None, help="tokens, or 'auto' (see recall)")
+    q.add_argument("--max-budget", type=int, default=None)
+    q.add_argument("--now", default=None)
+    q.add_argument("--context-strategy", choices=("legacy", "coverage-v1", "coverage-v2"), default="legacy")
+    _filters(q)
+    q.add_argument("--json", action="store_true")
+    q.add_argument("--dest", default=None)
+    q.set_defaults(func=run_answer)
+
+    m = sub.add_parser("summarize", help="Summarise sessions; recall shows a session's summary under its header.")
+    m.add_argument("space", help=SPACE_HELP)
+    m.add_argument("--session", action="append", default=[], help="only this session (repeatable)")
+    m.add_argument("--model", action="store_true", help="have the configured model write them (default: extractive)")
+    m.add_argument("--force", action="store_true", help="rewrite summaries that are already current")
+    m.add_argument("--rolling", action="store_true",
+                   help="keep a rolling summary: fold in only turns added since the last run "
+                        "(rebuilds when earlier turns changed)")
+    m.add_argument("--json", action="store_true")
+    m.add_argument("--dest", default=None)
+    m.set_defaults(func=run_summarize)
+
+    w = sub.add_parser("working-memory",
+                       help="Core blocks, rolling summary, recent turns and recalled evidence in one budgeted context.")
+    w.add_argument("space", help=SPACE_HELP)
+    w.add_argument("session", help="the session the next call belongs to")
+    w.add_argument("question", help="what the next call is about")
+    w.add_argument("--budget", type=int, default=2000, help="tokens (default 2000)")
+    w.add_argument("--recent-turns", type=int, default=6, help="last N turns kept verbatim (default 6)")
+    w.add_argument("--agent", default="", help="also use this agent's scoped memory blocks")
+    w.add_argument("--refresh-summary", action="store_true", help="fold new turns into the rolling summary first")
+    w.add_argument("--json", action="store_true")
+    w.add_argument("--dest", default=None)
+    w.set_defaults(func=run_working_memory)
+
+    x = sub.add_parser("extract", help="Distil dated memories from new messages with the configured model.")
+    x.add_argument("space", help=SPACE_HELP)
+    x.add_argument("--session", action="append", default=[], help="only this session (repeatable)")
+    x.add_argument("--dest", default=None)
+    x.set_defaults(func=run_extract)
+
+    an = sub.add_parser("anticipate", help="Index the questions each message answers, written by the configured "
+                                           "model (sleep-time indexing; generated text is never shown as evidence).")
+    an.add_argument("space", help=SPACE_HELP)
+    an.add_argument("--limit", type=int, default=None, help="at most this many pending messages")
+    an.add_argument("--workers", type=int, default=4, help="concurrent model calls (default 4)")
+    an.add_argument("--json", action="store_true")
+    an.add_argument("--dest", default=None)
+    an.set_defaults(func=run_anticipate)
+
+    e = sub.add_parser("export", help="Write a space as JSONL (one session per line).")
+    e.add_argument("space", help=SPACE_HELP)
+    e.add_argument("--out", default="-", help="file to write, - for stdout (default)")
+    e.add_argument("--dest", default=None)
+    e.set_defaults(func=run_export)
+
+    i = sub.add_parser("import", help="Read sessions written by `conversation export` into a space.")
+    i.add_argument("space", help=SPACE_HELP)
+    i.add_argument("file", help="JSONL from `conversation export`, - for stdin")
+    i.add_argument("--dest", default=None)
+    i.set_defaults(func=run_import)
+
+    pr = sub.add_parser("promote", help="Copy the current profile into this store's atomic facts.")
+    pr.add_argument("space", help=SPACE_HELP)
+    pr.add_argument("--scope", default="", help="fact scope (default conversation:<space>)")
+    pr.add_argument("--dest", default=None)
+    pr.set_defaults(func=run_promote)
+
+    g = sub.add_parser("forget", help="Delete messages past their expiry, or said before a date.")
+    g.add_argument("space", help=SPACE_HELP)
+    g.add_argument("--expired", action="store_true", help="messages whose `expires` has passed")
+    g.add_argument("--before", default=None, help="messages said before this date")
+    g.add_argument("--dest", default=None)
+    g.set_defaults(func=run_forget)
+
+    s = sub.add_parser("sessions", help="List a space's sessions.")
+    s.add_argument("space", help=SPACE_HELP)
+    s.add_argument("--json", action="store_true")
+    s.add_argument("--dest", default=None)
+    s.set_defaults(func=run_sessions)
+
+    f = sub.add_parser("profile", help="What the user has said about themselves, oldest first.")
+    f.add_argument("space", help=SPACE_HELP)
+    f.add_argument("--history", action="store_true", help="include statements a newer one replaced")
+    f.add_argument("--as-of", default=None, help="show the profile as it stood at this date")
+    f.add_argument("--json", action="store_true")
+    f.add_argument("--dest", default=None)
+    f.set_defaults(func=run_profile)
+
+    d = sub.add_parser("delete", help="Delete a session, or a whole space with --all.")
+    d.add_argument("space", help=SPACE_HELP)
+    d.add_argument("--session", default=None)
+    d.add_argument("--all", action="store_true", help="delete every session in the space")
+    d.add_argument("--dest", default=None)
+    d.set_defaults(func=run_delete)
+
+    ls = sub.add_parser("spaces", help="List spaces with stored conversations.")
+    ls.add_argument("--dest", default=None)
+    ls.set_defaults(func=run_spaces)
+
+
+def _filters(p) -> None:
+    p.add_argument("--session", action="append", default=[], help="only these sessions (repeatable)")
+    p.add_argument("--speaker", action="append", default=[], help="only these speakers (repeatable)")
+    p.add_argument("--since", default=None, help="only messages said at or after this date")
+    p.add_argument("--until", default=None, help="only messages said at or before this date")
+
+
+def _budget_arg(value: str):
+    """`--budget N` or `--budget auto` (adaptive, from the default 1500)."""
+    if value.strip().lower() == "auto":
+        return "auto"
+    try:
+        return int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("budget must be a number of tokens or 'auto'") from None
+
+
+def _options(args):
+    from unimem.conversation import Options
+
+    opts = Options(rerank=None if getattr(args, "rerank", "auto") == "none" else getattr(args, "rerank", "auto"),
+                   embedder=None if getattr(args, "lexical", False) else "auto",
+                   sessions=tuple(args.session), speakers=tuple(args.speaker), since=args.since, until=args.until,
+                   context_strategy=getattr(args, "context_strategy", "legacy"))
+    if args.budget == "auto":
+        opts.adaptive_budget = True
+    elif args.budget is not None:
+        if args.budget < 50:
+            raise ValueError("--budget must be at least 50 tokens")
+        opts.budget = args.budget
+    max_budget = getattr(args, "max_budget", None)
+    if max_budget is not None:
+        if args.budget != "auto":
+            raise ValueError("--max-budget only applies with --budget auto")
+        if not opts.budget <= max_budget <= 32_000:
+            raise ValueError("--max-budget must be between the base budget and 32000 tokens")
+        opts.max_budget = max_budget
+    return opts
+
+
+def _store(args, create: bool = True):
+    from unimem.conversation import Store
+
+    return Store(paths.resolve_root(args.dest), args.space, create=create)
+
+
+def _read_messages(path: str) -> list[dict]:
+    raw = sys.stdin.read() if path == "-" else open(path, encoding="utf-8").read()
+    raw = raw.strip()
+    if not raw:
+        return []
+    if raw.startswith("["):
+        data = json.loads(raw)
+    else:
+        data = [json.loads(line) for line in raw.splitlines() if line.strip()]
+    if not all(isinstance(m, dict) for m in data):
+        raise ValueError("each message must be a JSON object with text (or content)")
+    return data
+
+
+def run_add(args) -> int:
+    from unimem.conversation import ConversationError
+
+    try:
+        messages = [{"speaker": args.speaker, "text": args.text}] if args.text is not None \
+            else _read_messages(args.file)
+        with _store(args) as store:
+            result = store.add(args.session, messages, session_at=args.at,
+                               cache_vectors=args.cache_vectors, embedder=args.embedder)
+    except (ConversationError, ValueError, OSError) as exc:
+        print(f"[unimem] {exc}", file=sys.stderr)
+        return 2
+    note = f", {result['secrets_redacted']} secret(s) redacted" if result["secrets_redacted"] else ""
+    print(f"[unimem] {result['added']} message(s) added to {args.space}/{args.session}"
+          f" ({result['skipped']} already stored or empty{note}).")
+    cache = result.get("embedding_cache")
+    if cache:
+        if cache["ready"]:
+            print(f"[unimem] semantic cache ready: {cache['units']} unit(s), {cache['model']}.")
+        else:
+            print(f"[unimem] source saved; semantic cache unavailable ({cache['error_type']}). "
+                  "Retry with conversation index.", file=sys.stderr)
+    return 0
+
+
+def run_recall(args) -> int:
+    from unimem.conversation import ConversationError, recall
+
+    try:
+        opts = _options(args)
+        with _store(args, create=False) as store:
+            result = recall(store, args.question, now=args.now, options=opts)
+    except (ConversationError, ValueError) as exc:
+        print(f"[unimem] {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(result.as_dict(), indent=2, default=str))
+    else:
+        print(result.context or "(nothing stored answers this)")
+        withheld = result.explain.get("withheld")
+        note = f"; {len(withheld)} turn(s) withheld by the injection screen" if withheld else ""
+        print(f"\n[unimem] {len(result.turns)} turn(s), ~{result.tokens} tokens{note}.", file=sys.stderr)
+    return 0
+
+
+def run_index(args) -> int:
+    from unimem.conversation import ConversationError, embed
+
+    encoder = None
+    try:
+        tag = args.model or embed.configured()
+        if not tag or not embed.available_for(tag):
+            raise ConversationError(
+                "semantic indexing requires an enabled embedder/embedding provider and its optional dependency"
+            )
+        with _store(args, create=False) as store:
+            encoder = embed.Embedder(store.root, tag)
+            result = embed.prepare(store, encoder, sessions=args.session)
+    except (ConversationError, ImportError, RuntimeError, OSError) as exc:
+        print(f"[unimem] {exc}", file=sys.stderr)
+        return 2
+    finally:
+        if encoder is not None:
+            encoder.close()
+    from unimem.telemetry import redact_mapping
+
+    safe_result = redact_mapping(result) if isinstance(result, dict) else result
+    if args.json:
+        print(json.dumps(safe_result))
+    else:
+        print(f"[unimem] {safe_result.get('units', 0)} passage(s) prepared with {safe_result.get('model', '')} "
+              f"in {safe_result.get('elapsed_seconds', 0.0):.3f}s.")
+    return 0
+
+
+def run_answer(args) -> int:
+    from unimem import llm
+    from unimem.conversation import ConversationError
+    from unimem.conversation.answer import answer
+
+    try:
+        opts = _options(args)
+        with _store(args, create=False) as store:
+            out = answer(store, args.question, now=args.now, options=opts, rounds=args.rounds,
+                         grounded=getattr(args, "grounded", False))
+    except (ConversationError, ValueError, llm.LLMUnavailable) as exc:
+        print(f"[unimem] {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(out, indent=2, default=str))
+    else:
+        print(out["answer"])
+        extra = f", follow-ups: {'; '.join(out['follow_ups'])}" if out["follow_ups"] else ""
+        print(f"[unimem] from {len(out['turns'])} turn(s), ~{out['tokens']} tokens of memory{extra}.",
+              file=sys.stderr)
+    return 0
+
+
+def run_summarize(args) -> int:
+    from unimem import llm
+    from unimem.conversation import ConversationError
+    from unimem.conversation.summary import rolling_all, summarize
+
+    method = "model" if args.model else "extractive"
+    try:
+        with _store(args, create=False) as store:
+            if getattr(args, "rolling", False):
+                out = rolling_all(store, args.session or None, method=method, force=args.force)
+            else:
+                out = summarize(store, args.session or None, method=method, force=args.force)
+    except (ConversationError, llm.LLMUnavailable) as exc:
+        print(f"[unimem] {exc}", file=sys.stderr)
+        return 2
+    if getattr(args, "json", False):
+        print(json.dumps(out, indent=2))
+    elif getattr(args, "rolling", False):
+        print(f"[unimem] rolling ({out['method']}): {out['incremental']} updated incrementally, "
+              f"{out['full']} rebuilt, {out['unchanged']} unchanged.")
+    else:
+        print(f"[unimem] {out['summarized']} session(s) summarised ({out['method']}), "
+              f"{out['unchanged']} already current.")
+    return 0
+
+
+def run_working_memory(args) -> int:
+    from unimem import working_memory
+    from unimem.conversation import ConversationError
+
+    try:
+        out = working_memory.assemble(paths.resolve_root(args.dest), args.space, args.session, args.question,
+                                      budget=args.budget, recent_turns=args.recent_turns, agent=args.agent,
+                                      refresh_summary=args.refresh_summary)
+    except ConversationError as exc:
+        print(f"[unimem] {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(out, indent=2, default=str))
+        return 0
+    print(out["context"])
+    spent = ", ".join(f"{k} {v}" for k, v in out["explain"]["spent"].items())
+    print(f"[unimem] {out['tokens']}/{out['budget']} tokens ({spent}).", file=sys.stderr)
+    return 0
+
+
+def run_extract(args) -> int:
+    from unimem import llm
+    from unimem.conversation import ConversationError
+    from unimem.conversation.extract import extract
+
+    try:
+        with _store(args, create=False) as store:
+            out = extract(store, args.session or None)
+    except (ConversationError, llm.LLMUnavailable) as exc:
+        print(f"[unimem] {exc}", file=sys.stderr)
+        return 2
+    note = f", {out['refused']} refused by the injection screen" if out["refused"] else ""
+    print(f"[unimem] {out['memories']} memory(ies) from {out['calls']} model call(s){note}.")
+    return 0
+
+
+def run_anticipate(args) -> int:
+    from unimem import llm
+    from unimem.conversation import ConversationError, anticipate
+
+    if args.limit is not None and args.limit < 0 or args.workers < 1:
+        print("[unimem] --limit must be >= 0 and --workers >= 1", file=sys.stderr)
+        return 2
+    try:
+        llm.load_config()
+        with _store(args, create=False) as store:
+            out = anticipate.expand(store, llm.complete, limit=args.limit, workers=args.workers)
+            out["pending"] = len(anticipate.pending(store))
+    except (ConversationError, llm.LLMUnavailable, ValueError) as exc:
+        print(f"[unimem] {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(out, sort_keys=True))
+    else:
+        print(f"[unimem] indexed {out['indexed']} message(s), {out['empty']} without content, "
+              f"{out['rejected']} refused by the injection screen, {out['failed_batches']} batch(es) left "
+              f"for the next pass; {out['pending']} pending.")
+    return 0
+
+
+def run_export(args) -> int:
+    from unimem.conversation import ConversationError
+
+    staged = None
+    count = 0
+    try:
+        with _store(args, create=False) as store:
+            output = contextlib.nullcontext(sys.stdout) if args.out == "-" else tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=os.path.dirname(os.path.abspath(args.out)),
+                prefix=".unimem-export-", delete=False)
+            with output as stream:
+                staged = stream.name if args.out != "-" else None
+                for row in store.export():
+                    stream.write(json.dumps(row, ensure_ascii=False) + "\n")
+                    count += 1
+        if staged:
+            os.replace(staged, args.out)
+            staged = None
+    except (ConversationError, OSError) as exc:
+        print(f"[unimem] {exc}", file=sys.stderr)
+        return 2
+    finally:
+        if staged:
+            os.unlink(staged)
+    if args.out != "-":
+        print(f"[unimem] {count} session(s) written to {args.out}.", file=sys.stderr)
+    return 0
+
+
+def run_import(args) -> int:
+    from unimem.conversation import ConversationError
+
+    try:
+        source = contextlib.nullcontext(sys.stdin) if args.file == "-" else open(args.file, encoding="utf-8")
+        with source as stream, _store(args) as store:
+            result = store.import_sessions(json.loads(line) for line in stream if line.strip())
+    except (ConversationError, ValueError, OSError) as exc:
+        print(f"[unimem] {exc}", file=sys.stderr)
+        return 2
+    print(f"[unimem] {result['added']} message(s) in {result['sessions']} session(s) imported into {args.space}; "
+          f"{result['memories']} archived memory/memories restored.")
+    return 0
+
+
+def run_promote(args) -> int:
+    from unimem.conversation import ConversationError
+
+    try:
+        with _store(args, create=False) as store:
+            out = store.promote(scope=args.scope)
+    except (ConversationError, ValueError) as exc:
+        print(f"[unimem] {exc}", file=sys.stderr)
+        return 2
+    print(f"[unimem] {out['promoted']} fact(s) added, {out['reinforced']} reinforced.")
+    return 0
+
+
+def run_forget(args) -> int:
+    import datetime as dt
+
+    from unimem.conversation import ConversationError
+
+    if not args.expired and not args.before:
+        print("[unimem] give --expired, --before DATE, or both", file=sys.stderr)
+        return 2
+    try:
+        with _store(args, create=False) as store:
+            n = store.purge(before=args.before,
+                            expired_at=dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) if args.expired else None)
+    except ConversationError as exc:
+        print(f"[unimem] {exc}", file=sys.stderr)
+        return 2
+    print(f"[unimem] {n} message(s) deleted from {args.space}.")
+    return 0
+
+
+def run_sessions(args) -> int:
+    from unimem.conversation import ConversationError
+
+    try:
+        with _store(args, create=False) as store:
+            rows, stats = store.sessions(), store.stats()
+    except ConversationError as exc:
+        print(f"[unimem] {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps({"stats": stats, "sessions": rows}, indent=2))
+        return 0
+    for row in rows:
+        print(f"{row['id']}\t{row['started_at'] or '-'}\t{row['turns']} turn(s)")
+    print(f"[unimem] {stats['sessions']} session(s), {stats['turns']} turn(s), "
+          f"{stats['facts']} profile statement(s).", file=sys.stderr)
+    return 0
+
+
+def run_profile(args) -> int:
+    from unimem.conversation import ConversationError
+
+    try:
+        with _store(args, create=False) as store:
+            facts = store.facts(history=args.history, as_of=args.as_of)
+    except ConversationError as exc:
+        print(f"[unimem] {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(facts, indent=2))
+        return 0
+    for f in facts:
+        replaced = "\t(replaced)" if f["superseded_by"] else ""
+        print(f"{(f['at'] or '')[:10]}\t{f['kind']}\t{f['statement']}{replaced}")
+    return 0
+
+
+def run_delete(args) -> int:
+    from unimem.conversation import ConversationError
+
+    if bool(args.session) == bool(args.all):
+        print("[unimem] give exactly one of --session or --all", file=sys.stderr)
+        return 2
+    try:
+        if args.all:
+            with _store(args, create=False) as store:
+                path = store.path
+            for suffix in ("", "-wal", "-shm"):
+                if os.path.exists(path + suffix):
+                    os.remove(path + suffix)
+            print(f"[unimem] deleted space {args.space}.")
+            return 0
+        with _store(args, create=False) as store:
+            n = store.delete_session(args.session)
+    except ConversationError as exc:
+        print(f"[unimem] {exc}", file=sys.stderr)
+        return 2
+    if not n:
+        print(f"[unimem] no session {args.session!r} in {args.space}", file=sys.stderr)
+        return 1
+    print(f"[unimem] deleted {n} turn(s) from {args.space}/{args.session}.")
+    return 0
+
+
+def run_spaces(args) -> int:
+    from unimem.conversation import spaces
+
+    for name in spaces(paths.resolve_root(args.dest)):
+        print(name)
+    return 0

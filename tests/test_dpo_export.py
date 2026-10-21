@@ -1,8 +1,8 @@
 """Preference pairs only from decisive randomized compression trials."""
 import json
 
-from commontrace import compression, memory_authority, trace_io
-from commontrace.cli import main
+from unimem import compression, memory_authority, trace_io
+from unimem.cli import main
 
 
 def _trial(root, proposal_id, wins):

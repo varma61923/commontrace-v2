@@ -37,7 +37,7 @@ BOOTSTRAP = 4000
 
 
 def _read_lessons(directory: str) -> list[dict]:
-    from commontrace import frontmatter
+    from unimem import frontmatter
 
     out = []
     for name in sorted(os.listdir(directory)):

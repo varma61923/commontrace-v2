@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from hub import auth
 from hub.config import HubConfig
 
-logger = logging.getLogger("commontrace.hub")
+logger = logging.getLogger("unimem.hub")
 _SIGNERS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 

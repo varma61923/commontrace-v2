@@ -16,7 +16,7 @@ async def mcp(config, session_factory):
 @pytest.mark.asyncio
 class TestEveryRegisteredToolHasACapability:
     async def test_every_tool_the_server_actually_registers_is_mapped(self, mcp):
-        registered = set(mcp.commontrace_tool_scopes)
+        registered = set(mcp.unimem_tool_scopes)
         mapped = set(rbac.TOOL_CAPABILITY)
         assert registered == mapped, (
             "every tool the server registers needs a capability in "
@@ -47,7 +47,7 @@ class TestScopeNeverUnderShootsCapability:
     async def test_every_role_derived_scope_covers_every_tool_its_capabilities_reach(
         self, mcp
     ):
-        declared = mcp.commontrace_tool_scopes
+        declared = mcp.unimem_tool_scopes
         for role in rbac.ROLES:
             granted = rbac.capabilities_of(role)
             derived_scope = set(rbac.scopes_of(role))

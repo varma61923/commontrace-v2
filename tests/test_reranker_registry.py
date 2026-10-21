@@ -1,9 +1,9 @@
 """Named second-stage rerankers: registry, MMR and the retrieval seam."""
 import pytest
 
-from commontrace import providers, retrieval
-from commontrace.exceptions import CapabilityError, ConfigurationError
-from commontrace.retrieval import RankedLesson
+from unimem import providers, retrieval
+from unimem.exceptions import CapabilityError, ConfigurationError
+from unimem.retrieval import RankedLesson
 
 
 def _lesson(slug, score, description, terms=()):

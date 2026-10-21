@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from commontrace import llm, llm_cache
+from unimem import llm, llm_cache
 
 
 @pytest.fixture(autouse=True)
@@ -24,8 +24,8 @@ def test_cache_keys_cannot_alias_delimiters_or_namespaces():
 
 
 def test_provider_endpoint_account_region_and_project_partition_completions(tmp_path, monkeypatch):
-    monkeypatch.setenv("COMMONTRACE_LLM_CACHE", "1")
-    monkeypatch.setenv("COMMONTRACE_LLM_CACHE_PATH", str(tmp_path / "c.db"))
+    monkeypatch.setenv("UNIMEM_LLM_CACHE", "1")
+    monkeypatch.setenv("UNIMEM_LLM_CACHE_PATH", str(tmp_path / "c.db"))
     calls = []
 
     def provider(cfg, prompt):
@@ -48,8 +48,8 @@ def test_provider_endpoint_account_region_and_project_partition_completions(tmp_
         second = llm.complete("q", cfg)
         assert second[0] == first[0]
         assert second[1]["input_tokens"] == first[1]["input_tokens"]
-        assert first[1]["_commontrace_cache_hit"] is False
-        assert second[1]["_commontrace_cache_hit"] is True
+        assert first[1]["_unimem_cache_hit"] is False
+        assert second[1]["_unimem_cache_hit"] is True
     assert len(calls) == len(configs)
     with sqlite3.connect(tmp_path / "c.db") as db:
         keys = str(db.execute("SELECT key FROM cache").fetchall())
@@ -57,8 +57,8 @@ def test_provider_endpoint_account_region_and_project_partition_completions(tmp_
 
 
 def test_cloud_cache_requires_an_explicit_identity_namespace(tmp_path, monkeypatch):
-    monkeypatch.setenv("COMMONTRACE_LLM_CACHE", "1")
-    monkeypatch.setenv("COMMONTRACE_LLM_CACHE_PATH", str(tmp_path / "c.db"))
+    monkeypatch.setenv("UNIMEM_LLM_CACHE", "1")
+    monkeypatch.setenv("UNIMEM_LLM_CACHE_PATH", str(tmp_path / "c.db"))
     calls = []
 
     def provider(cfg, prompt):
@@ -74,8 +74,8 @@ def test_cloud_cache_requires_an_explicit_identity_namespace(tmp_path, monkeypat
 
 
 def test_concurrent_completions_have_one_owner_and_independent_usage_objects(tmp_path, monkeypatch):
-    monkeypatch.setenv("COMMONTRACE_LLM_CACHE", "1")
-    monkeypatch.setenv("COMMONTRACE_LLM_CACHE_PATH", str(tmp_path / "c.db"))
+    monkeypatch.setenv("UNIMEM_LLM_CACHE", "1")
+    monkeypatch.setenv("UNIMEM_LLM_CACHE_PATH", str(tmp_path / "c.db"))
     started, release = threading.Event(), threading.Event()
     calls = []
 

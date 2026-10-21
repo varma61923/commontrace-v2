@@ -1,6 +1,6 @@
 # Two-server oblivious recall reference
 
-`commontrace prove recall-oblivious` demonstrates a standard XOR two-server
+`unimem prove recall-oblivious` demonstrates a standard XOR two-server
 PIR pattern over fixed-size, per-clearance memory blocks. Authorized clients
 choose nearest public cluster centroids locally, create two XOR query shares,
 send one share to each independently operated Hub replica, reconstruct selected

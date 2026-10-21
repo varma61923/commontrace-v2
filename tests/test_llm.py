@@ -9,7 +9,7 @@ import urllib.request
 
 import pytest
 
-from commontrace import llm
+from unimem import llm
 
 
 class FakeResponse(io.BytesIO):
@@ -28,36 +28,36 @@ def _fake_urlopen(payload: dict):
 
 class TestLoadConfig:
     def test_no_api_key_is_unavailable(self, monkeypatch):
-        monkeypatch.delenv("COMMONTRACE_LLM_API_KEY", raising=False)
-        with pytest.raises(llm.LLMUnavailable, match="COMMONTRACE_LLM_API_KEY"):
+        monkeypatch.delenv("UNIMEM_LLM_API_KEY", raising=False)
+        with pytest.raises(llm.LLMUnavailable, match="UNIMEM_LLM_API_KEY"):
             llm.load_config()
 
     def test_defaults_to_anthropic_and_the_default_model(self, monkeypatch):
-        monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "k")
-        monkeypatch.delenv("COMMONTRACE_LLM_PROVIDER", raising=False)
-        monkeypatch.delenv("COMMONTRACE_LLM_MODEL", raising=False)
+        monkeypatch.setenv("UNIMEM_LLM_API_KEY", "k")
+        monkeypatch.delenv("UNIMEM_LLM_PROVIDER", raising=False)
+        monkeypatch.delenv("UNIMEM_LLM_MODEL", raising=False)
         config = llm.load_config()
         assert config.provider == "anthropic"
         assert config.model == llm.DEFAULT_MODEL
 
     def test_unsupported_provider_is_unavailable(self, monkeypatch):
-        monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "k")
-        monkeypatch.setenv("COMMONTRACE_LLM_PROVIDER", "cohere")
+        monkeypatch.setenv("UNIMEM_LLM_API_KEY", "k")
+        monkeypatch.setenv("UNIMEM_LLM_PROVIDER", "cohere")
         with pytest.raises(llm.LLMUnavailable, match="not supported"):
             llm.load_config()
 
     def test_openai_compatible_without_base_url_is_unavailable(self, monkeypatch):
-        monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "k")
-        monkeypatch.setenv("COMMONTRACE_LLM_PROVIDER", "openai-compatible")
-        monkeypatch.delenv("COMMONTRACE_LLM_BASE_URL", raising=False)
-        with pytest.raises(llm.LLMUnavailable, match="COMMONTRACE_LLM_BASE_URL"):
+        monkeypatch.setenv("UNIMEM_LLM_API_KEY", "k")
+        monkeypatch.setenv("UNIMEM_LLM_PROVIDER", "openai-compatible")
+        monkeypatch.delenv("UNIMEM_LLM_BASE_URL", raising=False)
+        with pytest.raises(llm.LLMUnavailable, match="UNIMEM_LLM_BASE_URL"):
             llm.load_config()
 
     @pytest.mark.parametrize("bad", ["file:///etc/passwd", "ftp://host/x", "localhost:11434/v1", "http://"])
     def test_a_non_http_base_url_is_refused(self, monkeypatch, bad):
-        monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "k")
-        monkeypatch.setenv("COMMONTRACE_LLM_PROVIDER", "openai-compatible")
-        monkeypatch.setenv("COMMONTRACE_LLM_BASE_URL", bad)
+        monkeypatch.setenv("UNIMEM_LLM_API_KEY", "k")
+        monkeypatch.setenv("UNIMEM_LLM_PROVIDER", "openai-compatible")
+        monkeypatch.setenv("UNIMEM_LLM_BASE_URL", bad)
         with pytest.raises(llm.LLMUnavailable, match="http"):
             llm.load_config()
 
@@ -71,9 +71,9 @@ class TestLoadConfig:
             llm.draft("prompt", config=config)
 
     def test_openai_compatible_with_base_url_is_valid(self, monkeypatch):
-        monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "k")
-        monkeypatch.setenv("COMMONTRACE_LLM_PROVIDER", "openai-compatible")
-        monkeypatch.setenv("COMMONTRACE_LLM_BASE_URL", "http://localhost:11434/v1")
+        monkeypatch.setenv("UNIMEM_LLM_API_KEY", "k")
+        monkeypatch.setenv("UNIMEM_LLM_PROVIDER", "openai-compatible")
+        monkeypatch.setenv("UNIMEM_LLM_BASE_URL", "http://localhost:11434/v1")
         config = llm.load_config()
         assert config.base_url == "http://localhost:11434/v1"
 
@@ -234,26 +234,26 @@ class TestCloudProviders:
     REPLY = ('{"rule": "r", "applies_when": "a", "do_not_apply_when": "d", "evidence": ["e1"]}')
 
     def _env(self, monkeypatch, provider, **extra):
-        for k in ("COMMONTRACE_LLM_API_KEY", "COMMONTRACE_LLM_MODEL", "COMMONTRACE_LLM_REGION",
-                  "COMMONTRACE_LLM_PROJECT", "AWS_REGION", "COMMONTRACE_LLM_PRICES"):
+        for k in ("UNIMEM_LLM_API_KEY", "UNIMEM_LLM_MODEL", "UNIMEM_LLM_REGION",
+                  "UNIMEM_LLM_PROJECT", "AWS_REGION", "UNIMEM_LLM_PRICES"):
             monkeypatch.delenv(k, raising=False)
-        monkeypatch.setenv("COMMONTRACE_LLM_PROVIDER", provider)
+        monkeypatch.setenv("UNIMEM_LLM_PROVIDER", provider)
         for k, v in extra.items():
             monkeypatch.setenv(k, v)
 
     def test_cloud_providers_need_no_api_key_but_name_their_model_and_place(self, monkeypatch):
         self._env(monkeypatch, "bedrock")
-        with pytest.raises(llm.LLMUnavailable, match="COMMONTRACE_LLM_MODEL, COMMONTRACE_LLM_REGION"):
+        with pytest.raises(llm.LLMUnavailable, match="UNIMEM_LLM_MODEL, UNIMEM_LLM_REGION"):
             llm.load_config()
-        self._env(monkeypatch, "bedrock", COMMONTRACE_LLM_MODEL="m", AWS_REGION="eu-west-1")
+        self._env(monkeypatch, "bedrock", UNIMEM_LLM_MODEL="m", AWS_REGION="eu-west-1")
         assert llm.load_config().region == "eu-west-1"
-        self._env(monkeypatch, "vertex", COMMONTRACE_LLM_MODEL="m", COMMONTRACE_LLM_REGION="europe-west4")
-        with pytest.raises(llm.LLMUnavailable, match="COMMONTRACE_LLM_PROJECT"):
+        self._env(monkeypatch, "vertex", UNIMEM_LLM_MODEL="m", UNIMEM_LLM_REGION="europe-west4")
+        with pytest.raises(llm.LLMUnavailable, match="UNIMEM_LLM_PROJECT"):
             llm.load_config()
 
     def test_an_api_key_is_still_required_for_the_others(self, monkeypatch):
         self._env(monkeypatch, "anthropic")
-        with pytest.raises(llm.LLMUnavailable, match="COMMONTRACE_LLM_API_KEY"):
+        with pytest.raises(llm.LLMUnavailable, match="UNIMEM_LLM_API_KEY"):
             llm.load_config()
 
     def test_bedrock_uses_the_converse_shape(self, monkeypatch):
@@ -302,7 +302,7 @@ class TestCloudProviders:
     def test_a_missing_sdk_degrades_with_the_extra_named(self, monkeypatch, provider, module):
         monkeypatch.setitem(sys.modules, module, None)
         cfg = llm.Config(provider=provider, model="m", api_key="", region="r", project="p")
-        with pytest.raises(llm.LLMUnavailable, match=r"commontrace\[llm\]"):
+        with pytest.raises(llm.LLMUnavailable, match=r"unimem\[llm\]"):
             llm.draft("p", config=cfg)
 
     def test_an_sdk_failure_is_unavailable_not_a_crash(self, monkeypatch):
@@ -322,11 +322,11 @@ class TestCost:
         usage = {"input_tokens": 2000, "output_tokens": 500}
         assert llm.cost_usd(usage, "m", self.PRICES) == pytest.approx((2000 * 3 + 500 * 15) / 1e6)
         assert llm.cost_usd(usage, "other-model", self.PRICES) is None
-        monkeypatch.delenv("COMMONTRACE_LLM_PRICES", raising=False)
+        monkeypatch.delenv("UNIMEM_LLM_PRICES", raising=False)
         assert llm.cost_usd(usage, "m") is None
         path = tmp_path / "prices.json"
         path.write_text(json.dumps(self.PRICES))
-        monkeypatch.setenv("COMMONTRACE_LLM_PRICES", str(path))
+        monkeypatch.setenv("UNIMEM_LLM_PRICES", str(path))
         assert llm.cost_usd(usage, "m") == pytest.approx(0.0135)
         path.write_text("not json")
         assert llm.cost_usd(usage, "m") is None
@@ -335,9 +335,9 @@ class TestCost:
         monkeypatch.setattr(llm, "_call_anthropic", lambda cfg, prompt: (
             TestCloudProviders.REPLY, {"input_tokens": 1000, "output_tokens": 100}))
         cfg = llm.Config(provider="anthropic", model="m", api_key="k")
-        monkeypatch.delenv("COMMONTRACE_LLM_PRICES", raising=False)
+        monkeypatch.delenv("UNIMEM_LLM_PRICES", raising=False)
         assert "cost_usd" not in llm.draft("p", config=cfg).provenance
         path = tmp_path / "p.json"
         path.write_text(json.dumps(self.PRICES))
-        monkeypatch.setenv("COMMONTRACE_LLM_PRICES", str(path))
+        monkeypatch.setenv("UNIMEM_LLM_PRICES", str(path))
         assert llm.draft("p", config=cfg).provenance["cost_usd"] == pytest.approx(0.0045)

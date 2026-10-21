@@ -5,10 +5,10 @@ from dataclasses import replace
 
 import pytest
 
-from commontrace import attested_keys as keys
-from commontrace import frontier_protocol as fp
 from hub import attestation, kms
 from hub.tests.test_rest import _app, _client, _key, _org_with_key
+from unimem import attested_keys as keys
+from unimem import frontier_protocol as fp
 
 pytestmark = pytest.mark.asyncio
 
@@ -41,7 +41,7 @@ async def test_kms_provider_binds_ciphertext_to_exact_authenticated_tenant_conte
     provider = kms.TenantKeyProvider(tenants, client=client)
     assert provider.unwrap("org-a") == b"k"*32
     assert client.calls[0]["EncryptionContext"] == {
-        "purpose": "commontrace-attested-tenant-key-v1", "tenant": "org-a"}
+        "purpose": "unimem-attested-tenant-key-v1", "tenant": "org-a"}
     with pytest.raises(RuntimeError, match="not provisioned"):
         provider.unwrap("org-b")
 

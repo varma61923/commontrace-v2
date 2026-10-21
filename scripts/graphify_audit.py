@@ -20,18 +20,18 @@ def audit(graph: dict) -> dict:
     roots = {
         identity
         for identity, node in nodes.items()
-        if node.get("source_file", "").startswith(("commontrace/commands/", "commontrace/integrations/", "hub/"))
+        if node.get("source_file", "").startswith(("unimem/commands/", "unimem/integrations/", "hub/"))
         or node.get("source_file")
         in (
-            "commontrace/cli.py",
-            "commontrace/gateway.py",
-            "commontrace/mcp_tools.py",
-            "commontrace/client.py",
-            "commontrace/framework_middleware.py",
-            "commontrace/record_api.py",
-            "commontrace/hook_kit.py",
-            "commontrace/hook_service.py",
-            "commontrace/hook_bridge.py",  # Absolute script entry point in generated native manifests.
+            "unimem/cli.py",
+            "unimem/gateway.py",
+            "unimem/mcp_tools.py",
+            "unimem/client.py",
+            "unimem/framework_middleware.py",
+            "unimem/record_api.py",
+            "unimem/hook_kit.py",
+            "unimem/hook_service.py",
+            "unimem/hook_bridge.py",  # Absolute script entry point in generated native manifests.
         )
     }
     reachable, queue = set(roots), deque(roots)
@@ -45,7 +45,7 @@ def audit(graph: dict) -> dict:
         for identity, node in nodes.items()
         if identity not in reachable
         and node.get("_callable")
-        and node.get("source_file", "").startswith("commontrace/")
+        and node.get("source_file", "").startswith("unimem/")
     ]
     return {
         "nodes": len(nodes),
@@ -72,7 +72,7 @@ def main():
     if args.source_root:
         result["python_modules"] = sum(
             name.endswith(".py")
-            for _, _, names in os.walk(os.path.join(args.source_root, "commontrace"))
+            for _, _, names in os.walk(os.path.join(args.source_root, "unimem"))
             for name in names
         )
         if args.max_modules is not None and result["python_modules"] > args.max_modules:

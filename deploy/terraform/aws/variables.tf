@@ -11,7 +11,7 @@ variable "dr_region" {
 variable "name" {
   type        = string
   description = "Prefix for every resource."
-  default     = "commontrace-hub"
+  default     = "unimem-hub"
 }
 
 variable "vpc_id" {

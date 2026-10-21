@@ -4,7 +4,7 @@ import types
 
 import pytest
 
-from commontrace import fact_embeddings, fact_store, fact_vector_projection, hierarchical, search_recipes
+from unimem import fact_embeddings, fact_store, fact_vector_projection, hierarchical, search_recipes
 
 
 class LocalModelUnavailable(Exception):
@@ -15,8 +15,8 @@ def _stub_local_model_runtime(monkeypatch, constructor):
     sentence_transformers = types.ModuleType("sentence_transformers")
     sentence_transformers.SentenceTransformer = constructor
     monkeypatch.setitem(sys.modules, "sentence_transformers", sentence_transformers)
-    from commontrace import rerank_arm
-    from commontrace.conversation import embed
+    from unimem import rerank_arm
+    from unimem.conversation import embed
 
     monkeypatch.setattr(embed, "available", lambda: True)
     monkeypatch.setattr(rerank_arm, "_no_progress_bars", contextlib.nullcontext)
@@ -59,7 +59,7 @@ def test_offline_missing_local_model_skips_download_and_searches_lexically(tmp_p
         root,
         "The Kubernetes migration reconciles deployment checks before release.",
     )
-    monkeypatch.setenv("COMMONTRACE_OFFLINE", "1")
+    monkeypatch.setenv("UNIMEM_OFFLINE", "1")
     calls = []
 
     def sentence_transformer(name, **kwargs):
@@ -86,7 +86,7 @@ def test_offline_missing_local_model_skips_download_and_searches_lexically(tmp_p
 
 
 def test_online_local_model_load_keeps_existing_download_retry(monkeypatch):
-    monkeypatch.delenv("COMMONTRACE_OFFLINE", raising=False)
+    monkeypatch.delenv("UNIMEM_OFFLINE", raising=False)
     calls = []
     model = types.SimpleNamespace()
 
@@ -104,7 +104,7 @@ def test_online_local_model_load_keeps_existing_download_retry(monkeypatch):
 
 
 def _stub_cross_encoder_runtime(monkeypatch, constructor):
-    from commontrace import rerank_arm
+    from unimem import rerank_arm
 
     runtime = types.ModuleType("sentence_transformers")
     runtime.CrossEncoder = constructor
@@ -125,7 +125,7 @@ def test_offline_uncached_reranker_preserves_first_stage_without_download(tmp_pa
     baseline = search_recipes.search(root, "Kubernetes deployment checks", embedder="none", reranker="none",
                                      as_of=reference)
     assert len(baseline) == 2
-    monkeypatch.setenv("COMMONTRACE_OFFLINE", "1")
+    monkeypatch.setenv("UNIMEM_OFFLINE", "1")
     calls = []
 
     def cross_encoder(name, **kwargs):
@@ -146,7 +146,7 @@ def test_offline_uncached_reranker_preserves_first_stage_without_download(tmp_pa
 
 @pytest.mark.parametrize("use_worker", [False, True])
 def test_offline_cached_reranker_remains_available(monkeypatch, use_worker):
-    monkeypatch.setenv("COMMONTRACE_OFFLINE", "1")
+    monkeypatch.setenv("UNIMEM_OFFLINE", "1")
     calls = []
     model = types.SimpleNamespace(predict=lambda pairs, **_kwargs: [float(i) for i in range(len(pairs))])
 
@@ -156,7 +156,7 @@ def test_offline_cached_reranker_remains_available(monkeypatch, use_worker):
 
     rerank_arm = _stub_cross_encoder_runtime(monkeypatch, cross_encoder)
     monkeypatch.setattr(rerank_arm, "_USE_WORKER", use_worker)
-    from commontrace import warm
+    from unimem import warm
 
     def online_worker(*_args):
         raise AssertionError("an existing worker may have inherited an online environment")
@@ -170,7 +170,7 @@ def test_offline_cached_reranker_remains_available(monkeypatch, use_worker):
 
 
 def test_online_reranker_keeps_download_retry(monkeypatch):
-    monkeypatch.delenv("COMMONTRACE_OFFLINE", raising=False)
+    monkeypatch.delenv("UNIMEM_OFFLINE", raising=False)
     calls = []
     model = types.SimpleNamespace()
 

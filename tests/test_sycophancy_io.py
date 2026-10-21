@@ -5,7 +5,8 @@ import json
 
 import pytest
 
-from commontrace import (
+from tests import test_skill_foundry
+from unimem import (
     causal_gate,
     cli,
     hierarchical,
@@ -13,10 +14,9 @@ from commontrace import (
     memory_authority,
     search_recipes,
 )
-from commontrace import frontier_protocol as fp
-from commontrace import nextwave_store as store
-from commontrace import sycophancy_io as io
-from tests import test_skill_foundry
+from unimem import frontier_protocol as fp
+from unimem import nextwave_store as store
+from unimem import sycophancy_io as io
 
 clock = test_skill_foundry.clock
 CONTEXT = ["domain:science"]
@@ -55,7 +55,7 @@ def test_flattering_audit_changes_actual_gate_and_factual_admission(tmp_path, cl
     rates, _, _ = causal_gate.plan_rates(root, .1)
     assert rates[source.id] == .9
     assert source.id not in search_recipes.admit(root, [source.id], context=["domain:music"])
-    from commontrace import memory_control
+    from unimem import memory_control
 
     assert not memory_control.matches(["project:a", "domain:science"], ["project:a", "domain:music"])
     assert source.id not in search_recipes.admit(root, [source.id], context=CONTEXT, action_class="factual:science")
@@ -121,7 +121,7 @@ def test_changed_source_and_missing_domain_fail_closed(tmp_path, clock):
 
 
 def test_api_numeric_schema_rejects_nonfinite_metrics_and_cli_is_real(tmp_path, clock, capsys):
-    from commontrace import api_schema
+    from unimem import api_schema
 
     source, identity = prepare(str(tmp_path), clock, horizon=32)
     valid = {"occasion_id": "assigned", "succeeded": True, "secondary_metrics": {"accuracy": .5, "agreement": True}}
@@ -138,7 +138,7 @@ def test_api_numeric_schema_rejects_nonfinite_metrics_and_cli_is_real(tmp_path, 
 def test_pinned_benchmark_subsets_keep_gold_separate_and_require_local_license(tmp_path, clock):
     from pathlib import Path
 
-    from commontrace import sycophancy
+    from unimem import sycophancy
 
     fixture = json.loads((Path(__file__).parent/"fixtures/personalization_benchmark_contract.json").read_text())
     assert sycophancy.BENCHMARK_PINS["persistbench"] == fixture["persistbench_revision"]
@@ -159,7 +159,7 @@ def test_pinned_benchmark_subsets_keep_gold_separate_and_require_local_license(t
 def test_actual_offline_benchmark_harness_honors_arms_and_hides_gold(tmp_path, clock):
     from pathlib import Path
 
-    from commontrace import sycophancy
+    from unimem import sycophancy
 
     root = str(tmp_path)
     holdout_io.configure(root, rate=.5, salt="benchmark")
@@ -194,7 +194,7 @@ def test_actual_offline_benchmark_harness_honors_arms_and_hides_gold(tmp_path, c
 
 
 def test_newer_harm_replaces_old_accuracy_and_bundle_result_is_not_individual_evidence(tmp_path, clock):
-    from commontrace import incident
+    from unimem import incident
 
     root = str(tmp_path)
     holdout_io.configure(root, rate=.5, salt="newer-personalization")
@@ -229,7 +229,7 @@ def test_newer_harm_replaces_old_accuracy_and_bundle_result_is_not_individual_ev
 
 
 def test_source_erasure_removes_secondary_metric_and_delivery_payloads(tmp_path, clock):
-    from commontrace import privacy_erasure
+    from unimem import privacy_erasure
 
     root = str(tmp_path)
     source, identity = prepare(root, clock, horizon=32)
@@ -243,9 +243,9 @@ def test_source_erasure_removes_secondary_metric_and_delivery_payloads(tmp_path,
 
 
 def test_real_gateway_and_local_sdk_record_labels_before_outcome(tmp_path, clock):
-    from commontrace import gateway
-    from commontrace.client import MemoryClient
     from tests.test_gateway import TOKEN, call
+    from unimem import gateway
+    from unimem.client import MemoryClient
 
     root = str(tmp_path)
     _, identity = prepare(root, clock, horizon=32)

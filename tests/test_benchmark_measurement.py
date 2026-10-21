@@ -21,8 +21,8 @@ from benchmarks.measurement import (
     ranking_fields,
     shared_source_clusters,
 )
-from commontrace import llm
-from commontrace.conversation import Store
+from unimem import llm
+from unimem.conversation import Store
 
 
 def _args(tmp_path: Path, **changes: object) -> argparse.Namespace:

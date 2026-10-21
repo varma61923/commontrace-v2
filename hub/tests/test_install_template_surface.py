@@ -5,14 +5,14 @@ import pathlib
 import subprocess
 import sys
 
-from commontrace.commands import install_cmd
 from hub import smoke
+from unimem.commands import install_cmd
 
 
 class TestAdvertisedSurfaceMatchesReality:
     def test_the_template_lists_exactly_the_hub_tools(self):
         assert sorted(install_cmd._HUB_TOOLS) == sorted(smoke.EXPECTED_TOOLS), (
-            "commontrace/commands/install_cmd.py:_HUB_TOOLS has drifted from "
+            "unimem/commands/install_cmd.py:_HUB_TOOLS has drifted from "
             "hub/smoke.py:EXPECTED_TOOLS. The generated MCP config tells customers "
             "what the Hub can do; a stale list is silent -- the file still works for "
             "the tools it names, and the rest are simply never discovered."
@@ -42,7 +42,7 @@ class TestAgentsAreToldHowToMeasure:
     def test_it_covers_both_tiers(self):
         skill = install_cmd._GENERIC_POINTER_SKILL
         assert "search_traces" in skill
-        assert "commontrace query --experiment" in skill
+        assert "unimem query --experiment" in skill
 
 
 class TestInstallCmdStaysImportableWithoutTheClientDependencies:
@@ -66,12 +66,12 @@ class TestInstallCmdStaysImportableWithoutTheClientDependencies:
         )
 
     def test_install_cmd_imports_without_pyyaml(self):
-        result = self._import_with_yaml_blocked("commontrace.commands.install_cmd")
+        result = self._import_with_yaml_blocked("unimem.commands.install_cmd")
         assert result.returncode == 0, (
             "hub/tests/ imports install_cmd, and this job installs no PyYAML. "
             "Something in install_cmd's import chain now needs it:\n" + result.stderr
         )
 
     def test_the_tool_names_come_from_a_dependency_free_module(self):
-        result = self._import_with_yaml_blocked("commontrace.mcp_tools")
+        result = self._import_with_yaml_blocked("unimem.mcp_tools")
         assert result.returncode == 0, result.stderr

@@ -6,14 +6,14 @@ import json
 
 import pytest
 
-from commontrace import fact_store, graph, hierarchical, search_recipes
-from commontrace.client import MemoryClient
-from commontrace.gateway import Gateway
+from unimem import fact_store, graph, hierarchical, search_recipes
+from unimem.client import MemoryClient
+from unimem.gateway import Gateway
 
 
 @pytest.fixture(params=["jsonl", "sqlite"])
 def root(tmp_path, request):
-    (tmp_path / "commontrace.yaml").write_text(
+    (tmp_path / "unimem.yaml").write_text(
         "profiles:\n  local:\n    embedding: none\n    reranker: none\n"
     )
     if request.param == "sqlite":
@@ -42,7 +42,7 @@ def test_hybrid_consensus_beats_either_channel_alone(root):
 
 
 def test_ingestion_entities_boost_only_admitted_candidates(root):
-    from commontrace import entity_store
+    from unimem import entity_store
 
     fact = add(root, "Alice owns the release checklist")
     private = add(root, "Alice owns a private checklist", scopes=["agent:other"])
@@ -80,7 +80,7 @@ def test_multi_hop_preserves_feedback_weight_and_prefers_stronger_paths(root):
 
 def test_mcp_uses_the_governed_hybrid_and_temporal_pipeline(root, monkeypatch):
     pytest.importorskip("mcp")
-    from commontrace import mcp_server
+    from unimem import mcp_server
 
     monkeypatch.setattr(hierarchical, "_now", lambda: "2025-02-01T00:00:00Z")
     monkeypatch.setattr(graph, "_now", lambda: "2025-02-01T00:00:00Z")
@@ -176,7 +176,7 @@ def test_mmr_keeps_a_relevant_but_distinct_supporting_fact(root):
 
 
 def test_reranking_cannot_redeliver_a_concurrently_forgotten_fact(root):
-    from commontrace.reranking import TextReranker
+    from unimem.reranking import TextReranker
 
     target = add(root, "quartz policy for the primary service")
     retained = add(root, "quartz policy for the backup service")

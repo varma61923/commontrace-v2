@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import pytest
 
-from commontrace.conversation import ConversationError, Options, Store, recall
-from commontrace.conversation import search as search_module
-from commontrace.conversation.search import assemble, confidence, tokens
+from unimem.conversation import ConversationError, Options, Store, recall
+from unimem.conversation import search as search_module
+from unimem.conversation.search import assemble, confidence, tokens
 
 
 def options(**kwargs):

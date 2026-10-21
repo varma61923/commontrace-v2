@@ -25,8 +25,8 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Literal
 
-from commontrace import hierarchical, lesson_cache
-from commontrace.fact_evidence import EvidenceResolver, bind_evidence
+from unimem import hierarchical, lesson_cache
+from unimem.fact_evidence import EvidenceResolver, bind_evidence
 
 Scorer = Literal["overlap-v1", "bm25-v1"]
 SCORERS: tuple[Scorer, ...] = ("overlap-v1", "bm25-v1")
@@ -385,7 +385,7 @@ def execute_case(case: Case, *, k: int = 3, scorers: Sequence[Scorer] = SCORERS)
     _limit(k, "k", MAX_K)
     if not scorers or len(set(scorers)) != len(scorers) or any(scorer not in SCORERS for scorer in scorers):
         raise ValueError("scorers must be a nonempty unique selection of supported scorers")
-    with tempfile.TemporaryDirectory(prefix="commontrace-fact-quality-") as root:
+    with tempfile.TemporaryDirectory(prefix="unimem-fact-quality-") as root:
         keys: dict[str, str] = {}
         try:
             for row in case.facts:

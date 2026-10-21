@@ -6,11 +6,11 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from commontrace import capabilities as cap
-from commontrace import capability_io as io
-from commontrace import frontier_protocol as fp
-from commontrace import hierarchical, lineage, memory_authority, nextwave_store
 from tests.test_capabilities import A_KEY, B_KEY, NOW, policy
+from unimem import capabilities as cap
+from unimem import capability_io as io
+from unimem import frontier_protocol as fp
+from unimem import hierarchical, lineage, memory_authority, nextwave_store
 
 
 @pytest.fixture(autouse=True)
@@ -75,7 +75,7 @@ def test_durable_nonce_race_has_one_winner(tmp_path):
 
 @pytest.mark.parametrize("sqlite", [False, True])
 def test_canonical_write_class_scope_stamp_and_exact_revocation(tmp_path, sqlite):
-    from commontrace import change_stream, erasure_verify, fact_store
+    from unimem import change_stream, erasure_verify, fact_store
 
     root, token = prepare(tmp_path)
     if sqlite:
@@ -136,7 +136,7 @@ def test_handoff_is_recipient_bound_one_use_and_sticky(tmp_path):
 def test_gateway_narrows_primary_auth_and_cannot_drop_purpose_or_replay(tmp_path):
     import json
 
-    from commontrace import gateway
+    from unimem import gateway
 
     root, token = prepare(tmp_path)
     visible = hierarchical.append_facts(root, [{"statement": "Visible wrist calibration.",
@@ -165,7 +165,7 @@ def test_gateway_narrows_primary_auth_and_cannot_drop_purpose_or_replay(tmp_path
 
 
 def test_revocation_tracks_instrumented_outputs_without_colliding_with_canonical_ids(tmp_path):
-    from commontrace import contagion
+    from unimem import contagion
 
     root, token = prepare(tmp_path)
     unrelated = hierarchical.append_facts(root, [{"statement": "Independent elbow calibration.",
@@ -223,7 +223,7 @@ def test_alternate_authorization_expiry_invalidates_cached_release(tmp_path, mon
 
 @pytest.mark.parametrize("sqlite", [False, True])
 def test_delegated_update_rebinds_origin_and_revision_together(tmp_path, sqlite):
-    from commontrace import fact_store
+    from unimem import fact_store
 
     root, token = prepare(tmp_path)
     if sqlite:

@@ -4,7 +4,7 @@ Shared assistants (a hospital ward, an office, a household) have many principals
 writing to one memory and reading it under different entitlements. GateMem
 (arXiv 2606.18829) and PiSAs (arXiv 2607.05318) found that no tested system
 achieves utility, access control and forgetting at once. GovBench measures the
-three through CommonTrace's real gateway:
+three through UniMem's real gateway:
 
 * **Utility**: every principal can recall each memory it is entitled to.
 * **Leakage**: no principal ever receives a memory it is not entitled to --
@@ -85,8 +85,8 @@ def _recall(client: _Client, surface: str) -> str:
 
 
 def run() -> dict:
-    from commontrace import gateway as gateway_mod
-    from commontrace import hierarchical, holdout_io, memory_authority
+    from unimem import gateway as gateway_mod
+    from unimem import hierarchical, holdout_io, memory_authority
 
     root = tempfile.mkdtemp(prefix="govbench-")
     try:

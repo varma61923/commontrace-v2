@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from commontrace.conversation import AsyncStore, Options, Store
+from unimem.conversation import AsyncStore, Options, Store
 
 
 def test_concurrent_agent_load_preserves_sessions_and_invalidates_recall(tmp_path: Path) -> None:

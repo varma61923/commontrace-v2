@@ -38,7 +38,7 @@ def test_t1_agent_loop_memory_block_dynamic_updates(isolated_store: str):
 
 def test_t1_agent_loop_refuses_without_a_model(isolated_store: str):
     res = run_cli("agent", "run", "--prompt", "Anything", dest=isolated_store,
-                  env={"COMMONTRACE_LLM_PROVIDER": "anthropic", "COMMONTRACE_LLM_API_KEY": ""})
+                  env={"UNIMEM_LLM_PROVIDER": "anthropic", "UNIMEM_LLM_API_KEY": ""})
     res.assert_failure(expected_code=2)
 
 
@@ -75,7 +75,7 @@ def test_t1_dreaming_report_log_generation(isolated_store: str):
 
     with open(report_path, encoding="utf-8") as f:
         report_content = f.read()
-    assert "CommonTrace Dream" in report_content or "Dream" in report_content
+    assert "UniMem Dream" in report_content or "Dream" in report_content
 
 
 def test_t1_dreaming_trace_mining(isolated_store: str):

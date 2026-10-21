@@ -7,9 +7,9 @@ packages. The generated callback follows their documented state/config and
 
 from __future__ import annotations
 
-from commontrace import holdout_io
-from commontrace.integrations.langgraph import create_pre_model_hook
-from commontrace.measure import CausalMemory
+from unimem import holdout_io
+from unimem.integrations.langgraph import create_pre_model_hook
+from unimem.measure import CausalMemory
 
 
 def _message_content(message):
@@ -60,7 +60,7 @@ def test_pre_model_hook_uses_turn_identity_and_skips_unscoped_reads():
 
     update = hook(state, {"configurable": {"thread_id": "thread-b"}})
     assert update == {"llm_input_messages": state["messages"]}
-    from commontrace.integrations.langgraph import turn_occasion_id
+    from unimem.integrations.langgraph import turn_occasion_id
 
     assert calls == [("hello", turn_occasion_id(state, {"configurable": {"thread_id": "thread-b"}}), {})]
 
@@ -84,7 +84,7 @@ def test_pre_model_hook_fails_open_when_memory_is_unavailable(tmp_path):
 
 
 def test_pre_model_hook_reuses_context_during_tool_loop_and_separates_turns():
-    from commontrace.integrations.langgraph import turn_occasion_id
+    from unimem.integrations.langgraph import turn_occasion_id
 
     calls = []
 
@@ -129,7 +129,7 @@ def test_pre_model_hook_scope_partitions_turn_cache_and_causal_identity():
 
 
 def test_pre_model_hook_outcome_joins_turn_assignment(tmp_path):
-    from commontrace.integrations.langgraph import record_outcome, turn_occasion_id
+    from unimem.integrations.langgraph import record_outcome, turn_occasion_id
 
     holdout_io.configure(str(tmp_path), rate=0.0)
     memory = CausalMemory(lambda query, **kwargs: [{"id": "lesson", "memory": "test memory"}], root=str(tmp_path))

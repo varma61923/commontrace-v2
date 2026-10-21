@@ -2,7 +2,7 @@
 import pytest
 
 from benchmarks.session_summary import main, run
-from commontrace.conversation import summary
+from unimem.conversation import summary
 
 
 def test_workload_checks_complete_persisted_summary_equality():

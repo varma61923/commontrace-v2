@@ -4,8 +4,8 @@ import re
 
 import pytest
 
-from commontrace import functions, holdout_io, paths, proof, proof_page
-from commontrace.cli import main
+from unimem import functions, holdout_io, paths, proof, proof_page
+from unimem.cli import main
 
 SUPPORT = functions.builtin_kits()["support"]
 
@@ -140,7 +140,7 @@ def test_a_real_start_prints_how_to_connect_and_registers_before_data(easy_kit, 
     assert main(["proof", "wizard", easy_kit, "--label", "acme", "--daily", "100", "--yes",
                  "--dest", store]) == 0
     out = capsys.readouterr().out
-    assert "registered before any data" in out and "commontrace gateway" in out
+    assert "registered before any data" in out and "unimem gateway" in out
     assert proof.load_state(store)["label"] == "acme"
     assert not os.path.exists(holdout_io.holdout_log_path(store)) or \
         os.path.getsize(holdout_io.holdout_log_path(store)) == 0

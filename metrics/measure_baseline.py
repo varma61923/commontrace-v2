@@ -14,11 +14,11 @@ What is measured, and what is deliberately not:
   lesson, the first injected lesson, and the compute time to a causal verdict.
   The verdict's compute time is not the time a real fleet waits for one: that
   is set by occasion volume, which `occasions_needed` reports.
-* query latency -- `commontrace query` cold-process p50/p95 on a 1,000-lesson store.
+* query latency -- `unimem query` cold-process p50/p95 on a 1,000-lesson store.
 * hub -- the per-request floor under concurrent load (`hub/bench_concurrency.py`),
   not search latency, which needs a populated corpus. Skipped, with the reason,
   when HUB_DATABASE_URL is not set.
-* install -- exit status of `commontrace install` for each target.
+* install -- exit status of `unimem install` for each target.
 """
 from __future__ import annotations
 
@@ -38,8 +38,8 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(REPO, "metrics", "baseline.json")
 sys.path.insert(0, REPO)
 
-from commontrace import experiment, holdout_io  # noqa: E402
-from commontrace.commands import install_cmd  # noqa: E402
+from unimem import experiment, holdout_io  # noqa: E402
+from unimem.commands import install_cmd  # noqa: E402
 
 LESSON = "lesson_check_suppression"
 BODY = """## Rule
@@ -59,7 +59,7 @@ Not when the customer received the email but the link expired.
 def cli(*args: str, cwd: str | None = None) -> tuple[float, subprocess.CompletedProcess]:
     start = time.perf_counter()
     done = subprocess.run(
-        [sys.executable, "-m", "commontrace.cli", *args],
+        [sys.executable, "-m", "unimem.cli", *args],
         capture_output=True, text=True, cwd=cwd or REPO, check=False,
         env={**os.environ, "PYTHONPATH": REPO},
     )
@@ -69,12 +69,12 @@ def cli(*args: str, cwd: str | None = None) -> tuple[float, subprocess.Completed
 def must(*args: str, cwd: str | None = None) -> float:
     took, done = cli(*args, cwd=cwd)
     if done.returncode != 0:
-        raise SystemExit(f"commontrace {' '.join(args)} failed ({done.returncode}):\n{done.stderr}")
+        raise SystemExit(f"unimem {' '.join(args)} failed ({done.returncode}):\n{done.stderr}")
     return took
 
 
 def activation(seed: int = 0) -> dict:
-    root = tempfile.mkdtemp(prefix="ct-baseline-")
+    root = tempfile.mkdtemp(prefix="unimem-baseline-")
     try:
         t0 = time.perf_counter()
         must("init", "--function", "support", "--dest", root)
@@ -146,9 +146,9 @@ def activation(seed: int = 0) -> dict:
 
 
 def query_latency(n_lessons: int = 1000, runs: int = 40) -> dict:
-    from commontrace.reference.measure_local_latency import _queries, build_store
+    from unimem.reference.measure_local_latency import _queries, build_store
 
-    root = tempfile.mkdtemp(prefix="ct-baseline-q-")
+    root = tempfile.mkdtemp(prefix="unimem-baseline-q-")
     try:
         must("init", "--agent-type", "general", "--dest", root)
         build_store(root, n_lessons)
@@ -193,7 +193,7 @@ def hub_floor() -> dict:
 def install_matrix() -> dict:
     results = {}
     for target in install_cmd.TARGETS:
-        root = tempfile.mkdtemp(prefix=f"ct-baseline-i-{target}-")
+        root = tempfile.mkdtemp(prefix=f"unimem-baseline-i-{target}-")
         try:
             must("init", "--agent-type", "general", "--dest", root)
             _, done = cli("install", "--target", target, "--dest", root, cwd=root)
@@ -207,11 +207,11 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--check", action="store_true", help="print the result without writing it")
     args = ap.parse_args()
-    from commontrace import __version__
+    from unimem import __version__
 
     result = {
         "schema": 1,
-        "commontrace": __version__,
+        "unimem": __version__,
         "machine": {
             "python": platform.python_version(), "platform": platform.platform(),
             "cpus": os.cpu_count(),

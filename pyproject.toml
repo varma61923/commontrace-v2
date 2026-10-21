@@ -3,13 +3,13 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "commontrace"
-version = "2.0.0"
-description = "CommonTrace Protocol client — capture agent experience, validate lessons, and inject them into any agent platform (Claude Code, Cursor, Devin, Windsurf, generic MCP)."
+name = "unimem"
+version = "1.0.0"
+description = "UniMem Protocol client — capture agent experience, validate lessons, and inject them into any agent platform (Claude Code, Cursor, Devin, Windsurf, generic MCP)."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "AGPL-3.0-only"
-authors = [{ name = "CommonTrace" }]
+authors = [{ name = "UniMem" }]
 keywords = ["agents", "llm", "mcp", "memory", "protocol", "fleet-learning"]
 dependencies = [
     "PyYAML>=6.0,<7.0",
@@ -37,7 +37,9 @@ attention = [
     "transformers>=5.5.0,<7.0",
 ]
 fastembed = [
-    "fastembed==0.8.0",
+    # Direct text-only ONNX inference; no image decoders or image dependency caps.
+    "numpy>=1.24,<3.0",
+    "tokenizers>=0.22,<1.0",
     "huggingface-hub>=0.36.2,<2.0",
     "onnxruntime==1.23.2; python_version < '3.14'",
     "onnxruntime==1.30.0; python_version >= '3.14'",
@@ -90,16 +92,16 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/denemlabs/commontrace-v2"
+Homepage = "https://github.com/varma61923/unimem"
 
 [project.scripts]
-commontrace = "commontrace.cli:main"
+unimem = "unimem.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["commontrace*"]
+include = ["unimem*"]
 
 [tool.setuptools.package-data]
-commontrace = ["schemas/*.json", "configuration.schema.json", "reference/*.py", "fixtures/fields/*.json", "kb_packs/*.jsonl", "vertical_packs/*.json", "vertical_packs/*.md", "ui/*", "conformance_vectors.json", "ontology_typing_model.json"]
+unimem = ["schemas/*.json", "configuration.schema.json", "reference/*.py", "fixtures/fields/*.json", "kb_packs/*.jsonl", "vertical_packs/*.json", "vertical_packs/*.md", "ui/*", "conformance_vectors.json", "ontology_typing_model.json"]
 
 [tool.ruff]
 line-length = 120

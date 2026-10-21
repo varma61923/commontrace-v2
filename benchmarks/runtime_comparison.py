@@ -19,7 +19,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from commontrace import lesson_cache, retrieval
+from unimem import lesson_cache, retrieval
 
 
 def run(size: int, runs: int) -> dict:
@@ -81,7 +81,7 @@ def measure(args) -> dict:
     report = {
         "python": platform.python_version(), "platform": platform.platform(),
         "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
-        "query_cache_setting": os.environ.get("COMMONTRACE_QUERY_CACHE", "1"),
+        "query_cache_setting": os.environ.get("UNIMEM_QUERY_CACHE", "1"),
         "source_sha256": {source.name: hashlib.sha256(source.read_bytes()).hexdigest()},
         "runs": args.runs,
         "results": [run(int(n), args.runs) for n in args.sizes.split(",")],
@@ -96,10 +96,10 @@ def compare(args) -> dict:
     script = Path(__file__).resolve()
     roots = {"baseline": Path(args.baseline_checkout).resolve(), "candidate": script.parents[1]}
     for name, root in roots.items():
-        if not (root / "commontrace" / "retrieval.py").is_file():
-            raise ValueError(f"{name} must be a CommonTrace checkout")
+        if not (root / "unimem" / "retrieval.py").is_file():
+            raise ValueError(f"{name} must be a UniMem checkout")
     trials = []
-    with tempfile.TemporaryDirectory(prefix="commontrace-runtime-benchmark-") as directory:
+    with tempfile.TemporaryDirectory(prefix="unimem-runtime-benchmark-") as directory:
         for trial in range(args.trials):
             pair = {}
             order = ("baseline", "candidate") if trial % 2 == 0 else ("candidate", "baseline")

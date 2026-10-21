@@ -8,8 +8,8 @@ from concurrent.futures import ProcessPoolExecutor
 
 import pytest
 
-from commontrace import gateway, paths
-from commontrace import gateway_tokens as tokens
+from unimem import gateway, paths
+from unimem import gateway_tokens as tokens
 
 
 def _create(root):

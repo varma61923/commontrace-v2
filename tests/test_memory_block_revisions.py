@@ -6,8 +6,8 @@ from xml.etree import ElementTree
 
 import pytest
 
-from commontrace import memory_blocks as blocks
-from commontrace.cli import main
+from unimem import memory_blocks as blocks
+from unimem.cli import main
 
 
 def test_create_only_and_stale_revision_do_not_mutate_history(tmp_path):

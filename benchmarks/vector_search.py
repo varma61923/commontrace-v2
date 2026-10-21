@@ -24,8 +24,8 @@ import time
 from collections.abc import Iterable
 from typing import Any
 
-from commontrace import sqlite_vector_snapshots, vector_scoring
-from commontrace.vector_store import SQLiteVectorIndex, VectorHit, VectorRecord
+from unimem import sqlite_vector_snapshots, vector_scoring
+from unimem.vector_store import SQLiteVectorIndex, VectorHit, VectorRecord
 
 
 def original_scorer(rows: Iterable[tuple[str, bytes]], query: tuple[float, ...], *,
@@ -46,7 +46,7 @@ def original_scorer(rows: Iterable[tuple[str, bytes]], query: tuple[float, ...],
 
 async def measure(*, vectors: int, dimension: int, top_k: int, trials: int, seed: int,
                   workload: str) -> list[dict[str, Any]]:
-    fd, path = tempfile.mkstemp(prefix="commontrace-vector-benchmark-", suffix=".db")
+    fd, path = tempfile.mkstemp(prefix="unimem-vector-benchmark-", suffix=".db")
     os.close(fd)
     candidate = vector_scoring.cosine_topk
     snapshot_candidate = getattr(sqlite_vector_snapshots, "cosine_topk")

@@ -1,7 +1,7 @@
 """Exact batched recall must preserve independent rankings, scopes and bounded scans."""
 import pytest
 
-from commontrace.conversation import Options, Store, embed, recall, search
+from unimem.conversation import Options, Store, embed, recall, search
 
 
 class Encoder:

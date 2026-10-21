@@ -8,9 +8,9 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from commontrace import attested_keys as keys
-from commontrace import cleanroom, holdout_io, memory_authority, overlap
-from commontrace import frontier_protocol as fp
+from unimem import attested_keys as keys
+from unimem import cleanroom, holdout_io, memory_authority, overlap
+from unimem import frontier_protocol as fp
 
 BUILD = {"backend": "simulated", "claims": {"test_build": "test-only-join-binary-v1"},
          "description": "Simulated test build; no hardware isolation"}

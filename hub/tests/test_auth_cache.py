@@ -45,8 +45,8 @@ async def test_when_on_a_verified_key_is_remembered_by_its_hmac_not_the_raw_key(
 
 async def test_a_failed_verification_is_never_cached(session_factory, config):
     auth.configure_auth_cache(30)
-    assert await _verify(session_factory, "ct_live_not-a-real-key") is None
-    assert auth.cached_key("ct_live_not-a-real-key") is None and not auth._AUTH_CACHE
+    assert await _verify(session_factory, "unimem_live_not-a-real-key") is None
+    assert auth.cached_key("unimem_live_not-a-real-key") is None and not auth._AUTH_CACHE
 
 
 async def test_it_expires_after_its_window(session_factory, config, monkeypatch):
@@ -92,7 +92,7 @@ async def test_the_cache_is_bounded(session_factory, config, monkeypatch):
     monkeypatch.setattr(auth, "_AUTH_CACHE_MAX", 3)
     auth.configure_auth_cache(30)
     for i in range(10):
-        auth._remember(f"ct_live_{i}", auth.AuthenticatedKey(org_id="o", key_prefix="p"))
+        auth._remember(f"unimem_live_{i}", auth.AuthenticatedKey(org_id="o", key_prefix="p"))
         assert len(auth._AUTH_CACHE) <= 3
 
 
@@ -242,12 +242,12 @@ async def test_a_key_is_never_served_past_its_own_expiry(session_factory, config
 
     auth.configure_auth_cache(30)
     soon = datetime.now(timezone.utc) + timedelta(seconds=2)
-    auth._remember("ct_live_soon", auth.AuthenticatedKey(org_id="o", key_prefix="p", expires_at=soon))
-    deadline, _ = auth._AUTH_CACHE[auth._key_hmac("ct_live_soon")]
+    auth._remember("unimem_live_soon", auth.AuthenticatedKey(org_id="o", key_prefix="p", expires_at=soon))
+    deadline, _ = auth._AUTH_CACHE[auth._key_hmac("unimem_live_soon")]
     assert deadline - auth.time.monotonic() <= 2.0
     past = datetime.now(timezone.utc) - timedelta(seconds=1)
-    auth._remember("ct_live_gone", auth.AuthenticatedKey(org_id="o", key_prefix="p", expires_at=past))
-    assert auth._key_hmac("ct_live_gone") not in auth._AUTH_CACHE
+    auth._remember("unimem_live_gone", auth.AuthenticatedKey(org_id="o", key_prefix="p", expires_at=past))
+    assert auth._key_hmac("unimem_live_gone") not in auth._AUTH_CACHE
 
 
 async def test_a_rolled_back_revocation_notifies_no_one(session_factory, config, _listener_off_afterwards):

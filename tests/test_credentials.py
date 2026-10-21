@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from commontrace import credentials as vc
+from unimem import credentials as vc
 
 pytest.importorskip("cryptography", reason="credentials use the optional security extra")
 

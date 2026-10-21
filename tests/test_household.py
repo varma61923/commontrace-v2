@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from commontrace import frontier_protocol as fp
-from commontrace import household, spatial
+from unimem import frontier_protocol as fp
+from unimem import household, spatial
 
 CONTEXT = {"tenant": "home-a", "site": "kitchen", "robot": "helper-1"}
 

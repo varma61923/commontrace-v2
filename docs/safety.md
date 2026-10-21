@@ -1,7 +1,7 @@
 # Protected hazard memories and safety evidence
 
 Hazards require a content-bound review by an operator. Use
-`commontrace safety mark ID --class zone|object|condition|human-proximity
+`unimem safety mark ID --class zone|object|condition|human-proximity
 --reviewer REVIEWER --reason REASON`. Lessons additionally require a current
 lesson-admission receipt. Marking makes a reviewed lesson core and removes its
 automatic expiry. Facts must be active without a scheduled end or expiry.

@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from benchmarks.evolution import LocalAdapter, NoMemoryAdapter, fixture, run, stable_metrics
-from commontrace import (
+from unimem import (
     additive_extract,
     agent_registry,
     causal_policy,
@@ -31,12 +31,12 @@ from commontrace import (
     trace_io,
     ttl,
 )
-from commontrace.cli import main
-from commontrace.client import MemoryClient, wrap
-from commontrace.gateway import Gateway
-from commontrace.llm_runtime import Budget, BudgetExceeded, LLMRuntime
-from commontrace.local_extraction import gliner_entities
-from commontrace.search_recipes import REGISTRY, search
+from unimem.cli import main
+from unimem.client import MemoryClient, wrap
+from unimem.gateway import Gateway
+from unimem.llm_runtime import Budget, BudgetExceeded, LLMRuntime
+from unimem.local_extraction import gliner_entities
+from unimem.search_recipes import REGISTRY, search
 
 
 @pytest.fixture(autouse=True)
@@ -177,7 +177,7 @@ def test_active_lesson_requires_current_admission_and_validity(tmp_path):
 def test_reflect_honors_holdout_and_sdk_records_outcome(tmp_path):
     root = str(tmp_path)
     fact = add(root, "release gatekeeper approval")
-    from commontrace import experiment
+    from unimem import experiment
 
     holdout_io.configure(root, rate=0.5, salt="test")
     occasion = next("occasion-" + str(i) for i in range(100)
@@ -341,7 +341,7 @@ def test_installer_bootstraps_git_and_isolated_skill(tmp_path):
 
 def test_memfs_signed_snapshot_and_shared_attachment_detect_drift(tmp_path, monkeypatch):
     root, shared = str(tmp_path / "store"), str(tmp_path / "shared")
-    monkeypatch.setenv("COMMONTRACE_HANDOFF_KEY", "k" * 40)
+    monkeypatch.setenv("UNIMEM_HANDOFF_KEY", "k" * 40)
     holdout_io.configure(root, rate=0)
     add(shared, "gatekeeper release requirement")
     holdout_io.configure(shared, rate=0)
@@ -359,7 +359,7 @@ def test_memfs_signed_snapshot_and_shared_attachment_detect_drift(tmp_path, monk
 
 def test_shared_experiments_never_write_into_readonly_attachment(tmp_path, monkeypatch):
     root, shared = str(tmp_path / "client"), str(tmp_path / "shared")
-    monkeypatch.setenv("COMMONTRACE_HANDOFF_KEY", "k" * 40)
+    monkeypatch.setenv("UNIMEM_HANDOFF_KEY", "k" * 40)
     add(shared, "gatekeeper shared release")
     lessons = tmp_path / "shared" / "memory" / "lessons"
     lessons.mkdir(parents=True)
@@ -380,7 +380,7 @@ def test_shared_experiments_never_write_into_readonly_attachment(tmp_path, monke
 
 def test_shared_directives_are_enforced_even_when_context_budget_is_full(tmp_path, monkeypatch):
     root, shared = str(tmp_path / "client"), str(tmp_path / "shared")
-    monkeypatch.setenv("COMMONTRACE_HANDOFF_KEY", "k" * 40)
+    monkeypatch.setenv("UNIMEM_HANDOFF_KEY", "k" * 40)
     memory_control.directive(shared, "Deployment is prohibited", deny_tools=["deploy"])
     memfs.init(shared)
     memfs.attach(root, shared, agent_id="a", token=memfs.handoff(shared, audience="a"))

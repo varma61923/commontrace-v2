@@ -5,10 +5,10 @@ from datetime import timedelta
 
 import pytest
 
-from commontrace import frontier_protocol as fp
-from commontrace import hierarchical, holdout_io, memory_authority
-from commontrace import human_help as help_io
 from tests.test_capabilities import NOW
+from unimem import frontier_protocol as fp
+from unimem import hierarchical, holdout_io, memory_authority
+from unimem import human_help as help_io
 
 
 @pytest.fixture(autouse=True)
@@ -93,7 +93,7 @@ def test_actual_asking_trial_reserves_budget_for_both_arms_and_retries_are_idemp
     holdout_io.configure(root, rate=.5, salt="asking")
     policy = help_io.configure_asking(root, "office", "preference", risk="low-risk", trial_size=40,
                                      budget_seconds=1200, enabled=True)
-    from commontrace import unit_trials
+    from unimem import unit_trials
 
     effective = unit_trials.trial(root, policy["unit"])["eligible_after"]
     monkeypatch.setattr(fp, "now", lambda: effective)
@@ -137,7 +137,7 @@ def test_unbiased_asking_effect_is_separate_from_prior_and_planner_obeys_budget(
 
 
 def test_actual_rl_export_stops_before_training_bytes_until_quality_review(tmp_path):
-    from commontrace import rl_io
+    from unimem import rl_io
 
     root = str(tmp_path)
     ids = setup(root)
@@ -149,7 +149,7 @@ def test_actual_rl_export_stops_before_training_bytes_until_quality_review(tmp_p
         row = next(row for row in assigned if row.occasion_id == occasion)
         holdout_io.record_outcome(root, occasion, row.injected)
     # Corrections cited by the training unit must inherit the human-quality gate.
-    from commontrace import lineage
+    from unimem import lineage
     fact = hierarchical.load_facts(root)[ids[0]]
     lineage.attest(root, memory_authority.fact_record(fact), fact.origin, inputs=[ids[2]], operation="derive")
     for index in range(16):
@@ -171,7 +171,7 @@ def test_ros_should_ask_is_an_actual_service_callback_with_bound_robot_context(t
     import json
     from types import SimpleNamespace
 
-    from commontrace.robotics import bridge
+    from unimem.robotics import bridge
 
     class Message:
         pass
@@ -204,7 +204,7 @@ def test_ros_should_ask_is_an_actual_service_callback_with_bound_robot_context(t
 
 
 def test_asking_cost_report_joins_real_outcomes_and_requires_the_complete_cohort(tmp_path, monkeypatch):
-    from commontrace import unit_trials
+    from unimem import unit_trials
 
     root = str(tmp_path)
     holdout_io.configure(root, rate=.5, salt="asking-report")
@@ -224,7 +224,7 @@ def test_asking_cost_report_joins_real_outcomes_and_requires_the_complete_cohort
 
 
 def test_enabling_is_explicit_and_fleet_budget_is_shared_across_contexts(tmp_path, monkeypatch):
-    from commontrace import unit_trials
+    from unimem import unit_trials
 
     root = str(tmp_path)
     holdout_io.configure(root, rate=.5, salt="shared-budget")
@@ -244,7 +244,7 @@ def test_enabling_is_explicit_and_fleet_budget_is_shared_across_contexts(tmp_pat
 def test_cli_and_native_mcp_expose_governed_asking_without_implicit_enablement(tmp_path, capsys):
     import json
 
-    from commontrace import cli
+    from unimem import cli
 
     root = str(tmp_path)
     assert cli.main(["fleet", "ask-policy", json.dumps({"action": "configure", "context": "office",
@@ -252,15 +252,15 @@ def test_cli_and_native_mcp_expose_governed_asking_without_implicit_enablement(t
         "--dest", root]) == 0
     assert not json.loads(capsys.readouterr().out)["enabled"]
     pytest.importorskip("mcp")
-    from commontrace import mcp_server
     from tests.test_mcp_server import call
+    from unimem import mcp_server
 
     result = call(mcp_server.build_server(root), "should_ask", context="office", question_type="preference", occasion="task")
     assert result["ok"] and not result["randomized"]
 
 
 def test_erased_intervention_evidence_never_restores_training_eligibility(tmp_path):
-    from commontrace import privacy_erasure
+    from unimem import privacy_erasure
 
     root = str(tmp_path)
     ids = setup(root)
@@ -291,7 +291,7 @@ def test_empirical_bayes_prior_uses_completed_contexts_and_finite_belief_evpi():
 def test_concurrent_planners_cannot_overspend_the_last_fleet_slot(tmp_path, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
 
-    from commontrace import unit_trials
+    from unimem import unit_trials
 
     root = str(tmp_path)
     holdout_io.configure(root, rate=.5, salt="concurrent-ask")
@@ -310,7 +310,7 @@ def test_concurrent_planners_cannot_overspend_the_last_fleet_slot(tmp_path, monk
 
 
 def test_erasing_decision_artifacts_never_refunds_the_experimental_budget(tmp_path, monkeypatch):
-    from commontrace import nextwave_store, unit_trials
+    from unimem import nextwave_store, unit_trials
 
     root = str(tmp_path)
     holdout_io.configure(root, rate=.5, salt="persistent-budget")
@@ -328,7 +328,7 @@ def test_erasing_decision_artifacts_never_refunds_the_experimental_budget(tmp_pa
 
 
 def test_empirical_bayes_enrollment_reads_actual_past_trials_and_preserves_erasure_lineage(tmp_path, monkeypatch):
-    from commontrace import nextwave_store, unit_trials
+    from unimem import nextwave_store, unit_trials
 
     root = str(tmp_path)
     holdout_io.configure(root, rate=.5, salt="eb-prior")
@@ -369,12 +369,12 @@ def test_native_ros_service_interface_when_generated_toolchain_is_available(monk
     import importlib
 
     try:
-        interface = importlib.import_module("commontrace_interfaces.srv")
+        interface = importlib.import_module("unimem_interfaces.srv")
         rclpy = importlib.import_module("rclpy")
         messages = importlib.import_module("std_msgs.msg")
     except ImportError:
-        pytest.skip("ROS 2 rclpy/std_msgs and generated commontrace_interfaces are not installed; build with colcon")
-    from commontrace.robotics import bridge
+        pytest.skip("ROS 2 rclpy/std_msgs and generated unimem_interfaces are not installed; build with colcon")
+    from unimem.robotics import bridge
 
     class Transport:
         def post(self, path, body):
@@ -383,7 +383,7 @@ def test_native_ros_service_interface_when_generated_toolchain_is_available(monk
     import os
 
     monkeypatch.setenv("ROS_LOCALHOST_ONLY", "1")
-    service_name = "/commontrace_test_"+str(os.getpid())+"/should_ask"
+    service_name = "/unimem_test_"+str(os.getpid())+"/should_ask"
     context = rclpy.Context()
     rclpy.init(context=context, domain_id=173)
     from rclpy.executors import SingleThreadedExecutor
@@ -424,7 +424,7 @@ def test_unassigned_teleoperation_uses_canonical_outcome_without_randomizing_a_h
 
 
 def test_newly_protected_context_stops_live_asking_before_assignment(tmp_path, monkeypatch):
-    from commontrace import safety, unit_trials
+    from unimem import safety, unit_trials
 
     root = str(tmp_path)
     ids = setup(root)

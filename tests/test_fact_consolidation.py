@@ -8,18 +8,18 @@ import sys
 
 import pytest
 
-from commontrace import fact_consolidation as fc
-from commontrace import hierarchical, memory_control
+from unimem import fact_consolidation as fc
+from unimem import hierarchical, memory_control
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 @pytest.fixture
 def root(tmp_path, monkeypatch):
-    # Write-time dedup (hierarchical, COMMONTRACE_FACT_DEDUP=near) already merges
+    # Write-time dedup (hierarchical, UNIMEM_FACT_DEDUP=near) already merges
     # very close statements. Exact mode models a store written before it existed,
     # or by a path that skips it: the duplicates consolidation is there to find.
-    monkeypatch.setenv("COMMONTRACE_FACT_DEDUP", "exact")
+    monkeypatch.setenv("UNIMEM_FACT_DEDUP", "exact")
     os.makedirs(tmp_path / "memory")
     return str(tmp_path)
 
@@ -73,7 +73,7 @@ def test_paraphrases_cluster_within_scope_only(root):
 
 
 def test_finds_paraphrases_that_write_time_dedup_keeps_apart(root, monkeypatch):
-    monkeypatch.setenv("COMMONTRACE_FACT_DEDUP", "near")
+    monkeypatch.setenv("UNIMEM_FACT_DEDUP", "near")
     _add(root, "The user lives in Paris, France.")
     _add(root, "User lives in Paris")
     assert len(hierarchical.list_facts(root)) == 2  # below the 0.85 write-time bar
@@ -151,7 +151,7 @@ def test_cli_report_and_apply(root):
     _add(root, "User lives in Paris")
 
     def cli(*argv):
-        return subprocess.run([sys.executable, "-m", "commontrace.cli", "consolidate", *argv, "--dest", root],
+        return subprocess.run([sys.executable, "-m", "unimem.cli", "consolidate", *argv, "--dest", root],
                               capture_output=True, text=True, cwd=REPO, check=False)
 
     res = cli("facts", "--json")

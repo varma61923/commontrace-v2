@@ -11,8 +11,8 @@ def test_local_image_is_pinned_non_root_and_health_checked():
     dockerfile = (ROOT / "Dockerfile.local").read_text()
     images = re.findall(r"^FROM\s+(\S+)", dockerfile, flags=re.M)
     assert images and all(re.search(r"@sha256:[0-9a-f]{64}$", i) for i in images)
-    assert re.search(r"^USER commontrace$", dockerfile, flags=re.M)
-    assert "/v1/health/live" in dockerfile and "COMMONTRACE_ROOT=/data" in dockerfile
+    assert re.search(r"^USER unimem$", dockerfile, flags=re.M)
+    assert "/v1/health/live" in dockerfile and "UNIMEM_ROOT=/data" in dockerfile
 
 
 def test_build_context_ships_only_the_package():
@@ -39,5 +39,7 @@ def test_compose_local_profile_shares_one_store_and_publishes_on_loopback_only()
         assert all(port.startswith("127.0.0.1:") for port in service["ports"])
         assert service["read_only"] is True and service["cap_drop"] == ["ALL"]
     assert "--allow-insecure-http" in services["mcp"]["command"]
+    mcp_probe = services["mcp"]["healthcheck"]["test"][-1]
+    assert "8421" in mcp_probe and "'/mcp'" in mcp_probe and "status==401" in mcp_probe
     for name in ("db", "migrate", "hub"):
         assert "profiles" not in services[name]  # `docker compose up` is unchanged

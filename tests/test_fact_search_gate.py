@@ -8,7 +8,7 @@ import pytest
 
 from benchmarks import fact_search
 from benchmarks.fact_search import check, measure
-from commontrace import fact_index, hierarchical
+from unimem import fact_index, hierarchical
 
 
 @pytest.fixture(scope="module")

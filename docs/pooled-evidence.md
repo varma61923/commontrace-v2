@@ -50,12 +50,12 @@ Provision an Ed25519 identity with the security extra, then register its public
 key and independently verified owner in the receiver store:
 
 ```sh
-commontrace experiment pool identity '{"tenant":"tenant-a"}' --dest ./tenant-a
-commontrace experiment pool register ./contributor.json --dest ./receiver
-commontrace experiment pool privacy '{"tenant":"tenant-a","epsilon":1,"delta":0.00001}' --dest ./tenant-a
-commontrace experiment pool contribute ./release-request.json --dest ./tenant-a
-commontrace experiment pool accept ./signed-bundle.json --dest ./receiver
-commontrace experiment pool report '{"unit_hash":"<64-character-public-content-hash>"}' --dest ./receiver
+unimem experiment pool identity '{"tenant":"tenant-a"}' --dest ./tenant-a
+unimem experiment pool register ./contributor.json --dest ./receiver
+unimem experiment pool privacy '{"tenant":"tenant-a","epsilon":1,"delta":0.00001}' --dest ./tenant-a
+unimem experiment pool contribute ./release-request.json --dest ./tenant-a
+unimem experiment pool accept ./signed-bundle.json --dest ./receiver
+unimem experiment pool report '{"unit_hash":"<64-character-public-content-hash>"}' --dest ./receiver
 ```
 
 `contributor.json` contains `tenant`, `principal`, `public_key`, `group`, positive
@@ -63,7 +63,7 @@ commontrace experiment pool report '{"unit_hash":"<64-character-public-content-h
 `unit_hash`, unique `release_id`, and `rows` with `occasion_id`, binary `injected`,
 `outcome` and logged holdout `rate`. Optional `epsilon` and `delta` consume the
 configured budget. A release retry is idempotent only for identical inputs.
-Inspect `commontrace experiment pool --help` for all subcommands.
+Inspect `unimem experiment pool --help` for all subcommands.
 
 The local MCP tool `pooled_effect` reads verified contributions in the configured
 store. It never certifies a skill. The Hub accepts `POST

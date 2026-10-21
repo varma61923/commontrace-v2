@@ -9,8 +9,8 @@ import sys
 
 import pytest
 
-from commontrace import lesson_io, mcp_server, paths
-from commontrace.commands import lesson_cmd
+from unimem import lesson_io, mcp_server, paths
+from unimem.commands import lesson_cmd
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -67,7 +67,7 @@ class TestCliApproveRefusesARestatement:
         rc = _approve(root, "second", force=True)
         assert rc == 0
         capsys.readouterr()
-        from commontrace import frontmatter
+        from unimem import frontmatter
         fm, _ = frontmatter.read(lesson_cmd._resolve_lesson_path(root, "second"))
         assert fm["status"] == "active"
 
@@ -99,7 +99,7 @@ class TestCliApproveRefusesARestatement:
         _draft(root, "first", "Payment webhook delivered more than once.",
                "A webhook is retried after a timeout.")
         assert _approve(root, "first") == 0
-        from commontrace import frontmatter
+        from unimem import frontmatter
         path = lesson_cmd._resolve_lesson_path(root, "first")
         fm, body = frontmatter.read(path)
         fm["status"] = "review"
@@ -112,7 +112,7 @@ class TestMcpApproveLessonRefusesARestatement:
     def store(self, tmp_path):
         root = str(tmp_path / "fleet")
         result = subprocess.run(
-            [sys.executable, "-m", "commontrace.cli", "init", "--dest", root,
+            [sys.executable, "-m", "unimem.cli", "init", "--dest", root,
              "--agent-type", "support"],
             capture_output=True, text=True, cwd=REPO_ROOT, check=False,
         )
@@ -121,8 +121,8 @@ class TestMcpApproveLessonRefusesARestatement:
 
     @pytest.fixture
     def server(self, store):
-        pytest.importorskip("mcp", reason="`commontrace serve` needs the MCP SDK: "
-                                            "pip install 'commontrace[serve]'")
+        pytest.importorskip("mcp", reason="`unimem serve` needs the MCP SDK: "
+                                            "pip install 'unimem[serve]'")
         return mcp_server.build_server(store)
 
     def _call(self, server, name: str, **arguments) -> dict:
@@ -144,7 +144,7 @@ class TestMcpApproveLessonRefusesARestatement:
         assert out.get("duplicate_of") == "first"
         assert "restates the active lesson" in out["error"]
 
-        from commontrace import frontmatter
+        from unimem import frontmatter
         fm, _ = frontmatter.read(lesson_cmd._resolve_lesson_path(store, "second"))
         assert fm["status"] == "review", "a refused activation must not change status"
 

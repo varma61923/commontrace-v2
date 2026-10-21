@@ -6,14 +6,14 @@ import sys
 
 import pytest
 
-from commontrace import memory_blocks
+from unimem import memory_blocks
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def cli(*argv: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [sys.executable, "-m", "commontrace.cli", *argv],
+        [sys.executable, "-m", "unimem.cli", *argv],
         capture_output=True, text=True, cwd=REPO_ROOT, check=False,
     )
 
@@ -152,7 +152,7 @@ def test_block_cli_delete(store):
 
 
 def test_memory_block_schema_validation(store):
-    from commontrace import validate
+    from unimem import validate
 
     schema = validate.load_schema("memory_block.schema.json")
     validate.assert_supported_schema(schema)

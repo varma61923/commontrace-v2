@@ -17,8 +17,8 @@ from typing import Any
 import pytest
 
 from benchmarks.fact_search import original_search
-from commontrace import fact_index, hierarchical, recall
-from commontrace.fact_evidence import bind_evidence
+from unimem import fact_index, hierarchical, recall
+from unimem.fact_evidence import bind_evidence
 
 QUERY = "Aster gateway timeout"
 SCORERS = ("overlap-v1", "bm25-v1")
@@ -80,7 +80,7 @@ def assert_equivalent(corpus: Corpus, scorer: str) -> None:
 
 
 def cli(corpus: Corpus, *arguments: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run([sys.executable, "-m", "commontrace.cli", "fact", *arguments, "--dest", corpus.root],
+    return subprocess.run([sys.executable, "-m", "unimem.cli", "fact", *arguments, "--dest", corpus.root],
                           capture_output=True, text=True, check=False, timeout=30)
 
 
@@ -208,7 +208,7 @@ def tool(server: Any, name: str, **arguments: Any) -> dict[str, Any]:
 @pytest.mark.parametrize("scorer", SCORERS)
 def test_persistent_public_mcp_reads_native_and_external_mutations_without_stale_claims(corpus: Corpus, scorer: str) -> None:
     pytest.importorskip("mcp")
-    from commontrace import mcp_server
+    from unimem import mcp_server
 
     server = mcp_server.build_server(corpus.root)
     def query() -> dict[str, Any]:

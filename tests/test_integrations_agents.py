@@ -6,8 +6,8 @@ import os
 
 import pytest
 
-from commontrace import holdout_io
-from commontrace.measure import CausalMemory
+from unimem import holdout_io
+from unimem.measure import CausalMemory
 
 
 class FakeStore:
@@ -37,28 +37,28 @@ class TestPydanticAI:
         from pydantic_ai import Agent
         from pydantic_ai.models.test import TestModel
 
-        from commontrace.integrations import pydantic_ai as ct
+        from unimem.integrations import pydantic_ai as unimem_integration
 
         holdout_io.configure(str(tmp_path), rate=0.5)
         store = FakeStore()
         memory = CausalMemory(store.search, root=str(tmp_path))
-        agent = Agent(TestModel(), tools=[ct.memory_tool(memory)])
+        agent = Agent(TestModel(), tools=[unimem_integration.memory_tool(memory)])
         result = agent.run_sync("a customer asks about a refund")
 
         assert store.queries
         assert set(_log_occasions(tmp_path)) == {result.conversation_id}
-        assert ct.record_outcome(memory, result, succeeded=True) is True
+        assert unimem_integration.record_outcome(memory, result, succeeded=True) is True
         assert holdout_io.read_outcomes(str(tmp_path)) == {result.conversation_id: True}
 
     def test_run_id_can_be_the_occasion_instead(self, tmp_path):
         from pydantic_ai import Agent
         from pydantic_ai.models.test import TestModel
 
-        from commontrace.integrations import pydantic_ai as ct
+        from unimem.integrations import pydantic_ai as unimem_integration
 
         holdout_io.configure(str(tmp_path), rate=0.5)
         memory = CausalMemory(FakeStore().search, root=str(tmp_path))
-        agent = Agent(TestModel(), tools=[ct.memory_tool(memory, occasion="run_id")])
+        agent = Agent(TestModel(), tools=[unimem_integration.memory_tool(memory, occasion="run_id")])
         result = agent.run_sync("q")
         assert set(_log_occasions(tmp_path)) == {result.run_id}
 
@@ -66,12 +66,12 @@ class TestPydanticAI:
         from pydantic_ai import Agent
         from pydantic_ai.models.test import TestModel
 
-        from commontrace.integrations import pydantic_ai as ct
+        from unimem.integrations import pydantic_ai as unimem_integration
 
         def boom(query, **kwargs):
             raise RuntimeError("store down")
 
-        agent = Agent(TestModel(), tools=[ct.memory_tool(CausalMemory(boom, root=str(tmp_path)))])
+        agent = Agent(TestModel(), tools=[unimem_integration.memory_tool(CausalMemory(boom, root=str(tmp_path)))])
         assert agent.run_sync("q").output is not None
 
 
@@ -96,7 +96,7 @@ class TestOpenAIAgents:
             ResponseOutputText,
         )
 
-        from commontrace.integrations import openai_agents as ct
+        from unimem.integrations import openai_agents as unimem_integration
 
         class Scripted(Model):
             turn = 0
@@ -118,7 +118,7 @@ class TestOpenAIAgents:
             def stream_response(self, *args, **kwargs):
                 raise NotImplementedError
 
-        agent = Agent(name="a", model=Scripted(), tools=[ct.memory_tool(memory)])
+        agent = Agent(name="a", model=Scripted(), tools=[unimem_integration.memory_tool(memory)])
         return asyncio.run(Runner.run(
             agent, "help", context=context, run_config=RunConfig(group_id=group_id),
         ))

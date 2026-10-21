@@ -19,8 +19,8 @@ import time
 from itertools import combinations
 from pathlib import Path
 
-from commontrace import entity_resolution, kg_similarity
-from commontrace.overlap import estimate_jaccard
+from unimem import entity_resolution, kg_similarity
+from unimem.overlap import estimate_jaccard
 
 ENTROPY_THRESHOLD = 2.0
 MINHASH_THRESHOLD = 0.8
@@ -120,8 +120,8 @@ def main() -> int:
         parser.error("repeats must be positive and sizes must be in 2..2000")
 
     root = Path(__file__).resolve().parents[1]
-    source_files = (root / "commontrace/entity_resolution.py", root / "commontrace/overlap.py",
-                    root / "commontrace/kg_similarity.py")
+    source_files = (root / "unimem/entity_resolution.py", root / "unimem/overlap.py",
+                    root / "unimem/kg_similarity.py")
     report = {
         "measurement": "synthetic entity candidate-generation diagnostic",
         "command": "python -m benchmarks.entity_resolution_lsh " + " ".join(sys.argv[1:]),

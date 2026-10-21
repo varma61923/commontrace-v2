@@ -4,9 +4,9 @@ import random
 
 import pytest
 
-from commontrace import experiment, fleet, gateway, holdout_io, integrity
-from commontrace.cli import main
-from commontrace.commands import experiment_cmd
+from unimem import experiment, fleet, gateway, holdout_io, integrity
+from unimem.cli import main
+from unimem.commands import experiment_cmd
 
 
 @pytest.fixture(autouse=True)

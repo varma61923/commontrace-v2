@@ -1,6 +1,6 @@
 import datetime
 
-from commontrace import recency
+from unimem import recency
 
 
 def _iso_days_ago(days: float, now: datetime.datetime) -> str:

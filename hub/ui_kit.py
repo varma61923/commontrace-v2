@@ -6,7 +6,7 @@ import html
 import math
 from datetime import date, datetime, timezone
 
-from commontrace.ui_style import THEME_CSS
+from unimem.ui_style import THEME_CSS
 
 
 def h(value: object) -> str:
@@ -489,7 +489,7 @@ def initials(name: str) -> str:
 
 
 THEME_SCRIPT = (
-    "<script>(function(){try{var t=localStorage.getItem('ct-theme');"
+    "<script>(function(){try{var t=localStorage.getItem('unimem-theme');"
     "if(t==='light'||t==='dark'){document.documentElement.setAttribute('data-theme',t);}}catch(e){}})();</script>"
 )
 
@@ -503,10 +503,10 @@ if(/Mac|iPhone|iPad/.test(navigator.platform||'')){$$('[data-mod-key]').forEach(
 
 /* Theme: system -> light -> dark, kept per browser. */
 var THEMES=['system','light','dark'];
-function getTheme(){try{return localStorage.getItem('ct-theme')||'system';}catch(e){return 'system';}}
+function getTheme(){try{return localStorage.getItem('unimem-theme')||'system';}catch(e){return 'system';}}
 function setTheme(t){
   if(t==='system'){root.removeAttribute('data-theme');}else{root.setAttribute('data-theme',t);}
-  try{if(t==='system'){localStorage.removeItem('ct-theme');}else{localStorage.setItem('ct-theme',t);}}catch(e){}
+  try{if(t==='system'){localStorage.removeItem('unimem-theme');}else{localStorage.setItem('unimem-theme',t);}}catch(e){}
   $$('[data-theme-toggle]').forEach(function(b){
     b.setAttribute('aria-label','Colour theme: '+t+'. Change theme');b.title='Theme: '+t;
     $$('[data-theme-icon]',b).forEach(function(i){i.style.display=i.getAttribute('data-theme-icon')===t?'':'none';});

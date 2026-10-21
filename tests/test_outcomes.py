@@ -4,7 +4,7 @@ import random
 
 import pytest
 
-from commontrace import outcomes
+from unimem import outcomes
 
 
 def test_seeded_prediction_powered_effect_removes_judge_bias():
@@ -54,7 +54,7 @@ def test_surrogate_validation_and_degraded_agreement_fallback():
 
 
 def test_discrepancy_is_bitemporal(tmp_path):
-    from commontrace import hierarchical
+    from unimem import hierarchical
     result = outcomes.record_discrepancy(str(tmp_path), "wet-floor", .9, .4, valid_from="2026-01-01T00:00:00Z")
     fact = hierarchical.load_facts(str(tmp_path))[result["fact_id"]]
     assert fact.valid_from.startswith("2026-01-01") and result["trust_weight"] == .5

@@ -3,8 +3,8 @@ import json
 
 import pytest
 
-from commontrace.cli import main
-from commontrace.conversation import Store
+from unimem.cli import main
+from unimem.conversation import Store
 
 
 def test_cli_exposes_opt_in_strategy_and_retains_default(tmp_path, capsys):
@@ -24,9 +24,9 @@ def test_cli_exposes_opt_in_strategy_and_retains_default(tmp_path, capsys):
 
 def test_real_mcp_tool_accepts_strategy_and_refuses_unknown_strategy(tmp_path, monkeypatch):
     pytest.importorskip("mcp")
-    from commontrace.mcp_server import build_server
+    from unimem.mcp_server import build_server
 
-    monkeypatch.setenv("COMMONTRACE_CONVERSATION_EMBEDDER", "none")
+    monkeypatch.setenv("UNIMEM_CONVERSATION_EMBEDDER", "none")
     with Store(str(tmp_path), "user") as store:
         store.add("s", [{"text": "Lavender grows in the garden."}], session_at="2025-01-01")
     server = build_server(str(tmp_path))
@@ -47,10 +47,10 @@ def test_real_mcp_tool_accepts_strategy_and_refuses_unknown_strategy(tmp_path, m
 
 def test_real_mcp_working_memory_tool_matches_the_gateway_assembly(tmp_path, monkeypatch):
     pytest.importorskip("mcp")
-    from commontrace import working_memory
-    from commontrace.mcp_server import build_server
+    from unimem import working_memory
+    from unimem.mcp_server import build_server
 
-    monkeypatch.setenv("COMMONTRACE_CONVERSATION_EMBEDDER", "none")
+    monkeypatch.setenv("UNIMEM_CONVERSATION_EMBEDDER", "none")
     with Store(str(tmp_path), "user") as store:
         store.add("trip", [{"text": "Alice moved to Lisbon in May."}, {"text": "She likes the tram."}],
                   session_at="2025-01-01")

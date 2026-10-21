@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from commontrace import mcp_server
+from unimem import mcp_server
 
 pytest.importorskip("mcp")
 
@@ -133,7 +133,7 @@ def test_optional_notification_failure_does_not_rollback_a_write(tmp_path):
 
 
 def test_worker_ingestion_does_not_block_another_tool_request(tmp_path, monkeypatch):
-    from commontrace.conversation import Store
+    from unimem.conversation import Store
 
     started, release = threading.Event(), threading.Event()
     original = Store.add
@@ -211,9 +211,9 @@ def test_native_stdio_progress_is_opt_in_correlated_and_frames_remain_readable(t
                 raise StopAsyncIteration from None
 
     async def drive():
-        env = {**os.environ, "COMMONTRACE_MCP_WARM": "0", "COMMONTRACE_CONVERSATION_EMBEDDER": "none"}
+        env = {**os.environ, "UNIMEM_MCP_WARM": "0", "UNIMEM_CONVERSATION_EMBEDDER": "none"}
         params = StdioServerParameters(command=sys.executable,
-                                      args=["-m", "commontrace.cli", "serve", "--dest", str(tmp_path)], env=env)
+                                      args=["-m", "unimem.cli", "serve", "--dest", str(tmp_path)], env=env)
         async with stdio_client(params) as (read, write):
             async with ClientSession(RecordingRead(read), write) as client:
                 await client.initialize()
@@ -246,7 +246,7 @@ def test_native_stdio_progress_is_opt_in_correlated_and_frames_remain_readable(t
                 assert payload(await client.call_tool("store_status", {}))["ok"]
 
     # The CLI requires an initialized source root, exactly like the normal MCP client.
-    from commontrace.cli import main
+    from unimem.cli import main
 
     assert main(["init", "--dest", str(tmp_path)]) == 0
     asyncio.run(drive())

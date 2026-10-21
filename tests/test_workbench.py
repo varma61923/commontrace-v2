@@ -3,8 +3,8 @@ import os
 
 import pytest
 
-from commontrace import frontmatter, gateway, holdout_io, paths, templates
-from commontrace.cli import main
+from unimem import frontmatter, gateway, holdout_io, paths, templates
+from unimem.cli import main
 
 TOKEN = "t" * 40
 AUTH = {"Authorization": f"Bearer {TOKEN}", "Host": "localhost:8787"}

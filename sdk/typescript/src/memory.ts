@@ -136,7 +136,7 @@ export function mastraMemoryTools(memory: MemoryClient,
   createTool: (options: Record<string, unknown>) => unknown,
   schemas: {recall: unknown; remember: unknown}) {
   return Object.fromEntries(Object.entries(memoryToolDefinitions(memory)).map(([id, definition]) =>
-    [id, createTool({id: `commontrace-${id}`, description: definition.description, inputSchema: schemas[id as keyof typeof schemas],
+    [id, createTool({id: `unimem-${id}`, description: definition.description, inputSchema: schemas[id as keyof typeof schemas],
       execute: async (input: Record<string, string>) => id === "recall" ?
         memory.reflect(input.query) : memory.add(input.text)})]));
 }
@@ -274,7 +274,7 @@ export interface MastraProcessOutputArgs<TMessage extends PromptMessage = Runtim
   requestContext?: unknown;
 }
 
-const MASTRA_MEMORY_TAG = 'commontrace-memory';
+const MASTRA_MEMORY_TAG = 'unimem-memory';
 function mastraSession(fallback: string, requestContext: unknown, options: MastraMemoryOptions): string {
   try {
     const value = options.getSessionId ? options.getSessionId(requestContext) : fallback;
@@ -298,7 +298,7 @@ function finalAssistantText(messages: PromptMessage[]): string {
 
 /** Mastra input processor; add it to `Agent.inputProcessors`. */
 export function mastraMemoryProcessor(memory: MemoryClient, session: string, options: MastraMemoryOptions = {}) {
-  return {id: MASTRA_MEMORY_TAG, name: 'CommonTrace memory',
+  return {id: MASTRA_MEMORY_TAG, name: 'UniMem memory',
     processInput: async ({messages, messageList, requestContext}: MastraProcessInputArgs): Promise<any> => {
       try { messageList.clearSystemMessages(MASTRA_MEMORY_TAG); } catch { return messageList; }
       const last = messages[messages.length - 1];
@@ -319,7 +319,7 @@ export function mastraMemoryProcessor(memory: MemoryClient, session: string, opt
 
 /** Mastra output processor; add it to `Agent.outputProcessors` to capture completion evidence. */
 export function mastraMemoryOutputProcessor(memory: MemoryClient, session: string, options: MastraMemoryOptions = {}) {
-  return {id: `${MASTRA_MEMORY_TAG}-output`, name: 'CommonTrace completion capture',
+  return {id: `${MASTRA_MEMORY_TAG}-output`, name: 'UniMem completion capture',
     processOutputResult: async <TMessage extends PromptMessage>({messages, requestContext}:
       MastraProcessOutputArgs<TMessage>): Promise<TMessage[]> => {
       const response = finalAssistantText(messages);

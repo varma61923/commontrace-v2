@@ -23,7 +23,7 @@ Policies (``--policy`` takes ``name`` or ``module:factory`` for your own):
 * ``deliver-all``   -- no measurement: the floor.
 * ``correlational`` -- withdraw a memory once the occasions it was delivered on
   succeed clearly less often than the fleet average (the common heuristic).
-* ``commontrace``   -- `commontrace.measure.CausalMemory` with
+* ``unimem``   -- `unimem.measure.CausalMemory` with
   ``on_harm="withdraw"``: per-memory randomized holdout, anytime-valid verdicts.
 * ``oracle``        -- knows the truth; delivers every non-harmful memory.
 
@@ -140,15 +140,15 @@ class Correlational:
         return set(self._out)
 
 
-class CommonTrace:
+class UniMem:
     """The product path: CausalMemory with harm withdrawal over a scratch store."""
 
-    name = "commontrace"
+    name = "unimem"
 
     def __init__(self, memories, *, rate: float = 0.1, check_every: int = CHECK_EVERY, graduate: bool = False,
                  seed: int = 0):
-        from commontrace import holdout_io
-        from commontrace.measure import CausalMemory
+        from unimem import holdout_io
+        from unimem.measure import CausalMemory
 
         self._root = tempfile.mkdtemp(prefix="causalmembench-")
         # A seed-derived salt makes the randomization -- and so every number -- reproducible.
@@ -178,7 +178,7 @@ class CommonTrace:
 BUILTIN: dict[str, Callable] = {
     "deliver-all": lambda memories: DeliverAll(),
     "correlational": Correlational,
-    "commontrace": lambda memories, seed=0: CommonTrace(memories, seed=seed),
+    "unimem": lambda memories, seed=0: UniMem(memories, seed=seed),
     "oracle": Oracle,
 }
 
@@ -186,11 +186,11 @@ BUILTIN: dict[str, Callable] = {
 def load_policy(spec: str) -> Callable:
     if spec in BUILTIN:
         return BUILTIN[spec]
-    if spec.startswith("commontrace@") or spec == "commontrace+graduate":
-        # commontrace@0.3: the same policy at another holdout rate (speed of detection
+    if spec.startswith("unimem@") or spec == "unimem+graduate":
+        # unimem@0.3: the same policy at another holdout rate (speed of detection
         # against the share of occasions a helpful memory is withheld from);
         # "+graduate" stops randomizing a memory once it is proven to help.
-        body = spec.removeprefix("commontrace")
+        body = spec.removeprefix("unimem")
         graduate = body.endswith("+graduate")
         body = body.removesuffix("+graduate")
         try:
@@ -198,8 +198,8 @@ def load_policy(spec: str) -> Callable:
         except ValueError:
             raise ValueError(f"bad holdout rate in {spec!r}") from None
         if not 0 < rate < 1 or (body and not body.startswith("@")):
-            raise ValueError(f"bad policy {spec!r}: use commontrace@RATE or commontrace@RATE+graduate")
-        return lambda memories, seed=0: CommonTrace(memories, rate=rate, graduate=graduate, seed=seed)
+            raise ValueError(f"bad policy {spec!r}: use unimem@RATE or unimem@RATE+graduate")
+        return lambda memories, seed=0: UniMem(memories, rate=rate, graduate=graduate, seed=seed)
     module, sep, attr = spec.partition(":")
     if not sep or not module or not attr:
         raise ValueError(f"unknown policy {spec!r}: use a built-in name or module:factory")

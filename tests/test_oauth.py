@@ -14,8 +14,8 @@ from cryptography.hazmat.primitives import hashes, serialization  # noqa: E402
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519, padding, rsa  # noqa: E402
 from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature  # noqa: E402
 
-from commontrace import gateway, holdout_io, oauth  # noqa: E402
-from commontrace.exceptions import ConfigurationError  # noqa: E402
+from unimem import gateway, holdout_io, oauth  # noqa: E402
+from unimem.exceptions import ConfigurationError  # noqa: E402
 
 ISSUER = "https://login.example.com/"
 AUDIENCE = "https://memory.example.com/mcp"
@@ -76,7 +76,7 @@ def keys():
 def claims(**overrides):
     now = int(time.time())
     base = {"iss": ISSUER, "aud": AUDIENCE, "sub": "user@example.com", "exp": now + 600, "iat": now,
-            "scope": "commontrace:admin"}
+            "scope": "unimem:admin"}
     base.update(overrides)
     return {k: v for k, v in base.items() if v is not None}
 
@@ -126,10 +126,10 @@ def test_signature_from_another_key_is_refused(server):
 
 
 def test_audience_list_and_scp_claim_are_understood(server, keys):
-    got = server.verify(keys.sign(claims(aud=["x", AUDIENCE], scope=None, scp=["commontrace:memory"])))
-    assert got.scopes == {"commontrace:memory"} and not got.is_admin
+    got = server.verify(keys.sign(claims(aud=["x", AUDIENCE], scope=None, scp=["unimem:memory"])))
+    assert got.scopes == {"unimem:memory"} and not got.is_admin
     with pytest.raises(oauth.InvalidToken, match="scope"):
-        server.verify(keys.sign(claims(scope="read")), required_scopes=("commontrace:mcp",))
+        server.verify(keys.sign(claims(scope="read")), required_scopes=("unimem:mcp",))
 
 
 def test_principal_ids_are_stable_registry_compatible_and_issuer_bound(server, keys):
@@ -222,9 +222,9 @@ def oauth_gateway(tmp_path, keys, monkeypatch):
     holdout_io.configure(root, rate=0.5, salt="oauth-tests")
     jwks = tmp_path / "jwks.json"
     jwks.write_text(json.dumps(keys.jwks()))
-    monkeypatch.setenv("COMMONTRACE_OAUTH_ISSUER", ISSUER)
-    monkeypatch.setenv("COMMONTRACE_OAUTH_AUDIENCE", AUDIENCE)
-    monkeypatch.setenv("COMMONTRACE_OAUTH_JWKS_FILE", str(jwks))
+    monkeypatch.setenv("UNIMEM_OAUTH_ISSUER", ISSUER)
+    monkeypatch.setenv("UNIMEM_OAUTH_AUDIENCE", AUDIENCE)
+    monkeypatch.setenv("UNIMEM_OAUTH_JWKS_FILE", str(jwks))
     return gateway.Gateway(root, token="t" * 40)
 
 
@@ -256,7 +256,7 @@ def test_gateway_admin_token_acts_as_operator(oauth_gateway, keys):
 
 
 def test_gateway_memory_token_is_confined_to_its_own_scope(oauth_gateway, keys):
-    token = keys.sign(claims(scope="commontrace:memory", sub="agent-7"))
+    token = keys.sign(claims(scope="unimem:memory", sub="agent-7"))
     assert call(oauth_gateway, "GET", "/v1/status", token)[0] == 403
     status, added, _ = call(oauth_gateway, "POST", "/v1/memory/add", token,
                             {"text": "The release window is Friday", "context": ["agent:someone-else"]})
@@ -307,12 +307,12 @@ def _asgi(boundary, path, token=None, method="POST"):
 
 
 def test_mcp_boundary_accepts_scoped_jwts_and_serves_metadata(server, keys):
-    from commontrace.mcp_transport import BearerBoundary
+    from unimem.mcp_transport import BearerBoundary
 
     boundary = BearerBoundary(None, lambda: "f" * 40, oauth_server=server)
-    assert _asgi(boundary, "/mcp", keys.sign(claims(scope="commontrace:mcp")))[0] == 200
+    assert _asgi(boundary, "/mcp", keys.sign(claims(scope="unimem:mcp")))[0] == 200
     assert _asgi(boundary, "/mcp", "f" * 40)[0] == 200
-    status, headers, _ = _asgi(boundary, "/mcp", keys.sign(claims(scope="commontrace:memory")))
+    status, headers, _ = _asgi(boundary, "/mcp", keys.sign(claims(scope="unimem:memory")))
     assert status == 401 and b"resource_metadata=" in headers[b"www-authenticate"]
     status, _headers, body = _asgi(boundary, "/.well-known/oauth-protected-resource/mcp", method="GET")
     assert status == 200 and json.loads(body)["resource"] == AUDIENCE

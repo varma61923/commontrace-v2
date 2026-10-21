@@ -7,7 +7,7 @@ import random
 import pytest
 
 from benchmarks.scope_admission import measure, original_matches
-from commontrace import memory_control
+from unimem import memory_control
 
 
 def test_exhaustive_mixed_scope_sets_and_principal_modes():

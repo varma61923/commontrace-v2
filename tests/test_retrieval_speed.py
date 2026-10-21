@@ -6,7 +6,7 @@ import random
 
 import pytest
 
-from commontrace import lesson_cache, lesson_io, paths, retrieval
+from unimem import lesson_cache, lesson_io, paths, retrieval
 
 WORDS = (
     "retry backoff timeout pagination cursor offset migration rollback schema index "

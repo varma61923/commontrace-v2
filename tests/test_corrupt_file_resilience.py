@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from commontrace.cli import main
+from unimem.cli import main
 
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
-    monkeypatch.delenv("COMMONTRACE_ROOT", raising=False)
+    monkeypatch.delenv("UNIMEM_ROOT", raising=False)
     monkeypatch.chdir(tmp_path)
     return tmp_path
 
@@ -56,7 +56,7 @@ class TestTraceListSurvivesACorruptFile:
 
 class TestCommonsRecurringFailuresSurvivesACorruptFile:
     def test_signing_this_store_skips_the_bad_file(self, store, capsys):
-        from commontrace.commands import commons_cmd
+        from unimem.commands import commons_cmd
 
         main(["init", "--agent-type", "code", "--dest", str(store)])
         tdir = store / "memory" / "traces"

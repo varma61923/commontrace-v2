@@ -8,7 +8,7 @@ from scripts import ci_changes
 
 def test_classification_is_conservative():
     assert ci_changes.code_changed(["docs/guide.md", "README.md", "LICENSE"]) is False
-    assert ci_changes.code_changed(["docs/guide.md", "commontrace/cli.py"]) is True
+    assert ci_changes.code_changed(["docs/guide.md", "unimem/cli.py"]) is True
     assert ci_changes.code_changed(["hub/README.md"]) is True  # nested docs ship with code
     assert ci_changes.code_changed(["docs/benchmarks/data.json"]) is False
     assert ci_changes.code_changed([]) is True and ci_changes.code_changed(None) is True

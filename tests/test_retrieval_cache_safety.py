@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from commontrace import lesson_cache, retrieval
+from unimem import lesson_cache, retrieval
 
 
 @pytest.fixture(autouse=True)

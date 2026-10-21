@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from commontrace.conversation import Options, Store, embed, recall
-from commontrace.frameworks import MemoryTools
+from unimem.conversation import Options, Store, embed, recall
+from unimem.frameworks import MemoryTools
 
 
 @pytest.fixture
@@ -27,7 +27,7 @@ def test_disabled_recall_preserves_evidence_and_speaker_filter_without_loading_m
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, available_models_must_not_load: None,
     choice: str | None, read_only: bool,
 ) -> None:
-    monkeypatch.setenv("COMMONTRACE_CONVERSATION_EMBEDDER", "none")
+    monkeypatch.setenv("UNIMEM_CONVERSATION_EMBEDDER", "none")
     with Store(str(tmp_path), "private") as store:
         store.add("session", [{"text": "The release codename is Kestrel.", "speaker": "owner@example.org"},
                               {"text": "The release codename is Falcon.", "speaker": "other@example.org"}])
@@ -45,7 +45,7 @@ def test_disabled_recall_preserves_evidence_and_speaker_filter_without_loading_m
 def test_native_framework_recall_with_explicit_none_on_embedding_capable_host(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, available_models_must_not_load: None, asynchronous: bool,
 ) -> None:
-    monkeypatch.setenv("COMMONTRACE_CONVERSATION_EMBEDDER", "arctic-m")
+    monkeypatch.setenv("UNIMEM_CONVERSATION_EMBEDDER", "arctic-m")
     bundle = MemoryTools(str(tmp_path), "private", "session", options=Options(
         embedder="none", rerank=None, summaries=False,
     ))

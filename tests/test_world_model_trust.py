@@ -5,8 +5,8 @@ import random
 
 import pytest
 
-from commontrace import hierarchical
-from commontrace import world_model_trust as world
+from unimem import hierarchical
+from unimem import world_model_trust as world
 
 MODEL = hashlib.sha256(b"demo simulator build").hexdigest()
 

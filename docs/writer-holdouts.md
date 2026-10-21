@@ -7,10 +7,10 @@ Legacy unsigned records have no authenticated writer and cannot be attributed
 by guessing an author from their text.
 
 ```sh
-commontrace team register-writer '{"writer":"reviewers","members":["agent-a","agent-b"]}'
-commontrace team writers
-commontrace team mask '{"occasion":"release-17","memories":["fact-id"]}'
-commontrace team reliability '{"writer":"reviewers"}'
+unimem team register-writer '{"writer":"reviewers","members":["agent-a","agent-b"]}'
+unimem team writers
+unimem team mask '{"occasion":"release-17","memories":["fact-id"]}'
+unimem team reliability '{"writer":"reviewers"}'
 ```
 
 Configure the canonical experiment first. Registration publishes an immutable
@@ -45,7 +45,7 @@ admission, and thresholding does not remove protected hazards. Reliability
 cannot upgrade an agent's authority or establish semantic truth. Use a separate
 governed store for each tenant's trial outcomes.
 
-`commontrace team mast` accepts an existing frozen incident ID and a narrative.
+`unimem team mast` accepts an existing frozen incident ID and a narrative.
 It attaches rule-based tags from MAST's 14 modes in three categories
 (arXiv:2503.13657). An optional Python tagger must return taxonomy codes; unknown
 codes fail validation. Only the narrative digest is journaled. These tags are

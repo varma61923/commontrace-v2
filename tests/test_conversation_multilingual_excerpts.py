@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from commontrace.conversation import Options, Store, recall
-from commontrace.conversation.search import (
+from unimem.conversation import Options, Store, recall
+from unimem.conversation.search import (
     _excerpt,
     _normalize_text,
     _stems,
@@ -14,7 +14,7 @@ from commontrace.conversation.search import (
     filter_self_turns,
     tokens,
 )
-from commontrace.conversation.store import Turn
+from unimem.conversation.store import Turn
 
 
 def turn(text: str, *, speaker: str = "Ada") -> Turn:

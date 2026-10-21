@@ -4,8 +4,8 @@ import json
 
 import pytest
 
-from commontrace import frontier_protocol as fp
-from commontrace import hierarchical, incident, privacy_erasure, receipts
+from unimem import frontier_protocol as fp
+from unimem import hierarchical, incident, privacy_erasure, receipts
 
 
 def test_freeze_replay_and_erasure_hold(tmp_path):
@@ -29,7 +29,7 @@ def test_freeze_replay_and_erasure_hold(tmp_path):
 
 
 def test_incident_surfaces_and_old_store(tmp_path):
-    from commontrace.mcp_server import build_server
+    from unimem.mcp_server import build_server
     pytest.importorskip("mcp")
     from tests.test_mcp_server import call, cli
 
@@ -51,8 +51,8 @@ def test_path_forgery_refused(tmp_path, identity):
 
 def test_replay_returns_delivered_bytes_after_later_correction(tmp_path):
     pytest.importorskip("mcp")
-    from commontrace.mcp_server import build_server
     from tests.test_mcp_server import _write_lesson, call
+    from unimem.mcp_server import build_server
 
     root = str(tmp_path)
     path = _write_lesson(root, "arm-zone", body="Keep the arm inside bay A during calibration.")
@@ -60,7 +60,7 @@ def test_replay_returns_delivered_bytes_after_later_correction(tmp_path):
     delivered = call(server, "retrieve", task="arm calibration bay", occasion_id="incident-task")
     assert [item["slug"] for item in delivered["lessons"]] == ["arm-zone"]
     valid_time = fp.now()
-    from commontrace import frontmatter, lesson_io
+    from unimem import frontmatter, lesson_io
 
     fm, _ = frontmatter.read(path)
     lesson_io.write_lesson(path, fm, "Keep the arm inside bay B during calibration.", root=root,
@@ -85,7 +85,7 @@ def test_large_store_freezes_and_tampered_part_is_refused(tmp_path):
     assert row["believed_at_incident"] and row["then"] == "Gripper torque limit is 5 Nm"
     assert row["current_status"] != "active"
     assert old.id in incident.held(root)["large"]
-    part = tmp_path / ".commontrace" / "incidents" / "large" / "facts.json"
+    part = tmp_path / ".unimem" / "incidents" / "large" / "facts.json"
     if not part.exists():
         part = next(tmp_path.rglob("incidents/large/facts.json"))
     part.write_text(part.read_text().replace("Gripper torque limit is 5 Nm", "Gripper torque limit is 9 Nm"))

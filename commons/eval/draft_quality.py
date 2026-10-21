@@ -1,11 +1,11 @@
 """How many model-drafted lessons pass the approval gates exactly as written?
 
     python -m commons.eval.draft_quality --drafter stub            # validates the harness only
-    python -m commons.eval.draft_quality --record drafts.jsonl     # a real model (COMMONTRACE_LLM_*)
+    python -m commons.eval.draft_quality --record drafts.jsonl     # a real model (UNIMEM_LLM_*)
     python -m commons.eval.draft_quality --replay drafts.jsonl     # re-score recorded drafts, no key
 
 The path measured is the one a customer runs: a store holding a cluster's failing traces, then
-`commontrace distill --draft`, then `commontrace lesson approve` with no `--force` and no edits. A draft
+`unimem distill --draft`, then `unimem lesson approve` with no `--force` and no edits. A draft
 passes if approve activates it. The target is >= 80% of clusters. Refusals count against the rate whether
 the model returned nothing usable or returned something a gate refused, and each is reported with its gate.
 
@@ -13,13 +13,13 @@ Three drafters:
   stub    A deterministic script, NOT a model. It writes plausible drafts, plus a fixed share of bad ones (an
           unfilled placeholder, an injection payload, a restatement of an existing lesson). It exists to
           prove the harness counts correctly, and its rate says nothing about any model.
-  record  Calls the model configured by COMMONTRACE_LLM_* and saves each reply keyed by the prompt's hash.
+  record  Calls the model configured by UNIMEM_LLM_* and saves each reply keyed by the prompt's hash.
   replay  Serves recorded replies, so a rate can be re-computed, audited or compared without a key. A
           prompt the recording does not have is a failure, never a guess.
 
 The fixture is generated from the same labelled failure modes as `signal_ari` (support and engineering)
 plus sales and HR modes, with differently worded traces per cluster.
-Cost per draft comes from COMMONTRACE_LLM_PRICES, a table the owner supplies; without one the harness
+Cost per draft comes from UNIMEM_LLM_PRICES, a table the owner supplies; without one the harness
 reports tokens and no cost.
 """
 from __future__ import annotations
@@ -36,8 +36,8 @@ import tempfile
 from contextlib import redirect_stderr, redirect_stdout
 
 from commons.eval import signal_ari
-from commontrace import frontmatter, llm, paths, templates
-from commontrace.cli import main as cli_main
+from unimem import frontmatter, llm, paths, templates
+from unimem.cli import main as cli_main
 
 TARGET = 0.8
 CLUSTERS_PER_MODE = 3
@@ -163,11 +163,11 @@ def run_cluster(cluster: dict, index: int, drafter: str, path: str | None) -> di
     rec = Recorder(drafter, path, cluster, index)
     real_call = llm._call_anthropic
     llm._call_anthropic = rec
-    env_key = os.environ.get("COMMONTRACE_LLM_API_KEY")
+    env_key = os.environ.get("UNIMEM_LLM_API_KEY")
     if drafter != "record":
-        os.environ["COMMONTRACE_LLM_API_KEY"] = "harness"
+        os.environ["UNIMEM_LLM_API_KEY"] = "harness"
     try:
-        with tempfile.TemporaryDirectory(prefix="commontrace-dq-") as root:
+        with tempfile.TemporaryDirectory(prefix="unimem-dq-") as root:
             _seed_store(root, cluster)
             if drafter == "stub" and index % 4 == 3 and (index // 4) % len(_BAD) == 2:
                 _write_existing(root, cluster)
@@ -194,13 +194,13 @@ def run_cluster(cluster: dict, index: int, drafter: str, path: str | None) -> di
     finally:
         llm._call_anthropic = real_call
         if env_key is None:
-            os.environ.pop("COMMONTRACE_LLM_API_KEY", None)
+            os.environ.pop("UNIMEM_LLM_API_KEY", None)
         else:
-            os.environ["COMMONTRACE_LLM_API_KEY"] = env_key
+            os.environ["UNIMEM_LLM_API_KEY"] = env_key
 
 
 def _write_existing(root: str, cluster: dict) -> None:
-    from commontrace import lesson_io
+    from unimem import lesson_io
     solution = cluster["traces"][0]["solution"]
     fm = templates.lesson_frontmatter(
         slug="lesson_existing_rule", description="An existing rule", agent_type="support", domain="general",
@@ -223,7 +223,7 @@ def summarise(results: list[dict]) -> dict:
             refused[r["gate"]] = refused.get(r["gate"], 0) + 1
     usages = [r["usage"] for r in results if r.get("usage") and r["usage"].get("input_tokens") is not None]
     cost = None
-    model = os.environ.get("COMMONTRACE_LLM_MODEL", llm.DEFAULT_MODEL)
+    model = os.environ.get("UNIMEM_LLM_MODEL", llm.DEFAULT_MODEL)
     costs = [c for u in usages if (c := llm.cost_usd(
         {"input_tokens": u["input_tokens"], "output_tokens": u.get("output_tokens") or 0}, model)) is not None]
     if costs and len(costs) == len(usages):
@@ -232,7 +232,7 @@ def summarise(results: list[dict]) -> dict:
             "not_passed_by_gate": refused,
             "mean_input_tokens": statistics.fmean(u["input_tokens"] for u in usages) if usages else None,
             "mean_output_tokens": statistics.fmean(u.get("output_tokens") or 0 for u in usages) if usages else None,
-            "mean_cost_usd": cost, "cost_basis": "COMMONTRACE_LLM_PRICES" if cost is not None else "no price table",
+            "mean_cost_usd": cost, "cost_basis": "UNIMEM_LLM_PRICES" if cost is not None else "no price table",
             "met": n > 0 and passed / n >= TARGET}
 
 

@@ -4,8 +4,8 @@ import json
 
 import pytest
 
-from commontrace import distill, taxonomy
-from commontrace.cli import main
+from unimem import distill, taxonomy
+from unimem.cli import main
 
 
 def _trace(id, title, context_text, tags=None, agent_type="support"):
@@ -139,7 +139,7 @@ class TestToDict:
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
-    monkeypatch.delenv("COMMONTRACE_ROOT", raising=False)
+    monkeypatch.delenv("UNIMEM_ROOT", raising=False)
     monkeypatch.chdir(tmp_path)
     return tmp_path
 

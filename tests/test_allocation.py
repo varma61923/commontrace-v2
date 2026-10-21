@@ -11,9 +11,9 @@ import types
 import pytest
 
 from benchmarks import adaptive_allocation_bench as bench
-from commontrace import allocation, experiment, functions, holdout_io, integrity, proof
-from commontrace.cli import main
-from commontrace.commands import experiment_cmd
+from unimem import allocation, experiment, functions, holdout_io, integrity, proof
+from unimem.cli import main
+from unimem.commands import experiment_cmd
 
 T0 = datetime.datetime(2026, 3, 1, 9, 0, tzinfo=datetime.timezone.utc)
 

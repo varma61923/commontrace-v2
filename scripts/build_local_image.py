@@ -11,7 +11,7 @@ import tempfile
 from collections.abc import Callable, Sequence
 
 ROOT_FILES = ("Dockerfile.local", "pyproject.toml", "README.md", "LICENSE")
-ROOT_TREES = ("commontrace", "protocol")
+ROOT_TREES = ("unimem", "protocol")
 EXTRA_FILES = (os.path.join("deploy", "docker", "local-entrypoint.sh"),)
 EXCLUDED_DIRS = {".git", ".pytest_cache", "__pycache__"}
 EXCLUDED_SUFFIXES = {".pyc", ".pyo"}
@@ -80,7 +80,7 @@ def build_local_image(
     run: Callable[..., object] = subprocess.run,
 ) -> None:
     """Build an image and always remove its temporary context."""
-    with tempfile.TemporaryDirectory(prefix="commontrace-local-build-") as temporary_root:
+    with tempfile.TemporaryDirectory(prefix="unimem-local-build-") as temporary_root:
         context_root = os.path.join(temporary_root, "context")
         copy_allowlisted_context(source_root, context_root)
         dockerfile = os.path.join(context_root, "Dockerfile.local")
@@ -92,12 +92,12 @@ def build_local_image(
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--tag", default="commontrace-local:dev", help="image tag to build")
+    parser.add_argument("--tag", default="unimem-local:dev", help="image tag to build")
     parser.add_argument("--docker", default="docker", help="Docker CLI executable")
     parser.add_argument(
         "--repo-root",
         default=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        help="CommonTrace checkout containing Dockerfile.local",
+        help="UniMem checkout containing Dockerfile.local",
     )
     args = parser.parse_args(argv)
     build_local_image(args.repo_root, args.tag, docker_command=args.docker)

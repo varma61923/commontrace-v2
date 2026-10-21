@@ -8,9 +8,9 @@ import sys
 
 import pytest
 
-from commontrace import gateway, memory_blocks, working_memory
-from commontrace.conversation import ConversationError, Store
-from commontrace.conversation import summary as summary_mod
+from unimem import gateway, memory_blocks, working_memory
+from unimem.conversation import ConversationError, Store
+from unimem.conversation import summary as summary_mod
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TOKEN = "s" * 40
@@ -19,7 +19,7 @@ HEADERS = {"Authorization": "Bearer " + TOKEN, "Host": "localhost"}
 
 @pytest.fixture(autouse=True)
 def _lexical_only(monkeypatch):
-    monkeypatch.setenv("COMMONTRACE_CONVERSATION_EMBEDDER", "none")
+    monkeypatch.setenv("UNIMEM_CONVERSATION_EMBEDDER", "none")
 
 
 @pytest.fixture
@@ -91,7 +91,7 @@ def test_scoped_mutations_and_validation(root):
 
 def test_block_cli_scope_flags(root):
     def cli(*argv):
-        return subprocess.run([sys.executable, "-m", "commontrace.cli", "block", *argv, "--dest", root],
+        return subprocess.run([sys.executable, "-m", "unimem.cli", "block", *argv, "--dest", root],
                               capture_output=True, text=True, cwd=REPO, check=False)
 
     assert cli("set", "persona", "Global.").returncode == 0
@@ -263,7 +263,7 @@ def test_gateway_container_scoping_isolates_sessions_and_blocks(root):
     status, _ = _call(gw, "GET", "/v1/conversation/sessions?space=u1", headers=tenant_b)
     assert status == 404
     assert _call(gw, "GET", "/v1/conversation/sessions?space=u1", headers=tenant_a)[0] == 200
-    from commontrace import telemetry
+    from unimem import telemetry
 
     with telemetry.bind(container_tag="team-a"):
         namespace = gw._scoped_space("u1")  # the namespace the gateway derives for team-a

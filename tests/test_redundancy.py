@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from commontrace import redundancy
+from unimem import redundancy
 
 
 class TestTokenSetAndJaccard:
@@ -25,7 +25,7 @@ class TestTokenSetAndJaccard:
         assert tokens == frozenset()
 
     def test_shares_vocabulary_with_the_retriever(self):
-        from commontrace._lexical import STOPWORDS
+        from unimem._lexical import STOPWORDS
 
         assert "the" in STOPWORDS
         assert redundancy.token_set("the") == frozenset()
@@ -153,7 +153,7 @@ class TestCalibration:
 
         fixtures_dir = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "commontrace", "fixtures", "fields",
+            "unimem", "fixtures", "fields",
         )
         items = []
         for path in sorted(glob.glob(os.path.join(fixtures_dir, "*.json"))):

@@ -1,8 +1,8 @@
 import json
 import os
 
-from commontrace import gateway
-from commontrace.gateway import TransientAuthError, is_transient_auth_error
+from unimem import gateway
+from unimem.gateway import TransientAuthError, is_transient_auth_error
 
 
 def _call(gw, method, path, body=None, headers=None):
@@ -102,7 +102,7 @@ def test_gateway_resolve_tag(tmp_path):
 
 
 def test_container_tag_scopes_store_recall(tmp_path):
-    from commontrace import frontmatter, paths
+    from unimem import frontmatter, paths
 
     store = str(tmp_path / "store")
     os.makedirs(paths.lessons_dir(store), exist_ok=True)
@@ -145,7 +145,7 @@ def test_command_catalog_and_store_scoped_runner(tmp_path):
 
     status, catalog, _ = _call(gw, "GET", "/v1/command-catalog", headers=auth)
     assert status == 200
-    from commontrace.cli import _COMMANDS
+    from unimem.cli import _COMMANDS
 
     assert {item["name"] for item in catalog["commands"]} == set(_COMMANDS)
     assert any(item["name"] == "query" and item["runnable"] for item in catalog["commands"])
@@ -154,7 +154,7 @@ def test_command_catalog_and_store_scoped_runner(tmp_path):
     status, result, _ = _call(
         gw, "POST", "/v1/command", {"command": "query", "args": ["--help"]}, headers=auth,
     )
-    assert status == 200 and result["ok"] and "usage: commontrace query" in result["stdout"]
+    assert status == 200 and result["ok"] and "usage: unimem query" in result["stdout"]
 
     status, error, _ = _call(
         gw, "POST", "/v1/command", {"command": "query", "args": ["--dest", "/tmp"]}, headers=auth,

@@ -45,32 +45,32 @@ class TestPreflightDiagnosis:
 
     def test_unreachable_server_names_the_url_and_readyz(self, fake_post):
         fake_post(raises=OSError("connection refused"))
-        message = smoke._preflight("http://down.example/mcp", "ct_live_x")
+        message = smoke._preflight("http://down.example/mcp", "unimem_live_x")
         assert message and "could not reach" in message and "/readyz" in message
 
     @pytest.mark.parametrize("code", [401, 403])
     def test_rejected_credentials_say_so(self, fake_post, code):
         fake_post(status_code=code)
-        message = smoke._preflight("http://up.example/mcp", "ct_live_x")
+        message = smoke._preflight("http://up.example/mcp", "unimem_live_x")
         assert message and "rejected the API key" in message
 
     def test_404_points_at_the_endpoint_path(self, fake_post):
         fake_post(status_code=404)
-        message = smoke._preflight("http://up.example/wrong", "ct_live_x")
+        message = smoke._preflight("http://up.example/wrong", "unimem_live_x")
         assert message and "/mcp" in message
 
     def test_5xx_is_reported_as_reachable_but_failing(self, fake_post):
         fake_post(status_code=503)
-        message = smoke._preflight("http://up.example/mcp", "ct_live_x")
+        message = smoke._preflight("http://up.example/mcp", "unimem_live_x")
         assert message and "503" in message
 
     def test_a_healthy_endpoint_returns_no_problem(self, fake_post):
         fake_post(status_code=200)
-        assert smoke._preflight("http://up.example/mcp", "ct_live_x") is None
+        assert smoke._preflight("http://up.example/mcp", "unimem_live_x") is None
 
     def test_a_429_is_reported_as_rate_limited_not_accepted(self, fake_post):
         fake_post(status_code=429)
-        message = smoke._preflight("http://up.example/mcp", "ct_live_x")
+        message = smoke._preflight("http://up.example/mcp", "unimem_live_x")
         assert message is not None
         assert "429" in message
         assert "rejected the API key" not in message
@@ -146,11 +146,11 @@ class TestArgumentHandling:
         with pytest.raises(SystemExit):
             smoke.main(["--url", "http://x/mcp"])
         with pytest.raises(SystemExit):
-            smoke.main(["--api-key", "ct_live_x"])
+            smoke.main(["--api-key", "unimem_live_x"])
 
     def test_a_missing_mcp_suffix_is_flagged_but_not_fatal(self, capsys, monkeypatch):
         monkeypatch.setattr(smoke, "_preflight", lambda url, key: "stopped here")
-        assert smoke.main(["--url", "http://x/", "--api-key", "ct_live_x"]) == 1
+        assert smoke.main(["--url", "http://x/", "--api-key", "unimem_live_x"]) == 1
         assert "does not end in /mcp" in capsys.readouterr().err
 
 
@@ -226,7 +226,7 @@ class TestSmokeCleansUpAfterItself:
         assert "deleted when the run finishes" in help_text
 
     def test_cleanup_failure_is_reported_loudly_not_swallowed(self, capsys):
-        asyncio.run(smoke._cleanup("http://127.0.0.1:1/mcp", "ct_live_x", "trace-123"))
+        asyncio.run(smoke._cleanup("http://127.0.0.1:1/mcp", "unimem_live_x", "trace-123"))
         err = capsys.readouterr().err
         assert "WARNING" in err
         assert "purge-trace trace-123" in err

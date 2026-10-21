@@ -5,8 +5,8 @@ from __future__ import annotations
 import ipaddress
 from dataclasses import dataclass, field
 
-from commontrace.configuration import getenv as _configuration_getenv
 from hub.secrets_provider import env_secret
+from unimem.configuration import getenv as _configuration_getenv
 
 DEFAULT_SEARCH_LIMIT = 50
 MAX_SEARCH_LIMIT = 200
@@ -71,7 +71,7 @@ def _pool_contributors(path: str) -> tuple[dict, ...]:
         return ()
     import json
 
-    from commontrace import frontier_protocol as fp
+    from unimem import frontier_protocol as fp
 
     with open(path, "rb") as stream:
         raw = stream.read(fp.MAX_BYTES + 1)
@@ -192,6 +192,8 @@ class HubConfig:
 
     require_rls: bool = False
 
+    require_api_key_pepper: bool = False
+
     allow_insecure_http: bool = False
 
     commons_enabled: bool = True
@@ -310,6 +312,7 @@ class HubConfig:
             allow_insecure_http=_env_bool("HUB_ALLOW_INSECURE_HTTP", False),
             allow_rls_bypass=_env_bool("HUB_ALLOW_RLS_BYPASS", False),
             require_rls=_env_bool("HUB_REQUIRE_RLS", False),
+            require_api_key_pepper=_env_bool("HUB_REQUIRE_API_KEY_PEPPER", False),
             auth_cache_seconds=_env_int_in_range("HUB_AUTH_CACHE_SECONDS", 0, 0, 60),
             encryption_key=encryption_key,
             encryption_key_previous=encryption_key_previous,

@@ -3,10 +3,10 @@ import os
 
 import pytest
 
-from commontrace import client, llm, offline
-from commontrace.cli import main
-from commontrace.connectors import web_crawler
-from commontrace.exceptions import CapabilityError
+from unimem import client, llm, offline
+from unimem.cli import main
+from unimem.connectors import web_crawler
+from unimem.exceptions import CapabilityError
 
 
 @pytest.fixture
@@ -36,7 +36,7 @@ def test_check_url_is_a_no_op_when_online(monkeypatch):
 def test_check_url_refuses_remote_hosts_with_a_capability_error(offline_env):
     with pytest.raises(CapabilityError) as caught:
         offline.check_url("https://example.com/x", "the test connector")
-    assert "COMMONTRACE_OFFLINE" in caught.value.remediation
+    assert "UNIMEM_OFFLINE" in caught.value.remediation
     offline.check_url("http://127.0.0.1:9/x", "local runtime")
 
 
@@ -71,15 +71,15 @@ def test_cli_flag_sets_model_hub_cache_only_switches(tmp_path, monkeypatch):
 def test_hub_api_key_can_come_from_a_mounted_file(tmp_path, monkeypatch):
     import argparse
 
-    from commontrace.commands._format import resolve_hub
+    from unimem.commands._format import resolve_hub
 
     secret = tmp_path / "hub_key"
-    secret.write_text("ct_from_file\n")
-    monkeypatch.delenv("COMMONTRACE_HUB_API_KEY", raising=False)
-    monkeypatch.setenv("COMMONTRACE_HUB_API_KEY_FILE", str(secret))
-    monkeypatch.setenv("COMMONTRACE_HUB_URL", "https://hub.example.com/mcp")
+    secret.write_text("unimem_from_file\n")
+    monkeypatch.delenv("UNIMEM_HUB_API_KEY", raising=False)
+    monkeypatch.setenv("UNIMEM_HUB_API_KEY_FILE", str(secret))
+    monkeypatch.setenv("UNIMEM_HUB_URL", "https://hub.example.com/mcp")
     resolved = resolve_hub(argparse.Namespace(hub_url=None, hub_api_key=None))
-    assert resolved == ("https://hub.example.com/mcp", "ct_from_file")
+    assert resolved == ("https://hub.example.com/mcp", "unimem_from_file")
 
 
 def test_offline_state_does_not_leak_between_tests():
@@ -88,29 +88,29 @@ def test_offline_state_does_not_leak_between_tests():
 
 def _isolate(monkeypatch, provider=None):
     # setenv-then-delenv registers each variable with monkeypatch, so it is restored afterwards.
-    for name in (offline.ENV, "COMMONTRACE_LLM_PROVIDER", *offline.MODEL_HUB_SWITCHES):
+    for name in (offline.ENV, "UNIMEM_LLM_PROVIDER", *offline.MODEL_HUB_SWITCHES):
         monkeypatch.setenv(name, "0")
         monkeypatch.delenv(name)
     if provider:
-        monkeypatch.setenv("COMMONTRACE_LLM_PROVIDER", provider)
+        monkeypatch.setenv("UNIMEM_LLM_PROVIDER", provider)
 
 
 def test_local_flag_is_offline_plus_the_in_process_model(tmp_path, monkeypatch):
     import os
 
-    from commontrace.cli import main
+    from unimem.cli import main
 
     _isolate(monkeypatch)
     assert main(["--local", "fact", "list", "--dest", str(tmp_path)]) == 0
-    assert offline.enabled() and os.environ["COMMONTRACE_LLM_PROVIDER"] == "local"
+    assert offline.enabled() and os.environ["UNIMEM_LLM_PROVIDER"] == "local"
     assert llm.load_config().provider == "local"
 
 
 def test_local_flag_keeps_an_explicit_provider(tmp_path, monkeypatch):
     import os
 
-    from commontrace.cli import main
+    from unimem.cli import main
 
     _isolate(monkeypatch, provider="ollama")
     assert main(["--local", "fact", "list", "--dest", str(tmp_path)]) == 0
-    assert offline.enabled() and os.environ["COMMONTRACE_LLM_PROVIDER"] == "ollama"
+    assert offline.enabled() and os.environ["UNIMEM_LLM_PROVIDER"] == "ollama"

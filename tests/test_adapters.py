@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from commontrace import adapters, frontmatter, import_data, paths
+from unimem import adapters, frontmatter, import_data, paths
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -275,7 +275,7 @@ class TestSharedImportPath:
 
 def cli(*argv: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [sys.executable, "-m", "commontrace.cli", *argv],
+        [sys.executable, "-m", "unimem.cli", *argv],
         capture_output=True, text=True, cwd=REPO_ROOT, check=False,
     )
 
@@ -358,18 +358,18 @@ class TestOtelOccasionAttributes:
         return {"spanId": "s1", "name": "n", "attributes": attrs}
 
     def test_the_occasion_comes_from_ours_then_openinference_then_genai(self):
-        from commontrace import adapters
+        from unimem import adapters
         norm = lambda **a: adapters.normalize(self._row(**a), source="otel")  # noqa: E731
-        assert norm(**{"commontrace.occasion_id": "x", "session.id": "y"})["occasion_id"] == "x"
+        assert norm(**{"unimem.occasion_id": "x", "session.id": "y"})["occasion_id"] == "x"
         assert norm(**{"session.id": "y", "gen_ai.conversation.id": "z"})["occasion_id"] == "y"
         assert norm(**{"gen_ai.conversation.id": "z"})["occasion_id"] == "z"
         assert "occasion_id" not in norm(**{"gen_ai.system": "openai"})
 
     def test_only_an_explicit_boolean_is_an_outcome(self):
-        from commontrace import adapters
+        from unimem import adapters
         norm = lambda **a: adapters.normalize(  # noqa: E731
             {"spanId": "s", "name": "n", "status": {"code": "OK"}, "attributes": a}, source="otel")
-        assert norm(**{"commontrace.occasion.succeeded": False})["occasion_succeeded"] is False
-        assert norm(**{"commontrace.occasion.succeeded": True})["occasion_succeeded"] is True
-        assert "occasion_succeeded" not in norm(**{"commontrace.occasion.succeeded": "yes"})
+        assert norm(**{"unimem.occasion.succeeded": False})["occasion_succeeded"] is False
+        assert norm(**{"unimem.occasion.succeeded": True})["occasion_succeeded"] is True
+        assert "occasion_succeeded" not in norm(**{"unimem.occasion.succeeded": "yes"})
         assert "occasion_succeeded" not in norm()

@@ -43,7 +43,7 @@ def main() -> int:
         command = [
             sys.executable,
             "-m",
-            "commontrace",
+            "unimem",
             "gateway",
             "serve",
             *(["--dest", args.dest] if args.dest else []),

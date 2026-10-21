@@ -10,9 +10,9 @@ import time
 
 import pytest
 
-from commontrace.hook_kit import HookKit
-from commontrace.memory_journal import Journal
-from commontrace.memory_record import MemoryRecord
+from unimem.hook_kit import HookKit
+from unimem.memory_journal import Journal
+from unimem.memory_record import MemoryRecord
 
 
 def functional_command(command):
@@ -35,7 +35,7 @@ def test_native_transport_capture_receipt_and_crash_recovery(tmp_path):
     if not hasattr(socket, "AF_UNIX"):
         pytest.skip("native Unix transport requires Unix sockets")
     root = str(tmp_path)
-    (tmp_path / "commontrace.yaml").write_text("profiles:\n  local:\n    embedding: none\n")
+    (tmp_path / "unimem.yaml").write_text("profiles:\n  local:\n    embedding: none\n")
     journal = Journal(root)
     journal.put(
         MemoryRecord("critical", "directive", 1, {"text": "Keep credentials private."}, scope={"agent": "agent"})
@@ -43,7 +43,7 @@ def test_native_transport_capture_receipt_and_crash_recovery(tmp_path):
     broker_script = """
 import sys
 from functools import partialmethod
-from commontrace.hook_service import HookKit, main
+from unimem.hook_service import HookKit, main
 HookKit.handle = partialmethod(HookKit.handle, deadline_ms=1000)
 raise SystemExit(main(sys.argv[1:]))
 """
@@ -242,7 +242,7 @@ def test_broker_socket_is_never_created_wider_than_owner_only(tmp_path, monkeypa
     import os
     import socket
 
-    from commontrace import hook_service
+    from unimem import hook_service
 
     seen = []
     real_bind = socket.socket.bind
@@ -270,17 +270,17 @@ def test_a_running_broker_bridges_a_lesson_approved_after_it_started(tmp_path):
     """No re-run of `up` and no broker restart: approving a lesson is enough for it to be injected."""
     if not hasattr(socket, "AF_UNIX"):
         pytest.skip("native Unix transport requires Unix sockets")
-    from commontrace import frontmatter
-    from commontrace.bootstrap_runtime import setup
-    from commontrace.cli import main as cli
+    from unimem import frontmatter
+    from unimem.bootstrap_runtime import setup
+    from unimem.cli import main as cli
 
     root = str(tmp_path)
-    (tmp_path / "commontrace.yaml").write_text("profiles:\n  local:\n    embedding: none\n")
+    (tmp_path / "unimem.yaml").write_text("profiles:\n  local:\n    embedding: none\n")
     repo = hashlib.sha256(os.path.realpath(root).encode()).hexdigest()[:24]
     agent_id = "claude-" + repo
     setup(root, config={"agents": {"claude": {"config_path": "hooks.json"}}, "histories": []})
     broker = subprocess.Popen(
-        [sys.executable, "-c", "import sys\nfrom commontrace.hook_service import main\nraise SystemExit(main(sys.argv[1:]))",
+        [sys.executable, "-c", "import sys\nfrom unimem.hook_service import main\nraise SystemExit(main(sys.argv[1:]))",
          "--dest", root], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         ready_by = time.monotonic() + 15

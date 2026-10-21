@@ -14,12 +14,12 @@ def make_checkout(root: Path) -> None:
     (root / "pyproject.toml").write_text("[project]\nname='fixture'\n", encoding="utf-8")
     (root / "README.md").write_text("fixture readme\n", encoding="utf-8")
     (root / "LICENSE").write_text("fixture license\n", encoding="utf-8")
-    (root / "commontrace" / "nested").mkdir(parents=True)
-    (root / "commontrace" / "__init__.py").write_text("", encoding="utf-8")
-    (root / "commontrace" / "nested" / "module.py").write_text("value = 1\n", encoding="utf-8")
-    (root / "commontrace" / "nested" / "module.pyc").write_bytes(b"bytecode")
-    (root / "commontrace" / "__pycache__").mkdir()
-    (root / "commontrace" / "__pycache__" / "module.pyc").write_bytes(b"bytecode")
+    (root / "unimem" / "nested").mkdir(parents=True)
+    (root / "unimem" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "unimem" / "nested" / "module.py").write_text("value = 1\n", encoding="utf-8")
+    (root / "unimem" / "nested" / "module.pyc").write_bytes(b"bytecode")
+    (root / "unimem" / "__pycache__").mkdir()
+    (root / "unimem" / "__pycache__" / "module.pyc").write_bytes(b"bytecode")
     (root / "protocol").mkdir()
     (root / "protocol" / "schema.json").write_text("{}\n", encoding="utf-8")
     (root / "deploy" / "docker").mkdir(parents=True)
@@ -59,8 +59,8 @@ class BuildLocalImageTests(unittest.TestCase):
                         "pyproject.toml",
                         "README.md",
                         "LICENSE",
-                        "commontrace/__init__.py",
-                        "commontrace/nested/module.py",
+                        "unimem/__init__.py",
+                        "unimem/nested/module.py",
                         "protocol/schema.json",
                         "deploy/docker/local-entrypoint.sh",
                     },
@@ -96,7 +96,7 @@ class BuildLocalImageTests(unittest.TestCase):
             make_checkout(checkout)
             external = root / "outside.py"
             external.write_text("secret = True\n", encoding="utf-8")
-            (checkout / "commontrace" / "escape.py").symlink_to(external)
+            (checkout / "unimem" / "escape.py").symlink_to(external)
             context = root / "context"
 
             with self.assertRaisesRegex(ValueError, "symlinks are not allowed"):

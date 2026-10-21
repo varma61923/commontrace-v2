@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from commontrace import outcome_detect as od
+from unimem import outcome_detect as od
 
 
 class TestFromTestExitCode:

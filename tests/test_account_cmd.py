@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import argparse
 
-from commontrace.commands import account_cmd
+from unimem.commands import account_cmd
 
 
 def _args(**over):
-    base = dict(hub_url="http://hub.invalid/mcp", hub_api_key="ct_live_test", yes=False)
+    base = dict(hub_url="http://hub.invalid/mcp", hub_api_key="unimem_live_test", yes=False)
     base.update(over)
     return argparse.Namespace(**base)
 

@@ -1,6 +1,6 @@
 import pytest
 
-from commontrace import retrieval
+from unimem import retrieval
 
 
 def _lesson(name, description="", applies_when="", tags=(), domain="", importance=3, uses=0):
@@ -171,8 +171,8 @@ class TestBackwardCompatibility:
 
 class TestConfigIsSharedByEverySurface:
     def test_a_fresh_store_gets_the_field_robust_scorer(self, tmp_path):
-        from commontrace import retrieval_io
-        from commontrace.cli import main
+        from unimem import retrieval_io
+        from unimem.cli import main
 
         assert main(["init", "--agent-type", "robotics", "--dest", str(tmp_path)]) == 0
         config = retrieval_io.load_config(str(tmp_path))
@@ -181,8 +181,8 @@ class TestConfigIsSharedByEverySurface:
         assert not config.pinned_for_running_experiment
 
     def test_a_pre_upgrade_store_stays_on_what_its_assignments_were_scored_under(self, tmp_path):
-        from commontrace import holdout_io, retrieval_io
-        from commontrace.cli import main
+        from unimem import holdout_io, retrieval_io
+        from unimem.cli import main
 
         assert main(["init", "--dest", str(tmp_path)]) == 0
         log = holdout_io.holdout_log_path(str(tmp_path))
@@ -196,8 +196,8 @@ class TestConfigIsSharedByEverySurface:
         assert config.pinned_for_running_experiment
 
     def test_a_new_store_is_not_mistaken_for_a_pre_upgrade_one(self, tmp_path):
-        from commontrace import holdout_io, retrieval_io
-        from commontrace.cli import main
+        from unimem import holdout_io, retrieval_io
+        from unimem.cli import main
 
         assert main(["init", "--dest", str(tmp_path)]) == 0
         holdout_io.assign_and_log(
@@ -213,8 +213,8 @@ class TestConfigIsSharedByEverySurface:
     def test_successive_queries_do_not_drift_between_scorers(self, tmp_path):
         import json
 
-        from commontrace import holdout_io, retrieval_io
-        from commontrace.cli import main
+        from unimem import holdout_io, retrieval_io
+        from unimem.cli import main
 
         assert main(["init", "--dest", str(tmp_path)]) == 0
         for i in range(3):
@@ -230,8 +230,8 @@ class TestConfigIsSharedByEverySurface:
         assert scorers == {retrieval.SCORER_IDF}, f"drifted across {scorers}"
 
     def test_a_torn_final_log_line_does_not_break_config_loading(self, tmp_path):
-        from commontrace import holdout_io, retrieval_io
-        from commontrace.cli import main
+        from unimem import holdout_io, retrieval_io
+        from unimem.cli import main
 
         assert main(["init", "--dest", str(tmp_path)]) == 0
         with open(holdout_io.holdout_log_path(str(tmp_path)), "w", encoding="utf-8") as fh:
@@ -242,8 +242,8 @@ class TestConfigIsSharedByEverySurface:
         assert config.scorer == retrieval.SCORER_IDF_V2
 
     def test_an_explicit_choice_beats_the_inferred_pin(self, tmp_path):
-        from commontrace import holdout_io, retrieval_io
-        from commontrace.cli import main
+        from unimem import holdout_io, retrieval_io
+        from unimem.cli import main
 
         assert main(["init", "--dest", str(tmp_path)]) == 0
         with open(holdout_io.holdout_log_path(str(tmp_path)), "w", encoding="utf-8") as fh:
@@ -256,8 +256,8 @@ class TestConfigIsSharedByEverySurface:
         assert not config.pinned_for_running_experiment
 
     def test_a_corrupt_config_does_not_break_retrieval(self, tmp_path):
-        from commontrace import retrieval_io
-        from commontrace.cli import main
+        from unimem import retrieval_io
+        from unimem.cli import main
 
         assert main(["init", "--dest", str(tmp_path)]) == 0
         with open(retrieval_io.config_path(str(tmp_path)), "w", encoding="utf-8") as fh:
@@ -266,32 +266,32 @@ class TestConfigIsSharedByEverySurface:
         assert config.scorer == retrieval.SCORER_IDF
 
     def test_configure_rejects_a_floor_outside_the_scale(self, tmp_path):
-        from commontrace import retrieval_io
+        from unimem import retrieval_io
 
         with pytest.raises(ValueError):
             retrieval_io.configure(str(tmp_path), floor=1.5)
 
     def test_configure_rejects_a_reliability_weight_outside_the_scale(self, tmp_path):
-        from commontrace import retrieval_io
+        from unimem import retrieval_io
 
         with pytest.raises(ValueError):
             retrieval_io.configure(str(tmp_path), reliability_weight=1.5)
 
     def test_configure_rejects_a_recency_weight_outside_the_scale(self, tmp_path):
-        from commontrace import retrieval_io
+        from unimem import retrieval_io
 
         with pytest.raises(ValueError):
             retrieval_io.configure(str(tmp_path), recency_weight=-0.1)
 
     def test_reliability_and_recency_weight_default_off(self, tmp_path):
-        from commontrace import retrieval_io
+        from unimem import retrieval_io
 
         config = retrieval_io.load_config(str(tmp_path))
         assert config.reliability_weight == 0.0
         assert config.recency_weight == 0.0
 
     def test_reliability_and_recency_weight_persist_across_reads(self, tmp_path):
-        from commontrace import retrieval_io
+        from unimem import retrieval_io
 
         retrieval_io.configure(
             str(tmp_path), reliability_weight=0.3, recency_weight=0.15,
@@ -301,7 +301,7 @@ class TestConfigIsSharedByEverySurface:
         assert reloaded.recency_weight == 0.15
 
     def test_configuring_one_weight_does_not_reset_the_other_or_redundancy(self, tmp_path):
-        from commontrace import retrieval_io
+        from unimem import retrieval_io
 
         retrieval_io.configure(
             str(tmp_path), reliability_weight=0.2, recency_weight=0.4,
@@ -314,8 +314,8 @@ class TestConfigIsSharedByEverySurface:
         assert reloaded.redundancy_threshold == 0.3
 
     def test_a_corrupt_config_falls_back_to_reliability_and_recency_off(self, tmp_path):
-        from commontrace import retrieval_io
-        from commontrace.cli import main
+        from unimem import retrieval_io
+        from unimem.cli import main
 
         assert main(["init", "--dest", str(tmp_path)]) == 0
         with open(retrieval_io.config_path(str(tmp_path)), "w", encoding="utf-8") as fh:

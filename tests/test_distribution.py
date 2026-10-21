@@ -6,7 +6,7 @@ import pytest
 
 ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "distribution")
 MARKET = os.path.join(ROOT, "claude-marketplace")
-PLUGIN = os.path.join(MARKET, "plugins", "commontrace")
+PLUGIN = os.path.join(MARKET, "plugins", "unimem")
 
 
 def _json(*parts):
@@ -20,7 +20,7 @@ def test_the_marketplace_entry_matches_the_plugin_it_points_at():
     assert market["owner"]["name"] and market["name"]
     (entry,) = market["plugins"]
     assert entry["name"] == manifest["name"]
-    assert entry["source"] == "./plugins/commontrace" and os.path.isdir(os.path.join(MARKET, entry["source"]))
+    assert entry["source"] == "./plugins/unimem" and os.path.isdir(os.path.join(MARKET, entry["source"]))
 
 
 def test_the_plugin_version_is_the_package_version():
@@ -31,7 +31,7 @@ def test_the_plugin_version_is_the_package_version():
     assert server["version"] == version and server["packages"][0]["version"] == version
 
 
-@pytest.mark.parametrize("skill", ["install-commontrace", "prove-memory"])
+@pytest.mark.parametrize("skill", ["install-unimem", "prove-memory"])
 def test_each_skill_has_a_name_and_a_description_that_says_when_to_use_it(skill):
     text = open(os.path.join(PLUGIN, "skills", skill, "SKILL.md"), encoding="utf-8").read()
     front = re.match(r"---\n(.*?)\n---\n", text, re.S).group(1)
@@ -42,7 +42,7 @@ def test_each_skill_has_a_name_and_a_description_that_says_when_to_use_it(skill)
 def test_the_skills_name_only_commands_that_exist():
     import argparse
 
-    from commontrace.cli import build_parser
+    from unimem.cli import build_parser
 
     def choices(parser):
         for action in parser._actions:
@@ -51,13 +51,13 @@ def test_the_skills_name_only_commands_that_exist():
         return {}
 
     top = choices(build_parser())
-    for skill in ("install-commontrace", "prove-memory"):
+    for skill in ("install-unimem", "prove-memory"):
         text = open(os.path.join(PLUGIN, "skills", skill, "SKILL.md"), encoding="utf-8").read()
-        for first, second in re.findall(r"^commontrace ([a-z]+)(?: ([a-z]+))?", text, re.M):
-            assert first in top, f"{skill}: `commontrace {first}` is not a command"
+        for first, second in re.findall(r"^unimem ([a-z]+)(?: ([a-z]+))?", text, re.M):
+            assert first in top, f"{skill}: `unimem {first}` is not a command"
             sub = choices(top[first])
             if sub and second:
-                assert second in sub, f"{skill}: `commontrace {first} {second}` is not a command"
+                assert second in sub, f"{skill}: `unimem {first} {second}` is not a command"
 
 
 def test_the_mcp_registry_entry_obeys_the_published_schema_limits():
@@ -70,8 +70,8 @@ def test_the_mcp_registry_entry_obeys_the_published_schema_limits():
 
 
 def test_the_mcp_server_the_plugin_registers_is_the_real_command():
-    cfg = _json(PLUGIN, ".mcp.json")["mcpServers"]["commontrace"]
-    assert cfg == {"command": "commontrace", "args": ["serve"]}
+    cfg = _json(PLUGIN, ".mcp.json")["mcpServers"]["unimem"]
+    assert cfg == {"command": "unimem", "args": ["serve"]}
 
 
 def test_marketplace_metadata_uses_the_repository_license():

@@ -13,10 +13,10 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from commontrace.memory_record import MemoryRecord
 from hub.db import session_scope
 from hub.memory_vector_events import append_change, redact_changes
 from hub.models import MemoryChangeClock, MemoryChangeEvent, MemoryEmbeddingCache, Organization
+from unimem.memory_record import MemoryRecord
 
 
 async def _org(factory):

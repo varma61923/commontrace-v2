@@ -4,13 +4,13 @@ import os
 
 import pytest
 
-from commontrace import failure_signals, paths
-from commontrace.cli import main
+from unimem import failure_signals, paths
+from unimem.cli import main
 
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
-    monkeypatch.delenv("COMMONTRACE_ROOT", raising=False)
+    monkeypatch.delenv("UNIMEM_ROOT", raising=False)
     monkeypatch.chdir(tmp_path)
     main(["init", "--agent-type", "support", "--dest", str(tmp_path)])
     return tmp_path
@@ -35,7 +35,7 @@ def _capture(store, title, context, solution, *, resolved=None, repeated_error=N
     assert main(argv) == 0
 
     if created_at is not None:
-        from commontrace import frontmatter
+        from unimem import frontmatter
         tdir = paths.traces_dir(str(store))
         newest = max(
             (os.path.join(tdir, f) for f in os.listdir(tdir) if f != "README.md"),
@@ -147,7 +147,7 @@ class TestExportFormats:
             assert set(row) == {"inputs", "outputs", "metadata"}
             assert row["inputs"]["input"]
             assert row["outputs"]["output"]
-            assert row["metadata"]["commontrace_signal"] == signal.name
+            assert row["metadata"]["unimem_signal"] == signal.name
 
     def test_braintrust_shape_matches_what_the_importer_reads(self, store):
         signal, by_id = self._signal_and_by_id(store)

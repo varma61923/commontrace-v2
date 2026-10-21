@@ -5,9 +5,9 @@ import json
 
 import pytest
 
-from commontrace import gateway, providers
-from commontrace.conversation import Store
-from commontrace.conversation.search import _rerank
+from unimem import gateway, providers
+from unimem.conversation import Store
+from unimem.conversation.search import _rerank
 
 
 def call(app, body):
@@ -68,7 +68,7 @@ def test_mmr_diversifies_conversation_head_and_preserves_tail(tmp_path):
 
 
 def test_registered_reranker_options_reach_real_http_ranking(tmp_path, monkeypatch):
-    from commontrace.reranking import Hit
+    from unimem.reranking import Hit
 
     seen = []
 
@@ -115,7 +115,7 @@ def test_temporal_response_matches_generated_array_contract(tmp_path):
 
 def test_http_semantic_recall_reuses_vectors_prepared_during_capture(tmp_path, monkeypatch):
     pytest.importorskip("numpy")
-    from commontrace import embeddings
+    from unimem import embeddings
 
     calls = []
 

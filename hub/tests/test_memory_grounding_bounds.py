@@ -3,9 +3,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from commontrace.memory_record import MemoryRecord
 from hub import memory_records
 from hub.models import MemoryPolicyState
+from unimem.memory_record import MemoryRecord
 
 
 def _hosted_graph(monkeypatch, records, candidates):
@@ -70,7 +70,7 @@ async def test_deep_candidate_cannot_poison_shared_shallow_evidence(monkeypatch,
 
 @pytest.mark.asyncio
 async def test_hosted_grounding_bounds_database_lookups_and_deduplicates_edges(monkeypatch):
-    from commontrace.record_visibility import GroundingState
+    from unimem.record_visibility import GroundingState
 
     scope = {"tenant": "owner", "user": "u"}
     leaves = [MemoryRecord(f"leaf-{index}", "observation", 1, {"text": "source"}, scope=scope)

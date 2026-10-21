@@ -173,7 +173,7 @@ class TestMinimalYamlParser:
 
 class TestFrontmatterDelimiterHandling:
     def test_field_value_containing_triple_dash_does_not_corrupt_parse(self, tmp_path):
-        from commontrace import frontmatter
+        from unimem import frontmatter
 
         path = tmp_path / "trace.md"
         frontmatter.write(
@@ -188,7 +188,7 @@ class TestFrontmatterDelimiterHandling:
         assert body.strip() == "body text"
 
     def test_round_trip_with_colon_and_quotes(self, tmp_path):
-        from commontrace import frontmatter
+        from unimem import frontmatter
 
         path = tmp_path / "trace2.md"
         fm_in = {"id": "y", "title": 'A "quoted" title: with colon', "agent_type": "code"}
@@ -199,7 +199,7 @@ class TestFrontmatterDelimiterHandling:
 
 class TestFrontmatterMalformedInput:
     def test_invalid_yaml_syntax_raises_frontmatter_error(self, tmp_path):
-        from commontrace import frontmatter
+        from unimem import frontmatter
 
         path = tmp_path / "bad.md"
         path.write_text("---\nkey: [unclosed\n---\nbody\n", encoding="utf-8")
@@ -207,12 +207,12 @@ class TestFrontmatterMalformedInput:
             frontmatter.read(str(path))
 
     def test_frontmatter_error_is_a_value_error(self, tmp_path):
-        from commontrace import frontmatter
+        from unimem import frontmatter
 
         assert issubclass(frontmatter.FrontmatterError, ValueError)
 
     def test_top_level_scalar_raises_frontmatter_error(self, tmp_path):
-        from commontrace import frontmatter
+        from unimem import frontmatter
 
         path = tmp_path / "scalar.md"
         path.write_text("---\njust a plain scalar\n---\nbody\n", encoding="utf-8")
@@ -220,7 +220,7 @@ class TestFrontmatterMalformedInput:
             frontmatter.read(str(path))
 
     def test_top_level_list_raises_frontmatter_error(self, tmp_path):
-        from commontrace import frontmatter
+        from unimem import frontmatter
 
         path = tmp_path / "list.md"
         path.write_text("---\n- a\n- b\n---\nbody\n", encoding="utf-8")
@@ -228,7 +228,7 @@ class TestFrontmatterMalformedInput:
             frontmatter.read(str(path))
 
     def test_empty_frontmatter_block_returns_empty_dict(self, tmp_path):
-        from commontrace import frontmatter
+        from unimem import frontmatter
 
         path = tmp_path / "empty.md"
         path.write_text("---\n---\nbody\n", encoding="utf-8")
@@ -237,7 +237,7 @@ class TestFrontmatterMalformedInput:
         assert body.strip() == "body"
 
     def test_a_plain_markdown_file_with_no_frontmatter_at_all_is_not_an_error(self, tmp_path):
-        from commontrace import frontmatter
+        from unimem import frontmatter
 
         path = tmp_path / "plain.md"
         path.write_text("# Just a heading\n\nSome text, no frontmatter here.\n", encoding="utf-8")
@@ -246,7 +246,7 @@ class TestFrontmatterMalformedInput:
         assert body == "# Just a heading\n\nSome text, no frontmatter here.\n"
 
     def test_an_opening_delimiter_with_no_closing_one_is_treated_as_no_frontmatter(self, tmp_path):
-        from commontrace import frontmatter
+        from unimem import frontmatter
 
         path = tmp_path / "truncated.md"
         content = "---\ntitle: unfinished\nthe rest of this file never got a closing delimiter\n"
@@ -258,7 +258,7 @@ class TestFrontmatterMalformedInput:
 
 class TestFrontmatterRejectsYamlAnchorsAndAliases:
     def test_an_alias_reference_is_rejected(self, tmp_path):
-        from commontrace import frontmatter
+        from unimem import frontmatter
 
         path = tmp_path / "alias.md"
         path.write_text(
@@ -268,7 +268,7 @@ class TestFrontmatterRejectsYamlAnchorsAndAliases:
             frontmatter.read(str(path))
 
     def test_a_bare_anchor_definition_with_no_alias_is_also_rejected(self, tmp_path):
-        from commontrace import frontmatter
+        from unimem import frontmatter
 
         path = tmp_path / "anchor_only.md"
         path.write_text("---\na: &a value\n---\nbody\n", encoding="utf-8")
@@ -286,13 +286,13 @@ class TestFrontmatterRejectsYamlAnchorsAndAliases:
             "---\nbody\n",
             encoding="utf-8",
         )
-        from commontrace import frontmatter
+        from unimem import frontmatter
 
         with pytest.raises(frontmatter.FrontmatterError):
             frontmatter.read(str(path))
 
     def test_ordinary_frontmatter_with_no_anchors_is_unaffected(self, tmp_path):
-        from commontrace import frontmatter
+        from unimem import frontmatter
 
         path = tmp_path / "ok.md"
         path.write_text(
@@ -305,7 +305,7 @@ class TestFrontmatterRejectsYamlAnchorsAndAliases:
 
 class TestFrontmatterYaml11BoolCoercion:
     def test_no_stays_a_string_not_a_bool(self, tmp_path):
-        from commontrace import frontmatter
+        from unimem import frontmatter
 
         path = tmp_path / "no.md"
         path.write_text("---\ncountry: NO\n---\nbody\n", encoding="utf-8")
@@ -314,7 +314,7 @@ class TestFrontmatterYaml11BoolCoercion:
         assert isinstance(fm["country"], str)
 
     def test_on_off_yes_stay_strings_in_a_list(self, tmp_path):
-        from commontrace import frontmatter
+        from unimem import frontmatter
 
         path = tmp_path / "tags.md"
         path.write_text("---\ntags: [on, off, yes, Off, YES]\n---\nbody\n", encoding="utf-8")
@@ -323,7 +323,7 @@ class TestFrontmatterYaml11BoolCoercion:
         assert all(isinstance(t, str) for t in fm["tags"])
 
     def test_true_false_variants_still_parse_as_real_booleans(self, tmp_path):
-        from commontrace import frontmatter
+        from unimem import frontmatter
 
         path = tmp_path / "bools.md"
         path.write_text(
@@ -335,7 +335,7 @@ class TestFrontmatterYaml11BoolCoercion:
         assert all(isinstance(v, bool) for v in fm.values())
 
     def test_other_scalar_resolution_is_unaffected(self, tmp_path):
-        from commontrace import frontmatter
+        from unimem import frontmatter
 
         path = tmp_path / "mixed.md"
         path.write_text(
@@ -346,14 +346,14 @@ class TestFrontmatterYaml11BoolCoercion:
         assert fm == {"importance": 3, "last_hit": "NEVER", "nothing": None, "name": "lesson_x"}
 
     def test_does_not_mutate_pyyamls_global_resolver_state(self, tmp_path):
-        from commontrace import frontmatter  # noqa: F401  (import triggers class definition)
+        from unimem import frontmatter  # noqa: F401  (import triggers class definition)
 
         assert yaml.safe_load("x: NO") == {"x": False}, (
-            "plain yaml.safe_load must be unaffected by importing commontrace.frontmatter"
+            "plain yaml.safe_load must be unaffected by importing unimem.frontmatter"
         )
 
     def test_cli_written_file_round_trips_through_the_stricter_loader(self, tmp_path):
-        from commontrace import frontmatter
+        from unimem import frontmatter
 
         path = tmp_path / "roundtrip.md"
         frontmatter.write(str(path), {"domain": "NO", "tags": ["on", "off"]}, "body text")
@@ -364,7 +364,7 @@ class TestFrontmatterYaml11BoolCoercion:
 
 class TestTraceIoSectionParsing:
     def test_solution_with_embedded_subheading_is_not_truncated(self, tmp_path):
-        from commontrace import frontmatter, trace_io
+        from unimem import frontmatter, trace_io
 
         path = tmp_path / "trace.md"
         solution = "Step one\n## Substep heading\nThis part must not be lost\nMore text"
@@ -494,14 +494,14 @@ class TestEpisodeFrontmatterRequiredFields:
 
 class TestParsedFrontmatterIsMemoised:
     def _lesson(self, tmp_path, description="Retry with a key.", name="l"):
-        from commontrace import frontmatter
+        from unimem import frontmatter
 
         path = tmp_path / f"lesson_{name}.md"
         frontmatter.write(str(path), {"name": name, "description": description, "tags": ["a"]}, "## Rule\nx\n")
         return str(path)
 
     def test_an_unchanged_file_is_parsed_once(self, tmp_path, monkeypatch):
-        from commontrace import frontmatter
+        from unimem import frontmatter
 
         path = self._lesson(tmp_path, name="once")
         frontmatter._PARSED.clear()
@@ -513,7 +513,7 @@ class TestParsedFrontmatterIsMemoised:
         assert len(calls) == 1
 
     def test_an_edited_file_is_parsed_again(self, tmp_path):
-        from commontrace import frontmatter
+        from unimem import frontmatter
 
         path = self._lesson(tmp_path, name="edit")
         frontmatter.read(path)
@@ -521,7 +521,7 @@ class TestParsedFrontmatterIsMemoised:
         assert frontmatter.read(path)[0]["description"] == "Changed."
 
     def test_each_read_gets_its_own_copy(self, tmp_path):
-        from commontrace import frontmatter
+        from unimem import frontmatter
 
         path = self._lesson(tmp_path, name="copy")
         first, _ = frontmatter.read(path)
@@ -533,7 +533,7 @@ class TestParsedFrontmatterIsMemoised:
     def test_malformed_frontmatter_is_never_cached(self, tmp_path):
         import pytest
 
-        from commontrace import frontmatter
+        from unimem import frontmatter
 
         path = tmp_path / "lesson_bad.md"
         path.write_text("---\nname: [unclosed\n---\nbody\n", encoding="utf-8")
@@ -543,7 +543,7 @@ class TestParsedFrontmatterIsMemoised:
         assert "name: [unclosed\n" not in frontmatter._PARSED
 
     def test_the_memo_is_bounded(self, tmp_path, monkeypatch):
-        from commontrace import frontmatter
+        from unimem import frontmatter
 
         monkeypatch.setattr(frontmatter, "_PARSED_MAX", 3)
         frontmatter._PARSED.clear()
@@ -562,7 +562,7 @@ class TestTheStrictParseOnLibyaml:
     ]
 
     def test_strict_rules_hold(self):
-        from commontrace import frontmatter
+        from unimem import frontmatter
 
         fm = frontmatter.load_text(self.SAMPLES[0])
         assert fm["name"] == "on" and fm["domain"] == "NO" and fm["tags"] == ["on", "off", "yes"]
@@ -572,7 +572,7 @@ class TestTheStrictParseOnLibyaml:
         import pytest
         import yaml
 
-        from commontrace import frontmatter
+        from unimem import frontmatter
 
         with pytest.raises(yaml.YAMLError, match="anchors/aliases are not permitted"):
             frontmatter.load_text("a: &x [1, 2]\nb: *x\n")
@@ -581,7 +581,7 @@ class TestTheStrictParseOnLibyaml:
         import pytest
         import yaml
 
-        from commontrace import frontmatter
+        from unimem import frontmatter
 
         if frontmatter._CStrictBoolLoader is None:
             pytest.skip("PyYAML here was built without libyaml")

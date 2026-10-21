@@ -39,8 +39,8 @@ test("Mastra input processor uses MessageList tags and request-scoped thread ide
   const result = await processor.processInput({messages, messageList, requestContext});
 
   assert.equal(result, messageList);
-  assert.deepEqual(cleared, ["commontrace-memory"]);
-  assert.deepEqual(added, [{text: "<memory_update>read-only evidence</memory_update>", tag: "commontrace-memory"}]);
+  assert.deepEqual(cleared, ["unimem-memory"]);
+  assert.deepEqual(added, [{text: "<memory_update>read-only evidence</memory_update>", tag: "unimem-memory"}]);
   assert.equal(payloads.length, 1);
   assert.equal(payloads[0].session_id, "thread-9");
   assert.equal(payloads[0].query, "Where is the runbook?");
@@ -75,7 +75,7 @@ test("Mastra input processor clears stale memory and fails open on retrieval err
   const result = await processor.processInput({messages, messageList});
 
   assert.equal(result, messageList);
-  assert.deepEqual(cleared, ["commontrace-memory"]);
+  assert.deepEqual(cleared, ["unimem-memory"]);
   assert.deepEqual(added, []);
 });
 

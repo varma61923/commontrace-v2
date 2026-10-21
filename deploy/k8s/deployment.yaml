@@ -1,14 +1,14 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: commontrace-hub
+  name: unimem-hub
   labels:
-    app: commontrace-hub
+    app: unimem-hub
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: commontrace-hub
+      app: unimem-hub
   strategy:
     rollingUpdate:
       maxSurge: 1
@@ -16,7 +16,7 @@ spec:
   template:
     metadata:
       labels:
-        app: commontrace-hub
+        app: unimem-hub
     spec:
       securityContext:
         runAsNonRoot: true
@@ -25,15 +25,15 @@ spec:
           type: RuntimeDefault
       containers:
         - name: hub
-          image: REPLACE_ME/commontrace-hub:REPLACE_ME
+          image: REPLACE_ME/unimem-hub:REPLACE_ME
           ports:
             - name: http
               containerPort: 8420
           envFrom:
             - configMapRef:
-                name: commontrace-hub-config
+                name: unimem-hub-config
             - secretRef:
-                name: commontrace-hub-secrets
+                name: unimem-hub-secrets
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

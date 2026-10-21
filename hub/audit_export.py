@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from commontrace import __version__
+from unimem import __version__
 
 FORMATS = ("jsonl", "cef")
 
@@ -52,7 +52,7 @@ def to_cef(entry: Any) -> str:
         ("msg", entry.summary),
     ))
     header = "|".join(_header(v) for v in (
-        "CommonTrace", "Hub", __version__, entry.action, entry.action, severity(entry.action),
+        "UniMem", "Hub", __version__, entry.action, entry.action, severity(entry.action),
     ))
     return f"CEF:0|{header}|{extension}"
 
@@ -65,8 +65,8 @@ def render(entry: Any, fmt: str) -> str:
 
 def verify_incident_pack(bundle: dict, principals: dict) -> bool:
     """Verify exported bytes offline against independently pinned signer keys."""
-    from commontrace import frontier_protocol as fp
-    from commontrace import origin, transparency_log
+    from unimem import frontier_protocol as fp
+    from unimem import origin, transparency_log
 
     try:
         manifest, anchor = bundle["manifest"], bundle["anchor"]

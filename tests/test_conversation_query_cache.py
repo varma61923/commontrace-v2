@@ -4,7 +4,7 @@ import threading
 
 import pytest
 
-from commontrace.conversation import embed
+from unimem.conversation import embed
 
 
 @pytest.fixture
@@ -135,7 +135,7 @@ def test_failed_query_encoding_does_not_publish_partial_cache(tmp_path, local_mo
 
 
 def test_cached_query_vectors_never_cache_evidence_or_bypass_session_filters_and_updates(tmp_path, local_model):
-    from commontrace.conversation import Options, Store, recall
+    from unimem.conversation import Options, Store, recall
 
     np, model, _cls = local_model
     question = "Where is Project Zephyr venue?"

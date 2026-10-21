@@ -5,8 +5,8 @@ import threading
 
 import pytest
 
-from commontrace.conversation import Options, Store, recall, unicode_index
-from commontrace.conversation.pool import PoolBusy, ReadPool
+from unimem.conversation import Options, Store, recall, unicode_index
+from unimem.conversation.pool import PoolBusy, ReadPool
 
 
 def seed(root, space="user", text="Orion launch is ready."):
@@ -161,8 +161,8 @@ def test_invalid_resource_limits_fail_closed(limits):
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="POSIX process boundary")
 def test_service_pool_and_response_cache_do_not_inherit_locked_parent_state(tmp_path):
-    from commontrace.conversation import search
-    from commontrace.conversation.pool import READ_POOL
+    from unimem.conversation import search
+    from unimem.conversation.pool import READ_POOL
 
     seed(tmp_path)
     with READ_POOL.lease(str(tmp_path), "user") as store:

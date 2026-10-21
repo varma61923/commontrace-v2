@@ -3,9 +3,9 @@ import os
 
 import pytest
 
-from commontrace import distill, frontmatter
-from commontrace.cli import main
-from commontrace.commands import distill_cmd
+from unimem import distill, frontmatter
+from unimem.cli import main
+from unimem.commands import distill_cmd
 
 
 def _trace(id, title, context_text, tags=None, agent_type="support"):
@@ -123,7 +123,7 @@ class TestProposalHelpers:
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
-    monkeypatch.delenv("COMMONTRACE_ROOT", raising=False)
+    monkeypatch.delenv("UNIMEM_ROOT", raising=False)
     monkeypatch.chdir(tmp_path)
     return tmp_path
 
@@ -341,7 +341,7 @@ class TestACandidateCarriesItsEvidence:
     @staticmethod
     def _cluster(n=6, context="A large CSV export returned a zero-byte file with no error.",
                  solutions=None):
-        from commontrace import distill
+        from unimem import distill
 
         solutions = solutions or ["The worker was OOM-killed silently. Re-ran with date chunking."]
         return distill.Cluster(
@@ -358,7 +358,7 @@ class TestACandidateCarriesItsEvidence:
         )
 
     def _body(self, cluster) -> str:
-        from commontrace.commands.distill_cmd import _candidate_body
+        from unimem.commands.distill_cmd import _candidate_body
 
         return "\n".join(_candidate_body(cluster))
 
@@ -387,7 +387,7 @@ class TestACandidateCarriesItsEvidence:
         assert "different resolutions" not in self._body(self._cluster())
 
     def test_the_judgement_fields_stay_as_scaffolding(self):
-        from commontrace import templates
+        from unimem import templates
 
         body = self._body(self._cluster())
         assert body.count("TODO:") >= 3
@@ -402,7 +402,7 @@ class TestACandidateCarriesItsEvidence:
 class TestTheProposedDescriptionIsReadable:
     @staticmethod
     def _cluster(titles):
-        from commontrace import distill
+        from unimem import distill
 
         return distill.Cluster(
             traces=[
@@ -418,7 +418,7 @@ class TestTheProposedDescriptionIsReadable:
         )
 
     def test_it_is_a_sentence_not_a_word_list(self):
-        from commontrace import distill
+        from unimem import distill
 
         cluster = self._cluster(["Password reset email never arrived"] * 4)
         description = distill.propose_description(cluster)
@@ -426,24 +426,24 @@ class TestTheProposedDescriptionIsReadable:
         assert "repeated pattern around" not in description
 
     def test_it_says_how_many_it_stands_for(self):
-        from commontrace import distill
+        from unimem import distill
 
         assert "and 3 more like it" in distill.propose_description(
             self._cluster(["Password reset email never arrived"] * 4))
 
     def test_a_single_trace_needs_no_suffix(self):
-        from commontrace import distill
+        from unimem import distill
 
         assert distill.propose_description(self._cluster(["Only one"])) == "Only one"
 
     def test_it_is_deterministic(self):
-        from commontrace import distill
+        from unimem import distill
 
         cluster = self._cluster(["Alpha problem", "Beta problem", "Gamma problem"])
         assert len({distill.propose_description(cluster) for _ in range(10)}) == 1
 
     def test_it_picks_the_most_typical_trace_not_the_first(self):
-        from commontrace import distill
+        from unimem import distill
 
         cluster = self._cluster([
             "An unrelated outlier about billing invoices",
@@ -454,7 +454,7 @@ class TestTheProposedDescriptionIsReadable:
         assert "Password reset" in distill.representative(cluster).title
 
     def test_it_falls_back_when_there_is_no_title(self):
-        from commontrace import distill
+        from unimem import distill
 
         description = distill.propose_description(self._cluster(["", ""]))
         assert "repeated pattern" in description
@@ -478,10 +478,10 @@ class TestDistillWithLLM:
             )
 
     def test_llm_assisted_candidate_fills_in_the_rule(self, store, monkeypatch, capsys):
-        from commontrace import llm
+        from unimem import llm
 
         self._repeated_pattern(store)
-        monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "k")
+        monkeypatch.setenv("UNIMEM_LLM_API_KEY", "k")
         monkeypatch.setattr(
             llm, "_call_anthropic",
             lambda cfg, prompt: (json.dumps(dict(self._GOOD, evidence=[])), {}),
@@ -501,10 +501,10 @@ class TestDistillWithLLM:
         assert fm["llm_draft"]["provider"] == "anthropic"
 
     def test_without_draft_flag_the_llm_is_never_called(self, store, monkeypatch):
-        from commontrace import llm
+        from unimem import llm
 
         self._repeated_pattern(store)
-        monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "k")
+        monkeypatch.setenv("UNIMEM_LLM_API_KEY", "k")
 
         def boom(cfg, prompt):
             raise AssertionError("the LLM must not be called without --draft")
@@ -514,7 +514,7 @@ class TestDistillWithLLM:
 
     def test_falls_back_to_todo_scaffold_when_no_llm_is_configured(self, store, monkeypatch, capsys):
         self._repeated_pattern(store)
-        monkeypatch.delenv("COMMONTRACE_LLM_API_KEY", raising=False)
+        monkeypatch.delenv("UNIMEM_LLM_API_KEY", raising=False)
         capsys.readouterr()
         assert main(["distill", "--draft", "--dest", str(store)]) == 0
         assert "falling back to the template scaffold" in capsys.readouterr().err
@@ -526,10 +526,10 @@ class TestDistillWithLLM:
         assert "TODO" in body
 
     def test_an_llm_drafted_candidate_still_passes_schema_validation(self, store, monkeypatch, capsys):
-        from commontrace import llm
+        from unimem import llm
 
         self._repeated_pattern(store)
-        monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "k")
+        monkeypatch.setenv("UNIMEM_LLM_API_KEY", "k")
         monkeypatch.setattr(
             llm, "_call_anthropic",
             lambda cfg, prompt: (json.dumps(dict(self._GOOD, evidence=[])), {}),
@@ -541,10 +541,10 @@ class TestDistillWithLLM:
 
     def test_an_llm_drafted_candidate_carries_the_models_judgements_into_every_section(
             self, store, monkeypatch, capsys):
-        from commontrace import frontmatter, llm
+        from unimem import frontmatter, llm
 
         self._repeated_pattern(store)
-        monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "k")
+        monkeypatch.setenv("UNIMEM_LLM_API_KEY", "k")
         monkeypatch.setattr(
             llm, "_call_anthropic",
             lambda cfg, prompt: (json.dumps(dict(self._GOOD, evidence=[])), {}),

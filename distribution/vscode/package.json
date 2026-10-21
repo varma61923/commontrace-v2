@@ -1,22 +1,22 @@
 {
-  "name": "commontrace", "displayName": "CommonTrace", "publisher": "commontrace",
+  "name": "unimem", "displayName": "UniMem", "publisher": "unimem",
   "description": "Workspace memory and source-linked recall over native MCP.",
-  "version": "2.0.0", "license": "AGPL-3.0-only", "engines": {"vscode": "^1.102.0"},
+  "version": "1.0.0", "license": "AGPL-3.0-only", "engines": {"vscode": "^1.102.0"},
   "categories": ["AI", "Other"], "main": "./extension.js",
-  "repository": {"type": "git", "url": "https://github.com/varma61923/commontrace-v2"},
+  "repository": {"type": "git", "url": "https://github.com/varma61923/unimem"},
   "capabilities": {"untrustedWorkspaces": {"supported": false}},
-  "activationEvents": ["onMcpServerDefinitionProvider:commontrace"],
+  "activationEvents": ["onMcpServerDefinitionProvider:unimem"],
   "contributes": {
     "commands": [
-      {"command": "commontrace.initialize", "title": "CommonTrace: Initialize Workspace Store"},
-      {"command": "commontrace.doctor", "title": "CommonTrace: Check Store Health"},
-      {"command": "commontrace.copyConfig", "title": "CommonTrace: Copy MCP Configuration"}
+      {"command": "unimem.initialize", "title": "UniMem: Initialize Workspace Store"},
+      {"command": "unimem.doctor", "title": "UniMem: Check Store Health"},
+      {"command": "unimem.copyConfig", "title": "UniMem: Copy MCP Configuration"}
     ],
-    "mcpServerDefinitionProviders": [{"id": "commontrace", "label": "CommonTrace Workspace Memory"}],
-    "configuration": {"title": "CommonTrace", "properties": {
-      "commontrace.command": {"type": "string", "default": "commontrace", "scope": "resource", "restricted": true,
-        "description": "Installed CommonTrace executable path, without shell arguments."},
-      "commontrace.approvalTools": {"type": "boolean", "default": false, "scope": "resource", "restricted": true,
+    "mcpServerDefinitionProviders": [{"id": "unimem", "label": "UniMem Workspace Memory"}],
+    "configuration": {"title": "UniMem", "properties": {
+      "unimem.command": {"type": "string", "default": "unimem", "scope": "resource", "restricted": true,
+        "description": "Installed UniMem executable path, without shell arguments."},
+      "unimem.approvalTools": {"type": "boolean", "default": false, "scope": "resource", "restricted": true,
         "description": "Expose lesson approval tools to the assistant."}
     }}
   },

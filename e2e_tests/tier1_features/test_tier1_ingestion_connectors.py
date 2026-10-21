@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from commontrace import failure_import
 from e2e_tests.harness.cli_runner import require_milestone, run_cli
 from e2e_tests.harness.store_fixtures import (
     create_sample_code_repo,
@@ -11,6 +10,7 @@ from e2e_tests.harness.store_fixtures import (
     create_sample_markdown_docs,
     create_sample_transcripts,
 )
+from unimem import failure_import
 
 
 def test_t1_ingest_code_ast_chunking(tmp_path: Path, isolated_store: str):

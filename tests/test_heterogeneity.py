@@ -4,8 +4,8 @@ import random
 
 import pytest
 
-from commontrace import experiment, heterogeneity, holdout_io, trace_io
-from commontrace.cli import main
+from unimem import experiment, heterogeneity, holdout_io, trace_io
+from unimem.cli import main
 
 
 @pytest.mark.parametrize("x,df,expected", [

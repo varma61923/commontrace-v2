@@ -23,7 +23,7 @@ from hub.config import HubConfig
 
 PG_TEST_DATABASE_URL = os.environ.get(
     "HUB_TEST_DATABASE_URL",
-    "postgresql+asyncpg://commontrace_dev:devpassword@localhost:5432/commontrace_hub_test",
+    "postgresql+asyncpg://unimem_dev:devpassword@localhost:5432/unimem_hub_test",
 )
 
 

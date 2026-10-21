@@ -5,7 +5,7 @@ import os
 
 import pytest
 
-from commontrace import frontmatter, lesson_io, paths, release
+from unimem import frontmatter, lesson_io, paths, release
 
 
 def _lesson(root, slug: str, *, rule: str = "Do the thing.", status: str = "active") -> str:

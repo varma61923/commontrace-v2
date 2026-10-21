@@ -24,8 +24,8 @@ from benchmarks.phase0 import INPUTS, validate_payload, write_json
 from benchmarks.requests import text_counter_binding
 
 LIMITS = {"locomo": 40, "longmemeval": 12}
-CONDITIONS = (("baseline-lexical", "baseline", "commontrace"),
-              ("candidate-lexical", "candidate", "commontrace"),
+CONDITIONS = (("baseline-lexical", "baseline", "unimem"),
+              ("candidate-lexical", "candidate", "unimem"),
               ("mem0-raw", "candidate", "mem0-raw"),
               ("graphiti-episodic", "candidate", "graphiti-episodic"))
 

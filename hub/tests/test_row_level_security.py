@@ -55,7 +55,7 @@ async def rls(session_factory):
                 await session.execute(text(f"ALTER TABLE {table} DISABLE ROW LEVEL SECURITY"))
 
 
-_RLS_ROLE = "commontrace_rls_test"
+_RLS_ROLE = "unimem_rls_test"
 _RLS_ROLE_PASSWORD = "rls-test-only"  # noqa: S105 - a throwaway local test role
 
 

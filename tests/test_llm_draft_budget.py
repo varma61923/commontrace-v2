@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from commontrace.commands import _llm_draft, lesson_cmd
+from unimem.commands import _llm_draft, lesson_cmd
 
 
 def test_the_evidence_block_is_bounded():

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import random
 
-from commontrace import uplift
+from unimem import uplift
 
 
 def traffic(seed, n, effects=True):
@@ -26,7 +26,7 @@ def test_embodiment_targeting_rate_and_exploration(tmp_path):
     assert model.decide({"gripper": "jaw", "site": "depot"}, exploration_draw=.01)["exploration"]
     from datetime import datetime, timedelta, timezone
 
-    from commontrace import allocation, holdout_io
+    from unimem import allocation, holdout_io
     root = str(tmp_path)
     holdout_io.configure(root, rate=.5, salt="targeting")
     uplift.activate(root, "memory", model, {"jaw": {"gripper": "jaw", "site": "depot"},

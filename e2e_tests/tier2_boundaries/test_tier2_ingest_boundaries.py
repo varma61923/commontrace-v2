@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from commontrace import failure_import, memory_guard
+from unimem import failure_import, memory_guard
 
 
 def test_t2_ingest_empty_file_rejection(tmp_path: Path):

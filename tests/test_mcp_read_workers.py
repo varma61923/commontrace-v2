@@ -5,8 +5,8 @@ import threading
 
 import pytest
 
-from commontrace import mcp_server, sql_guard
-from commontrace.ingest import catalog
+from unimem import mcp_server, sql_guard
+from unimem.ingest import catalog
 
 pytest.importorskip("mcp")
 

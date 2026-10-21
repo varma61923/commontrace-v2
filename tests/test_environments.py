@@ -5,7 +5,7 @@ import os
 
 import pytest
 
-from commontrace import approval, environments, lesson_io, paths, release
+from unimem import approval, environments, lesson_io, paths, release
 
 
 def _lesson(root, slug: str, *, actor: str = "cli:test", status: str = "active") -> str:
@@ -169,7 +169,7 @@ class TestApprovalGate:
 
     def test_a_lesson_with_no_recorded_authors_refuses_under_two_person(self, tmp_path):
         _write_policy(tmp_path, "mode: two-person\n")
-        from commontrace import frontmatter
+        from unimem import frontmatter
 
         ldir = paths.lessons_dir(str(tmp_path))
         os.makedirs(ldir, exist_ok=True)

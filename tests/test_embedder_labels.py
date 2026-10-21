@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 
-from commontrace import holdout_io, rerank_arm, retrieval_io
+from unimem import holdout_io, rerank_arm, retrieval_io
 
 ARCTIC = "Snowflake/snowflake-arctic-embed-m-v1.5"
 MPNET = "multi-qa-mpnet-base-dot-v1"
@@ -76,7 +76,7 @@ def test_a_rebuilt_index_keeps_the_logged_model(tmp_path):
 
 
 def test_the_cli_passes_the_logged_model_to_the_builder(tmp_path):
-    from commontrace.commands.query_cmd import _fallback_model_args
+    from unimem.commands.query_cmd import _fallback_model_args
 
     root = str(tmp_path)
     assert _fallback_model_args(root) == []
@@ -87,7 +87,7 @@ def test_the_cli_passes_the_logged_model_to_the_builder(tmp_path):
 def test_the_reference_scripts_trust_the_same_models():
     import importlib.util
 
-    from commontrace.commands._shellout import packaged_reference_dir
+    from unimem.commands._shellout import packaged_reference_dir
 
     def load(name):
         spec = importlib.util.spec_from_file_location(

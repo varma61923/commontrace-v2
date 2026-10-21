@@ -4,9 +4,9 @@ import itertools
 
 import pytest
 
-from commontrace import frontier_protocol as fp
-from commontrace import memory_authority, mesh_crdt
-from commontrace.robotics import site_memory, vda5050
+from unimem import frontier_protocol as fp
+from unimem import memory_authority, mesh_crdt
+from unimem.robotics import site_memory, vda5050
 
 
 def keypair():
@@ -64,7 +64,7 @@ def test_fleet_site_ingest_dispatches_vda_order_path(tmp_path, capsys):
     import json
     from argparse import Namespace
 
-    from commontrace.commands.governance import fleet_run_site
+    from unimem.commands.governance import fleet_run_site
 
     message = {"headerId": 1, "timestamp": "2026-06-20T14:05:00Z",
         "version": "3.0.0", "manufacturer": "robot-vendor", "serialNumber": "r-1",
@@ -88,7 +88,7 @@ def test_vda_zone_event_accepts_only_bounded_zone_envelope(tmp_path):
 
 def test_open_rmf_adapter_contract_ingests_bounded_bitemporal_state(tmp_path):
     class FixtureAdapter:
-        def to_commontrace_state(self, message):
+        def to_unimem_state(self, message):
             assert message == {"fixture": "rmf-state"}
             return {"timestamp": "2026-06-20T14:05:00Z",
                     "nodes": [{"node_id": "dock", "position": {"x": 1, "y": 2}}],
@@ -114,7 +114,7 @@ def test_open_rmf_adapter_contract_ingests_bounded_bitemporal_state(tmp_path):
 ])
 def test_open_rmf_adapter_rejects_invalid_normalized_state_without_writing(tmp_path, invalid_state):
     class FixtureAdapter:
-        def to_commontrace_state(self, _message):
+        def to_unimem_state(self, _message):
             return invalid_state
 
     root = str(tmp_path)
@@ -125,7 +125,7 @@ def test_open_rmf_adapter_rejects_invalid_normalized_state_without_writing(tmp_p
 
 def test_open_rmf_adapter_rejects_oversized_mapping_before_writing(tmp_path):
     class FixtureAdapter:
-        def to_commontrace_state(self, _message):
+        def to_unimem_state(self, _message):
             return {"timestamp": "2026-06-20T14:05:00Z",
                     "nodes": [{"id": f"node-{index}"} for index in range(4097)],
                     "edges": [], "zones": []}

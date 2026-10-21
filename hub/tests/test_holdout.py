@@ -7,11 +7,11 @@ import pytest_asyncio
 from sqlalchemy import func, select
 from sqlalchemy import update as sa_update
 
-from commontrace import experiment, revision, value
 from hub import crud, manage, plans
 from hub.abuse import make_rate_limiter
 from hub.db import session_scope
 from hub.models import HoldoutObservation, Organization, Trace
+from unimem import experiment, revision, value
 
 pytestmark = pytest.mark.asyncio
 
@@ -502,7 +502,7 @@ class TestOperatorCommands:
     async def test_starting_pre_registers_what_the_run_will_measure(
         self, session_factory, capsys
     ):
-        from commontrace import prereg
+        from unimem import prereg
 
         async with session_scope(session_factory) as session:
             o = Organization(name="fleet")
@@ -1336,7 +1336,7 @@ class TestTieredValuationAndTheAuditLedger:
             worth = await crud.value_delivered(session, org, rate_tiers=self._TIERS)
             exported = await crud.holdout_assignments(session, org)
 
-        from commontrace import raw_export
+        from unimem import raw_export
 
         assert worth["evidence_digest"] == raw_export.digest_of(exported)
         result = raw_export.export(exported)
@@ -1485,6 +1485,6 @@ class TestEvidenceDecayReachesTheInvoice:
         assert worth["n_counted"] == 1
 
     async def test_the_hub_and_the_ledger_share_one_horizon(self):
-        from commontrace import decay
+        from unimem import decay
 
         assert crud.DEFAULT_EVIDENCE_HORIZON_DAYS == decay.DEFAULT_HORIZON_DAYS

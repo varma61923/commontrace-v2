@@ -14,11 +14,11 @@ from sqlalchemy import and_, false, or_, select, true
 from sqlalchemy.dialects.postgresql import insert
 from starlette.responses import JSONResponse
 
-from commontrace import frontier_protocol as fp
-from commontrace import origin, policy_proof
 from hub import transparency
 from hub.db import session_scope
 from hub.models import MemoryPolicyState, TransparencyEntry
+from unimem import frontier_protocol as fp
+from unimem import origin, policy_proof
 
 ACTOR: ContextVar[str] = ContextVar("unimem_hub_policy_actor", default="service:internal")
 SNAPSHOT: ContextVar[tuple[str, Any] | None] = ContextVar("unimem_hub_policy_snapshot", default=None)
@@ -41,7 +41,7 @@ async def active(session, org_id):
 def permits(policy, record, *, action="read"):
     if policy is None:
         return True
-    from commontrace import capabilities, capability_io
+    from unimem import capabilities, capability_io
 
     delegated = capabilities.CURRENT.get()
     purpose = "default"
@@ -68,7 +68,7 @@ def trace_predicate(policy, *, action="read"):
 
 
 def record_permits(record, *, action="read"):
-    from commontrace.capability_io import runtime_descriptor
+    from unimem.capability_io import runtime_descriptor
 
     snapshot = SNAPSHOT.get()
     return snapshot is None or permits(snapshot[1], runtime_descriptor(record), action=action)
@@ -139,7 +139,7 @@ def add_routes(app, session_factory, *, authenticate, require_scope, config):
                 if operation == "current":
                     return JSONResponse({"policy": before, "generation": state.generation})
                 if operation in {"diff", "certify"}:
-                    from commontrace.policy_io import _candidate
+                    from unimem.policy_io import _candidate
 
                     proposed, analysis = _candidate(body["policy"], body.get("format", "unimem"), body.get("domain"))
                     if len(fp.wire(proposed)) > 128*1024:

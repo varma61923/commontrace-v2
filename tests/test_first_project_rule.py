@@ -12,10 +12,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from commontrace import cli, frontmatter, lesson_admission
-from commontrace.commands.lesson_cmd import run_approve
-from commontrace.hook_kit import HookKit
-from commontrace.memory_journal import Journal
+from unimem import cli, frontmatter, lesson_admission
+from unimem.commands.lesson_cmd import run_approve
+from unimem.hook_kit import HookKit
+from unimem.memory_journal import Journal
 
 
 def _result(capsys):
@@ -28,8 +28,8 @@ def _up(root, *args):
 
 
 def test_fresh_project_rule_is_review_only_then_approved_and_injected_offline(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("COMMONTRACE_OFFLINE", "1")
-    monkeypatch.setenv("COMMONTRACE_FACT_EMBEDDER", "none")
+    monkeypatch.setenv("UNIMEM_OFFLINE", "1")
+    monkeypatch.setenv("UNIMEM_FACT_EMBEDDER", "none")
     source = tmp_path / "my-project-rule.md"
     body = "Run pytest before changing parser boundaries.\n"
     source.write_text(body)
@@ -83,7 +83,7 @@ def test_fresh_project_rule_is_review_only_then_approved_and_injected_offline(tm
     assert not reply["dense_available"]
     # Exercise the generated native SessionStart command and receipt transport too.
     broker = subprocess.Popen(
-        [sys.executable, "-m", "commontrace.hook_service", "--dest", str(root)],
+        [sys.executable, "-m", "unimem.hook_service", "--dest", str(root)],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     try:

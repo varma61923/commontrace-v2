@@ -7,9 +7,9 @@ from typing import Any
 
 import pytest
 
-from commontrace import frontmatter, jobs, paths, trace_io
-from commontrace.cli import main
-from commontrace.distillation_worker import distill_job
+from unimem import frontmatter, jobs, paths, trace_io
+from unimem.cli import main
+from unimem.distillation_worker import distill_job
 
 
 @pytest.mark.parametrize("payload", [

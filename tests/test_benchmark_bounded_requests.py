@@ -10,7 +10,7 @@ import pytest
 from benchmarks.cache import BenchmarkCache, CostGuard
 from benchmarks.conversation_bench import grade_answer
 from benchmarks.requests import bounded_complete
-from commontrace import llm
+from unimem import llm
 
 
 @pytest.fixture

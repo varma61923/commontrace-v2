@@ -112,12 +112,12 @@ class TestAbsentUnlessConfigured:
 
 class TestTheSessionCannotBeForged:
     async def test_a_valid_session_round_trips(self):
-        token = console.issue_session(SECRET, "org-1", "ct_live_ab")
+        token = console.issue_session(SECRET, "org-1", "unimem_live_ab")
         claims = console.read_session(SECRET, token)
-        assert claims and claims["org"] == "org-1" and claims["key"] == "ct_live_ab"
+        assert claims and claims["org"] == "org-1" and claims["key"] == "unimem_live_ab"
 
     async def test_a_different_secret_is_rejected(self):
-        token = console.issue_session("attacker-guess", "org-1", "ct_live_ab")
+        token = console.issue_session("attacker-guess", "org-1", "unimem_live_ab")
         assert console.read_session(SECRET, token) is None
 
     @pytest.mark.parametrize("mangle", [
@@ -129,14 +129,14 @@ class TestTheSessionCannotBeForged:
         lambda t: "not-a-token",
     ])
     async def test_a_mangled_token_is_rejected(self, mangle):
-        token = console.issue_session(SECRET, "org-1", "ct_live_ab")
+        token = console.issue_session(SECRET, "org-1", "unimem_live_ab")
         assert console.read_session(SECRET, mangle(token)) is None
 
     async def test_the_org_id_cannot_be_edited_by_its_holder(self):
         import base64
         import json
 
-        token = console.issue_session(SECRET, "org-mine", "ct_live_ab")
+        token = console.issue_session(SECRET, "org-mine", "unimem_live_ab")
         body, _, signature = token.partition(".")
         claims = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
         claims["org"] = "org-theirs"
@@ -150,7 +150,7 @@ class TestTheSessionCannotBeForged:
         assert console.read_session(SECRET, console.issue_session(SECRET, "o", "k")) is None
 
     async def test_the_api_key_is_not_in_the_token(self):
-        raw_key = "ct_live_SUPERSECRETVALUE1234567890"
+        raw_key = "unimem_live_SUPERSECRETVALUE1234567890"
         token = console.issue_session(SECRET, "org-1", raw_key[:10])
         assert "SUPERSECRETVALUE" not in token
         import base64
@@ -177,7 +177,7 @@ class TestSignIn:
 
     async def test_an_unknown_key_is_refused(self, session_factory):
         async with _client(_app(session_factory=session_factory)) as client:
-            response = await _signed_in(client, "ct_live_nope")
+            response = await _signed_in(client, "unimem_live_nope")
             assert response.status_code == 200
             assert "not accepted" in response.text
             assert console.SESSION_COOKIE not in client.cookies
@@ -188,7 +188,7 @@ class TestSignIn:
 
         async with _client(_app(session_factory=session_factory)) as client:
             revoked = await _signed_in(client, raw_key)
-            unknown = await _signed_in(client, "ct_live_nope")
+            unknown = await _signed_in(client, "unimem_live_nope")
         assert "not accepted" in revoked.text
         assert revoked.text == unknown.text
 
@@ -265,7 +265,7 @@ class TestSignIn:
         async with _client(app) as client:
             texts = [
                 (await client.post(
-                    f"{console.CONSOLE_PATH}/signin", data={"api_key": "ct_live_nope"},
+                    f"{console.CONSOLE_PATH}/signin", data={"api_key": "unimem_live_nope"},
                     headers={"X-Forwarded-For": f"2001:db8:1:2::{i:x}"},
                 )).text
                 for i in range(1, 21)
@@ -276,7 +276,7 @@ class TestSignIn:
         app = Starlette()
         console.add_console_routes(app, session_factory, console_secret=SECRET)
         async with _client(app) as client:
-            texts = [(await _signed_in(client, "ct_live_nope")).text for _ in range(20)]
+            texts = [(await _signed_in(client, "unimem_live_nope")).text for _ in range(20)]
         assert any("Too many attempts" in t for t in texts)
 
 
@@ -729,7 +729,7 @@ class TestShareTokensAreDistinctFromSessions:
         assert console.read_share_token(SECRET, token) is None
 
     async def test_a_session_token_is_not_a_valid_share_token(self):
-        session_token = console.issue_session(SECRET, "org-1", "ct_live_ab")
+        session_token = console.issue_session(SECRET, "org-1", "unimem_live_ab")
         assert console.read_share_token(SECRET, session_token) is None
 
     async def test_a_share_token_is_not_a_valid_session(self):
@@ -830,7 +830,7 @@ class TestProofSharing:
         self, session_factory, org_and_key
     ):
         org_id, _raw_key = org_and_key
-        session_token = console.issue_session(SECRET, org_id, "ct_live_ab")
+        session_token = console.issue_session(SECRET, org_id, "unimem_live_ab")
         async with _client(_app(session_factory=session_factory)) as client:
             response = await client.get(
                 f"{console.CONSOLE_PATH}/proof/shared/{session_token}"
@@ -1319,7 +1319,7 @@ class TestApiKeyManagement:
                 data={"scopes": ["read", "write"], "expires_days": "30"},
             )
         assert "shown once" in response.text
-        assert "ct_" in response.text
+        assert "unimem_" in response.text
 
     async def test_an_issued_keys_scopes_persist(self, session_factory, org_and_key):
         org_id, raw_key = org_and_key
@@ -1571,7 +1571,7 @@ class TestUsageReportFromTheConsole:
         org_id, raw_key = org_and_key
         async with session_scope(session_factory) as session:
             await events_module.add_endpoint(
-                session, org_id, "https://example.invalid/hooks/commontrace",
+                session, org_id, "https://example.invalid/hooks/unimem",
                 signing_key="test-signing-key",
             )
         async with _client(_app(session_factory=session_factory)) as client:
@@ -1615,7 +1615,7 @@ class TestWebhookManagement:
             await _signed_in(client, raw_key)
             response = await client.post(
                 f"{console.CONSOLE_PATH}/webhooks/create",
-                data={"url": "https://example.invalid/hooks/commontrace"},
+                data={"url": "https://example.invalid/hooks/unimem"},
             )
         assert "shown once" in response.text
         assert "example.invalid" in response.text
@@ -1628,7 +1628,7 @@ class TestWebhookManagement:
             await _signed_in(client, raw_key)
             response = await client.post(
                 f"{console.CONSOLE_PATH}/webhooks/create",
-                data={"url": "https://example.invalid/hooks/commontrace"},
+                data={"url": "https://example.invalid/hooks/unimem"},
             )
         assert response.status_code == 200
         assert "no HUB_LEDGER_SIGNING_KEY" in response.text
@@ -1640,7 +1640,7 @@ class TestWebhookManagement:
             await client.post(
                 f"{console.CONSOLE_PATH}/webhooks/create",
                 data={
-                    "url": "https://example.invalid/hooks/commontrace",
+                    "url": "https://example.invalid/hooks/unimem",
                     "events": ["trace.quarantined", "experiment.verdict"],
                 },
             )
@@ -1771,9 +1771,9 @@ class TestAuditLogPage:
         org_id, raw_key = org_and_key
         async with session_scope(session_factory) as session:
             await audit_module.record(
-                session, actor="api-key:ct_test", action="issue_key",
+                session, actor="api-key:unimem_test", action="issue_key",
                 org_id=org_id, target_type="api_key", target_id="abc123",
-                summary="prefix=ct_test scopes=read",
+                summary="prefix=unimem_test scopes=read",
             )
         async with _client(_app(session_factory=session_factory)) as client:
             await _signed_in(client, raw_key)
@@ -1790,7 +1790,7 @@ class TestAuditLogPage:
         other_org_id, _other_raw_key = other_org_and_key
         async with session_scope(session_factory) as session:
             await audit_module.record(
-                session, actor="api-key:ct_other", action="revoke_key",
+                session, actor="api-key:unimem_other", action="revoke_key",
                 org_id=other_org_id, target_type="api_key", target_id="xyz789",
             )
         async with _client(_app(session_factory=session_factory)) as client:
@@ -1804,7 +1804,7 @@ class TestAuditLogPage:
         org_id, raw_key = org_and_readonly_key
         async with session_scope(session_factory) as session:
             await audit_module.record(
-                session, actor="api-key:ct_ro", action="issue_key",
+                session, actor="api-key:unimem_ro", action="issue_key",
                 org_id=org_id, target_type="api_key", target_id="ro123",
             )
         async with _client(_app(session_factory=session_factory)) as client:
@@ -1831,7 +1831,7 @@ class TestAuditLogPage:
         async with session_scope(session_factory) as session:
             for i in range(55):
                 await audit_module.record(
-                    session, actor="api-key:ct_test", action="issue_key",
+                    session, actor="api-key:unimem_test", action="issue_key",
                     org_id=org_id, target_type="api_key", target_id=f"k{i}",
                 )
         async with _client(_app(session_factory=session_factory)) as client:
@@ -2340,7 +2340,7 @@ class TestTheDoubleSubmitGuardDoesNotBreakForms:
         async with _client(_app(session_factory=session_factory)) as client:
             await _signed_in(client, raw_key)
             response = await client.get(f"{console.CONSOLE_PATH}/kb")
-        assert "ctSubmitting" in response.text, "the guard should be present at all"
+        assert "unimemSubmitting" in response.text, "the guard should be present at all"
         assert "disabled=true" not in response.text.replace(" ", "")
 
     async def test_the_vote_form_keeps_its_action_in_the_button(
@@ -2680,12 +2680,13 @@ class TestSessionIsPinnedToItsKey:
                     sa_update(ApiKey).where(ApiKey.org_id == org_id)
                     .values(revoked_at=datetime.now(timezone.utc))
                 )
-                # A different, live key of the same org that happens to share the 12-char prefix.
-                session.add(ApiKey(org_id=org_id, key_prefix=raw_key[:12], key_hash="x", scopes=["admin"]))
+                # A different, live key of the same org that happens to share the displayed prefix.
+                session.add(ApiKey(org_id=org_id, key_prefix=raw_key[:auth._PREFIX_LEN],
+                                   key_hash="x", scopes=["admin"]))
             assert (await client.get(console.CONSOLE_PATH)).status_code == 303
 
     async def test_a_non_ascii_cookie_signature_is_not_a_server_error(self):
-        token = console.issue_session(SECRET, "org-1", "ct_live_ab")
+        token = console.issue_session(SECRET, "org-1", "unimem_live_ab")
         body = token.partition(".")[0]
         assert console.read_session(SECRET, body + ".sïgnature") is None
         assert console.read_share_token(SECRET, body + ".sïgnature") is None

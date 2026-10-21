@@ -1,14 +1,15 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: commontrace-hub-config
+  name: unimem-hub-config
   labels:
-    app: commontrace-hub
+    app: unimem-hub
 data:
   HUB_HOST: "0.0.0.0"
   HUB_PORT: "8420"
   HUB_LOG_LEVEL: "INFO"
   HUB_REQUIRE_RLS: "true"
+  HUB_REQUIRE_API_KEY_PEPPER: "true"
 
   HUB_ALLOW_INSECURE_HTTP: "true"
 

@@ -5,8 +5,8 @@ import sys
 
 import pytest
 
-from commontrace import entities, graph, ontology
 from tests.conftest import write_lesson
+from unimem import entities, graph, ontology
 
 
 @pytest.fixture
@@ -105,7 +105,7 @@ def test_duplicates_and_merge(store):
 
 def test_cli(store):
     def ct(*args):
-        return subprocess.run([sys.executable, "-m", "commontrace.cli", "graph", *args, "--dest", store],  # nosec
+        return subprocess.run([sys.executable, "-m", "unimem.cli", "graph", *args, "--dest", store],  # nosec
                               capture_output=True, text=True, check=False)
     out = ct("extract", "Redis threw TimeoutError", "--spacy", "off")
     assert "service:redis" in out.stdout and "error:timeouterror" in out.stdout

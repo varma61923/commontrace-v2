@@ -10,7 +10,7 @@ import random
 
 import pytest
 
-from commontrace import retrieval as r
+from unimem import retrieval as r
 
 
 def _reference(task, lessons, *, scorer, top_k=17, floor=0.0,

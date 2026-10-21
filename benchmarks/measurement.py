@@ -12,7 +12,7 @@ import os
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
-from commontrace.conversation.store import Store, Turn
+from unimem.conversation.store import Store, Turn
 
 SCHEMA_VERSION = 1
 _ADAPTER_NAMES = frozenset({
@@ -72,7 +72,7 @@ def product_digest(root: str) -> str:
     """Bind run evidence to the complete Python product, not a mutable branch name."""
     digest = hashlib.sha256()
     files: list[str] = []
-    base = os.path.join(root, "commontrace")
+    base = os.path.join(root, "unimem")
     for directory, dirs, names in os.walk(base):
         dirs[:] = sorted(d for d in dirs if d != "__pycache__")
         files.extend(os.path.join(directory, name) for name in names if name.endswith(".py"))

@@ -4,7 +4,7 @@ import random
 
 import pytest
 
-from commontrace import experiment
+from unimem import experiment
 
 
 def _run(seed: int, sequential: bool, lift: float, max_n: int = 1000,

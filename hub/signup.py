@@ -13,7 +13,7 @@ from hub.db import session_scope
 from hub.models import Organization
 from hub.ui_kit import THEME_SCRIPT
 
-logger = logging.getLogger("commontrace.hub.signup")
+logger = logging.getLogger("unimem.hub.signup")
 
 SIGNUP_PATH = "/signup"
 ACTOR_SELF_SERVE_SIGNUP = "self-serve-signup"
@@ -40,7 +40,7 @@ _EXTRA_CSS = """
 
 _FORM = """
 <div class="signin">
-<h1>Create your CommonTrace account</h1>
+<h1>Create your UniMem account</h1>
 <p class="sub">Free plan: 1,000 traces, 5 agents, 20 Knowledge Base queries/month. No credit
 card. Your API key is shown once on the next page, so keep this tab open until you copy it.</p>
 {error}
@@ -63,7 +63,7 @@ access to this organization's memory.</p>
 {key_field}</div>
 <p class="sub">Organization id: <span class="rev">{org_id}</span></p>
 <p><a href="{console_path}/signin">Sign in to the console →</a>, or use this key directly with
-the <code>commontrace</code> CLI / an MCP client.</p>
+the <code>unimem</code> CLI / an MCP client.</p>
 </div>
 """
 
@@ -72,8 +72,8 @@ def _page(title: str, body: str) -> HTMLResponse:
     return HTMLResponse(
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        f"<title>{h(title)} · CommonTrace</title>{THEME_SCRIPT}<style>{_CSS}{_EXTRA_CSS}</style></head><body>"
-        '<header class="bar"><div class="in"><b>CommonTrace</b></div></header>'
+        f"<title>{h(title)} · UniMem</title>{THEME_SCRIPT}<style>{_CSS}{_EXTRA_CSS}</style></head><body>"
+        '<header class="bar"><div class="in"><b>UniMem</b></div></header>'
         f"<main>{body}</main>{_FORM_GUARD_SCRIPT}</body></html>",
         headers=html_headers(THEME_SCRIPT, _FORM_GUARD_SCRIPT),
     )

@@ -5,8 +5,8 @@ import random
 
 import pytest
 
-from commontrace import experiment, functions, holdout_io, proof, retrieval_io
-from commontrace.cli import main
+from unimem import experiment, functions, holdout_io, proof, retrieval_io
+from unimem.cli import main
 
 KEY = b"0123456789abcdef-test-signing-key"
 
@@ -260,7 +260,7 @@ def test_inflating_the_money_on_a_ledger_line_is_caught(package):
 
 def test_replacing_the_whole_ledger_with_a_consistent_forgery_is_caught_by_the_signature_or_the_data(package):
     out, _ = package
-    from commontrace import value
+    from unimem import value
 
     def forge(d):
         entries, previous = [], value._LEDGER_GENESIS
@@ -293,7 +293,7 @@ def test_swapping_the_registered_design_is_caught(package):
 
 def test_changing_the_digest_to_match_edited_data_breaks_the_signature(package):
     out, _ = package
-    from commontrace import raw_export
+    from unimem import raw_export
     path = os.path.join(out, "assignments.csv")
     rows = list(csv.reader(open(path, encoding="utf-8")))
     rows[3][3] = "true" if rows[3][3] == "false" else "false"

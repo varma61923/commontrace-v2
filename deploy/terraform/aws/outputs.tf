@@ -18,5 +18,5 @@ output "latest_restorable_time" {
 
 output "hub_database_url_hint" {
   description = "The shape of HUB_DATABASE_URL; use the least-privileged hub role, not the owner."
-  value       = "postgresql+asyncpg://<hub_app_role>:<password>@${aws_db_instance.this.address}:5432/commontrace_hub?ssl=require"
+  value       = "postgresql+asyncpg://<hub_app_role>:<password>@${aws_db_instance.this.address}:5432/unimem_hub?ssl=require"
 }

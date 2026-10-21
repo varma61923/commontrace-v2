@@ -4,7 +4,7 @@ import datetime
 
 import pytest
 
-from commontrace import integrity, prereg, raw_export, value
+from unimem import integrity, prereg, raw_export, value
 
 
 def _registration(**overrides) -> prereg.Preregistration:
@@ -214,7 +214,7 @@ class TestTheRawExport:
 class TestAnchoringTheInvoiceToTheEvidence:
     @staticmethod
     def _ledger():
-        from commontrace import experiment
+        from unimem import experiment
 
         effects = [experiment.CausalEffect(
             lesson_slug="a", n_injected=200, n_withheld=200, rate_injected=0.8,

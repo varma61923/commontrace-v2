@@ -5,8 +5,8 @@ import os
 
 import pytest
 
-from commontrace import frontmatter, gateway, holdout_io, paths, templates, workbench
-from commontrace.cli import main
+from unimem import frontmatter, gateway, holdout_io, paths, templates, workbench
+from unimem.cli import main
 
 TOKEN = "t" * 40
 AUTH = {"Authorization": f"Bearer {TOKEN}", "Host": "localhost:8787"}
@@ -114,7 +114,7 @@ def test_active_index_cache_invalidates_on_write(root):
 
 
 def test_stdio_http_parity_for_added_ops(root, monkeypatch):
-    monkeypatch.setenv("COMMONTRACE_CONVERSATION_EMBEDDER", "none")
+    monkeypatch.setenv("UNIMEM_CONVERSATION_EMBEDDER", "none")
     _lesson(root, "lesson_parity")
     gw = gateway.Gateway(root, token=TOKEN, allow_approval=True)
 

@@ -5,10 +5,10 @@ import sys
 
 import pytest
 
-from commontrace import holdout_io, injection_guard, mcp_server, paths
 from tests.test_mcp_server import REPO_ROOT, _curate, call, cli
+from unimem import holdout_io, injection_guard, mcp_server, paths
 
-pytest.importorskip("mcp", reason="the MCP surface needs: pip install 'commontrace[serve]'")
+pytest.importorskip("mcp", reason="the MCP surface needs: pip install 'unimem[serve]'")
 
 
 @pytest.fixture
@@ -77,7 +77,7 @@ def test_cli_query_quarantines_the_same_lesson(server, store):
     slug = _curate(server)
     _tamper(store, slug)
     result = subprocess.run(
-        [sys.executable, "-m", "commontrace.cli", "query", "password reset email never arrived",
+        [sys.executable, "-m", "unimem.cli", "query", "password reset email never arrived",
          "--dest", store],
         capture_output=True, text=True, cwd=REPO_ROOT, check=False,
     )
@@ -97,7 +97,7 @@ CORPUS = [
 
 @pytest.mark.parametrize("text", CORPUS)
 def test_scan_injection_matches_the_injection_findings_of_the_full_scan(text):
-    from commontrace import memory_guard
+    from unimem import memory_guard
 
     full = [(f.label, f.start, f.end) for f in memory_guard.scan_text(text)
             if f.category == memory_guard.CATEGORY_INJECTION]
@@ -107,7 +107,7 @@ def test_scan_injection_matches_the_injection_findings_of_the_full_scan(text):
 
 @pytest.mark.parametrize("text", CORPUS)
 def test_labels_are_the_same_with_and_without_the_cache(text):
-    from commontrace import memory_guard
+    from unimem import memory_guard
 
     expected = []
     for f in memory_guard.scan_text(text):

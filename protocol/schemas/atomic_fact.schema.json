@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://commontrace.dev/schemas/atomic_fact.schema.json",
-  "title": "CommonTrace Atomic Fact",
+  "$id": "https://unimem.dev/schemas/atomic_fact.schema.json",
+  "title": "UniMem Atomic Fact",
   "description": "A distilled, declarative atomic proposition of truth with bitemporal validity and scoped routing.",
   "type": "object",
   "required": [

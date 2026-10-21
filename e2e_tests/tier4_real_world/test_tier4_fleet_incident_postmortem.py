@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import os
 
-from commontrace import frontmatter
 from e2e_tests.harness.cli_runner import run_cli
+from unimem import frontmatter
 
 
 def test_t4_fleet_incident_postmortem_to_governance_loop(isolated_store: str):

@@ -1,6 +1,6 @@
 # Governed compilation
 
-Install `commontrace[compile]` and supply a `Trainer` plugin for real open-weight
+Install `unimem[compile]` and supply a `Trainer` plugin for real open-weight
 training. Targets are LoRA, trained KV prefixes and atomic fact edits. The core
 CPU reference trainer emits deterministic token-count metadata solely to test
 governance; it does not claim to implement production LoRA, Cartridge or

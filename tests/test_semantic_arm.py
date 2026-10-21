@@ -10,8 +10,8 @@ import pytest
 np = pytest.importorskip("numpy")
 pytest.importorskip("sentence_transformers")
 
-from commontrace import paths, semantic_arm  # noqa: E402
-from commontrace.commands.query_cmd import _slugs_from_semantic_output  # noqa: E402
+from unimem import paths, semantic_arm  # noqa: E402
+from unimem.commands.query_cmd import _slugs_from_semantic_output  # noqa: E402
 
 VOCAB = ["retry", "upload", "deploy", "kubernetes", "password", "refund"]
 
@@ -163,7 +163,7 @@ def _add_lesson(root, slug, desc, importance=3):
 
 
 def test_a_stale_index_is_refreshed_before_ranking(tmp_path, wide_arm):
-    from commontrace.commands.query_cmd import _index_is_unusable
+    from unimem.commands.query_cmd import _index_is_unusable
 
     root = str(tmp_path / "store")
     os.makedirs(paths.lessons_dir(root))
@@ -185,7 +185,7 @@ def test_a_stale_index_is_refreshed_before_ranking(tmp_path, wide_arm):
 
 
 def test_the_cli_refreshes_a_stale_index_and_falls_back_only_if_that_fails(tmp_path, monkeypatch):
-    from commontrace.commands import query_cmd
+    from unimem.commands import query_cmd
 
     state = {"stale": "lesson_x.md changed after the index was last built", "calls": 0}
     monkeypatch.setattr(query_cmd, "_index_is_unusable", lambda root: state["stale"])
@@ -306,7 +306,7 @@ def test_an_empty_index_pins_no_model_but_the_log_does(tmp_path):
 
 
 def test_the_cli_reads_the_ranking_model_from_the_brief():
-    from commontrace.commands.query_cmd import _semantic_model_from_output
+    from unimem.commands.query_cmd import _semantic_model_from_output
 
     brief = "# Top-3 retrieval (+ importance>=4 override)\n# Index: 5 lessons, model=%s\n" % ARCTIC
     assert _semantic_model_from_output(brief) == ARCTIC

@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>UniMem console</title>
+  <link rel="icon" href="/ui/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/ui/tokens.css">
+  <link rel="stylesheet" href="/ui/app.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="bar">
+    <div class="brand"><img src="/ui/favicon.svg" alt="" width="28" height="28"><span>UniMem</span><small>memory control plane</small></div>
+    <span id="env" class="chip" hidden></span>
+    <span id="tier" class="chip tier-chip" hidden></span>
+    <span class="spacer"></span>
+    <button id="command-launch" class="command-launch" type="button" title="Open command center (⌘K)"><kbd>⌘K</kbd><span>Command center</span></button>
+    <p id="conn" class="conn" role="status" aria-live="polite">Connecting…</p>
+    <button id="disconnect" class="btn secondary" type="button" hidden>Disconnect</button>
+    <label class="theme"><span class="sr">Theme</span>
+      <select id="theme" aria-label="Theme">
+        <option value="system">System</option>
+        <option value="light">Light</option>
+        <option value="dark">Dark</option>
+      </select>
+    </label>
+  </header>
+  <div class="console-shell">
+    <aside class="console-sidebar">
+      <p class="nav-label">WORKSPACE</p>
+      <nav class="tabs" aria-label="Console sections" id="nav"></nav>
+      <div class="sidebar-note"><span class="status-dot" aria-hidden="true"></span><span>Local memory workspace</span></div>
+    </aside>
+    <main id="main" tabindex="-1"></main>
+  </div>
+  <script src="/ui/app.js"></script>
+</body>
+</html>

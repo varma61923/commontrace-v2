@@ -141,11 +141,11 @@ def write_report(development: Path, confirmation: Path, output: Path) -> None:
                         + "</section>")
     markup = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CommonTrace local retrieval diagnostics</title><style>
+<title>UniMem local retrieval diagnostics</title><style>
 body{font:16px system-ui;margin:4vw;color:#17232a;background:#fafbf7}p{max-width:90ch;line-height:1.6}
 section{margin-top:3rem}table{border-collapse:collapse;display:block;overflow:auto}
 th,td{padding:12px;border-bottom:1px solid #ccd6cf;text-align:left}a{color:#12683d}
-</style></head><body><h1>CommonTrace retrieval diagnostics</h1>
+</style></head><body><h1>UniMem retrieval diagnostics</h1>
 <p>Offline subsets, with reader and judge inference disabled. Source-turn coverage can credit an excerpt
 without its answer-bearing span. It is not answer accuracy, task success or demonstrated causal value.
 Local Mem0 raw and Graphiti episodic profiles omit LLM extraction and managed/cloud behavior.</p>

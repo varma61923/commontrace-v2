@@ -40,12 +40,12 @@ class TestDisabledByDefault:
 class TestRoundTrip:
     def test_encrypt_then_decrypt_recovers_the_plaintext(self):
         cipher = EnvelopeCipher.from_config(generate_key(), "")
-        plaintext = "https://example.invalid/hooks/commontrace?token=s3cr3t"
+        plaintext = "https://example.invalid/hooks/unimem?token=s3cr3t"
         assert cipher.decrypt(cipher.encrypt(plaintext)) == plaintext
 
     def test_ciphertext_does_not_contain_the_plaintext(self):
         cipher = EnvelopeCipher.from_config(generate_key(), "")
-        plaintext = "https://example.invalid/hooks/commontrace?token=s3cr3t"
+        plaintext = "https://example.invalid/hooks/unimem?token=s3cr3t"
         envelope = cipher.encrypt(plaintext)
         assert plaintext not in envelope
         assert "s3cr3t" not in envelope

@@ -1,9 +1,9 @@
 import json
 import os
 
-from commontrace import paths
-from commontrace.cli import main
-from commontrace.commands import capture_cmd
+from unimem import paths
+from unimem.cli import main
+from unimem.commands import capture_cmd
 
 
 def _capture(dest, title, occasion_id, context="c", solution="s", extra=()):
@@ -92,7 +92,7 @@ class TestNoCaptureIsLost:
         for occ in ids:
             assert _capture(tmp_path, "Sensor jitter", occ, extra=["--resolved"]) == 0
 
-        from commontrace.commands import experiment_cmd
+        from unimem.commands import experiment_cmd
         outcomes = experiment_cmd._outcomes_by_occasion(str(tmp_path))
         for occ in ids:
             assert outcomes.get(occ) is True, f"{occ} cannot be joined to its arm"

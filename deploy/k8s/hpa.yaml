@@ -1,14 +1,14 @@
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: commontrace-hub
+  name: unimem-hub
   labels:
-    app: commontrace-hub
+    app: unimem-hub
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: commontrace-hub
+    name: unimem-hub
   minReplicas: 1
   maxReplicas: 3
   metrics:

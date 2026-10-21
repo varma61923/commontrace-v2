@@ -7,13 +7,13 @@ import math
 
 import pytest
 
-from commontrace import fact_store, graph, hierarchical, multihop, query_expansion, search_recipes, triplet_search
-from commontrace.client import MemoryClient
+from unimem import fact_store, graph, hierarchical, multihop, query_expansion, search_recipes, triplet_search
+from unimem.client import MemoryClient
 
 
 @pytest.fixture(params=["jsonl", "sqlite"])
 def root(tmp_path, request):
-    (tmp_path / "commontrace.yaml").write_text(
+    (tmp_path / "unimem.yaml").write_text(
         "profiles:\n  local:\n    embedding: none\n    reranker: none\n"
     )
     if request.param == "sqlite":
@@ -356,7 +356,7 @@ class TestQueryExpansion:
 
     def test_hyde_without_a_model_falls_back_to_feedback_expansion(self, root, monkeypatch):
         add(root, "Dana owns the billing service.")
-        monkeypatch.delenv("COMMONTRACE_LLM_PROVIDER", raising=False)
+        monkeypatch.delenv("UNIMEM_LLM_PROVIDER", raising=False)
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         explain = {}
         rows = MemoryClient(root).search("billing", retriever="hyde", reranker="none", explain=explain)
@@ -456,7 +456,7 @@ class TestSurfaces:
 
     def test_mcp_memory_reason_and_triplet_search(self, root):
         pytest.importorskip("mcp")
-        from commontrace import mcp_server
+        from unimem import mcp_server
 
         facts = corpus(root, scopes=["agent:reader"])
         graph.add_node(root, "person:dana", "person", "Dana")
@@ -477,7 +477,7 @@ class TestSurfaces:
         assert triplets["ok"] and triplets["triplets"][0]["relation"] == "works_at"
 
     def test_the_cli_reason_and_triplets_commands(self, root, capsys):
-        from commontrace.cli import main
+        from unimem.cli import main
 
         corpus(root)
         assert main(["evolve", "reason", QUESTION, "--dest", root]) == 0

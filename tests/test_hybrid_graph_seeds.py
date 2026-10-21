@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 
-from commontrace import fact_store, hierarchical, memory_authority, paths, search_recipes
+from unimem import fact_store, hierarchical, memory_authority, paths, search_recipes
 
 
 class Neighbors:
@@ -57,7 +57,7 @@ def test_rejected_action_candidate_cannot_seed_a_graph_hit(tmp_path):
 def test_dense_and_sparse_seeds_are_deduplicated_and_capped(tmp_path, monkeypatch):
     root = str(tmp_path)
     fact_store.migrate(root)
-    monkeypatch.setenv("COMMONTRACE_FACT_DEDUP", "exact")
+    monkeypatch.setenv("UNIMEM_FACT_DEDUP", "exact")
     facts = [hierarchical.add_fact(root, "parser grammar component " + str(index))[0]
              for index in range(12)]
     backend = Neighbors({})

@@ -3,7 +3,7 @@
 
 All npm caches, package builds, the gateway store, and the consumer install live in
 a TemporaryDirectory. The SDK tarball is local; this does not test a registry
-publication or a published ``npm install @commontrace/...`` flow.
+publication or a published ``npm install @unimem/...`` flow.
 """
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ def run_step(
 def start_gateway(store: Path, env: dict[str, str]) -> tuple[subprocess.Popen[str], str, float]:
     started = time.perf_counter()
     process = subprocess.Popen(
-        [sys.executable, "-u", "-m", "commontrace", "gateway", "--dest", str(store),
+        [sys.executable, "-u", "-m", "unimem", "gateway", "--dest", str(store),
          "--token", TOKEN, "--host", "127.0.0.1", "--port", "0"],
         cwd=ROOT,
         env=env,
@@ -96,9 +96,9 @@ def main() -> int:
     total_started = time.perf_counter()
     durations: dict[str, float] = {}
     env = os.environ.copy()
-    env["COMMONTRACE_OFFLINE"] = "1"
+    env["UNIMEM_OFFLINE"] = "1"
 
-    with tempfile.TemporaryDirectory(prefix="commontrace-ts-first-recall-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="unimem-ts-first-recall-") as temporary:
         scratch = Path(temporary)
         sdk_cache = scratch / "sdk-npm-cache"
         consumer_cache = scratch / "consumer-npm-cache"
@@ -124,7 +124,7 @@ def main() -> int:
 
         consumer.mkdir()
         (consumer / "package.json").write_text(
-            json.dumps({"name": "commontrace-local-first-recall", "private": True, "type": "module"}) + "\n",
+            json.dumps({"name": "unimem-local-first-recall", "private": True, "type": "module"}) + "\n",
             encoding="utf-8",
         )
 
@@ -136,10 +136,10 @@ def main() -> int:
         )
 
         init_started = time.perf_counter()
-        run_step("temporary store init", [sys.executable, "-m", "commontrace", "init", "--dest", str(store)],
+        run_step("temporary store init", [sys.executable, "-m", "unimem", "init", "--dest", str(store)],
                  cwd=ROOT, env=env)
         run_step("disable holdout in disposable smoke store",
-                 [sys.executable, "-m", "commontrace", "experiment", "--dest", str(store),
+                 [sys.executable, "-m", "unimem", "experiment", "--dest", str(store),
                   "--configure", "--rate", "0", "--note", "deterministic local first-recall smoke"],
                  cwd=ROOT, env=env)
         durations["store_setup"] = time.perf_counter() - init_started
@@ -150,7 +150,7 @@ def main() -> int:
             smoke = consumer / "smoke.mjs"
             smoke.write_text(
                 "import assert from 'node:assert/strict';\n"
-                "import {MemoryClient} from '@commontrace/hub-client';\n"
+                "import {MemoryClient} from '@unimem/hub-client';\n"
                 "const [url, token] = process.argv.slice(2);\n"
                 f"const fact = {json.dumps(FACT)};\n"
                 f"const query = {json.dumps(QUERY)};\n"
@@ -192,7 +192,7 @@ def main() -> int:
             "installed a local npm pack tarball, not a registry-published package",
             "gateway ran locally on loopback with a disposable store and temporary token",
             "holdout was disabled only in the disposable smoke store for deterministic first recall",
-            "COMMONTRACE_OFFLINE=1; add used explicit local mode and reflect used local retrieval",
+            "UNIMEM_OFFLINE=1; add used explicit local mode and reflect used local retrieval",
         ],
     }, indent=2))
     return 0

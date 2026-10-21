@@ -4,8 +4,8 @@
 and carries a bounded structured explanation and scene description. Calibration
 is an empirical local estimate; it does not certify collision avoidance.
 
-1. Configure a local randomized experiment with `commontrace experiment`.
-2. Run `commontrace frontier recovery-register REQUEST.json --dest STORE` with
+1. Configure a local randomized experiment with `unimem experiment`.
+2. Run `unimem frontier recovery-register REQUEST.json --dest STORE` with
    `failure`, `recovery`, and `context` containing exactly `site`, `robot`,
    `embodiment`, and `environment` (`sim` or `real`). Optional `source_episodes`
    retain derivation links.

@@ -5,12 +5,12 @@ import time
 
 import pytest
 
-from commontrace import fact_embeddings, hierarchical
+from unimem import fact_embeddings, hierarchical
 
 
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch):
-    for name in ("COMMONTRACE_FACT_DEDUP", "COMMONTRACE_FACT_EMBEDDER", "COMMONTRACE_FACT_EMBEDDER_PATH"):
+    for name in ("UNIMEM_FACT_DEDUP", "UNIMEM_FACT_EMBEDDER", "UNIMEM_FACT_EMBEDDER_PATH"):
         monkeypatch.delenv(name, raising=False)
     fact_embeddings._VECTORS.clear()
     fact_embeddings._MODELS.clear()
@@ -41,13 +41,13 @@ def test_a_paraphrase_reinforces_instead_of_adding(tmp_path):
 
 
 def test_exact_mode_keeps_paraphrases_apart(tmp_path, monkeypatch):
-    monkeypatch.setenv("COMMONTRACE_FACT_DEDUP", "exact")
+    monkeypatch.setenv("UNIMEM_FACT_DEDUP", "exact")
     root = str(tmp_path)
     hierarchical.add_fact(root, "The office is located in Tokyo, Japan")
     _fact, action = hierarchical.add_fact(root, "Our office is located in Tokyo Japan")
     assert action == "ADD"
-    monkeypatch.setenv("COMMONTRACE_FACT_DEDUP", "fuzzy")
-    with pytest.raises(ValueError, match="COMMONTRACE_FACT_DEDUP"):
+    monkeypatch.setenv("UNIMEM_FACT_DEDUP", "fuzzy")
+    with pytest.raises(ValueError, match="UNIMEM_FACT_DEDUP"):
         hierarchical.add_fact(root, "anything at all here")
 
 
@@ -114,7 +114,7 @@ class _Topics:
 
 def test_semantic_mode_catches_rewordings_the_lexical_rule_misses(tmp_path, monkeypatch):
     model = _Topics()
-    monkeypatch.setenv("COMMONTRACE_FACT_DEDUP", "semantic")
+    monkeypatch.setenv("UNIMEM_FACT_DEDUP", "semantic")
     monkeypatch.setattr(fact_embeddings, "_resolve", lambda m, p: (model, ("tag", "fake-topics")))
     root = str(tmp_path)
     first, _ = hierarchical.add_fact(root, "Bob's company headquarters sit in Tokyo")
@@ -141,7 +141,7 @@ def test_fact_vectors_persist_across_processes(tmp_path, monkeypatch):
 
 
 def test_a_provider_tag_selects_the_embedder(tmp_path, monkeypatch):
-    from commontrace import embeddings
+    from unimem import embeddings
 
     class Fixed:
         def __init__(self, spec):
@@ -151,7 +151,7 @@ def test_a_provider_tag_selects_the_embedder(tmp_path, monkeypatch):
             return [[1.0, 0.0] if "tokyo" in t.lower() else [0.0, 1.0] for t in texts]
 
     monkeypatch.setattr(embeddings, "provider", lambda tag, post=None: Fixed(embeddings.parse(tag)))
-    monkeypatch.setenv("COMMONTRACE_FACT_EMBEDDER", "openai:text-embedding-3-small")
+    monkeypatch.setenv("UNIMEM_FACT_EMBEDDER", "openai:text-embedding-3-small")
     root = str(tmp_path)
     facts = [hierarchical.add_fact(root, s)[0] for s in ("Tokyo office opens at nine", "Cats sleep all day")]
     scores = fact_embeddings.scores("tokyo hours", facts, root=root)
@@ -160,7 +160,7 @@ def test_a_provider_tag_selects_the_embedder(tmp_path, monkeypatch):
 
 
 def test_recall_fuses_a_dense_arm_into_the_facts_channel(tmp_path, monkeypatch):
-    from commontrace import recall
+    from unimem import recall
 
     model = _Topics()
     monkeypatch.setattr(fact_embeddings, "_resolve", lambda m, p: (model, ("tag", "fake-topics")))
@@ -168,11 +168,11 @@ def test_recall_fuses_a_dense_arm_into_the_facts_channel(tmp_path, monkeypatch):
     tokyo, _ = hierarchical.add_fact(root, "Bob's company headquarters sit in Tokyo")
     hierarchical.add_fact(root, "The quarterly report is due on Friday")
     question = "where is the tokyo head office"
-    monkeypatch.setenv("COMMONTRACE_FACT_EMBEDDER", "none")
+    monkeypatch.setenv("UNIMEM_FACT_EMBEDDER", "none")
     lexical_only = recall.recall(root, question, channels=("facts",), embedder="none")
     assert all(i.id != f"fact:{tokyo.id}" or "dense_cosine" not in i.provenance["search"]
                for i in lexical_only.items)  # explicit opt-out preserves lexical-only behavior
-    monkeypatch.setenv("COMMONTRACE_FACT_EMBEDDER", "fake")
+    monkeypatch.setenv("UNIMEM_FACT_EMBEDDER", "fake")
     hybrid = recall.recall(root, question, channels=("facts",))
     top = hybrid.items[0]
     assert top.id == f"fact:{tokyo.id}" and top.provenance["search"]["dense_cosine"] > 0.9

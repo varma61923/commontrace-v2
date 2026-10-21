@@ -6,10 +6,10 @@ from datetime import timedelta
 
 import pytest
 
-from commontrace import capability_io, hierarchical, memory_authority, nextwave_store, person_io, purpose
-from commontrace import frontier_protocol as fp
 from tests import test_capability_io
 from tests.test_capabilities import NOW, policy
+from unimem import capability_io, hierarchical, memory_authority, nextwave_store, person_io, purpose
+from unimem import frontier_protocol as fp
 
 HEALTH = purpose.DPV+"ImproveHealthcare"
 SHOPPING = purpose.DPV+"ServiceProvision"
@@ -101,7 +101,7 @@ def test_expiry_blocks_reads_before_cleanup_and_missing_vault_stays_pending(tmp_
 
 def test_expiry_uses_actual_subject_vault_and_signed_erasure_certificate(tmp_path, monkeypatch):
     pytest.importorskip("cryptography")
-    from commontrace import certified_erasure
+    from unimem import certified_erasure
 
     root, fact = source(tmp_path/"store")
     receipt = enroll(root, [fact.id], vault_directory=str(tmp_path/"vault"))["receipt"]["record"]
@@ -163,8 +163,8 @@ def test_passport_requires_disclosure_consent_and_preserves_receipt(tmp_path):
 
 
 def test_gateway_recall_filters_even_supplied_items_by_exact_purpose(tmp_path):
-    from commontrace.gateway import Gateway
     from tests.test_gateway import call
+    from unimem.gateway import Gateway
 
     root, fact = source(tmp_path)
     enroll(root, [fact.id])
@@ -178,8 +178,8 @@ def test_gateway_recall_filters_even_supplied_items_by_exact_purpose(tmp_path):
 
 
 def test_native_records_and_capture_buffers_share_purpose_admission(tmp_path):
-    from commontrace.memory_journal import Journal
-    from commontrace.memory_record import MemoryRecord
+    from unimem.memory_journal import Journal
+    from unimem.memory_record import MemoryRecord
 
     root = str(tmp_path)
     journal = Journal(root)
@@ -196,7 +196,7 @@ def test_native_records_and_capture_buffers_share_purpose_admission(tmp_path):
 
 
 def test_expiry_emits_real_stream_erasure_and_requires_downstream_ack(tmp_path, monkeypatch):
-    from commontrace import change_stream
+    from unimem import change_stream
 
     root, fact = source(tmp_path)
     change_stream.subscribe(root, "downstream", context=["project:a"])
@@ -212,7 +212,7 @@ def test_expiry_emits_real_stream_erasure_and_requires_downstream_ack(tmp_path, 
 
 def test_read_consent_alone_never_grants_export_or_inference(tmp_path):
     pytest.importorskip("cryptography")
-    from commontrace import policy_io
+    from unimem import policy_io
 
     root, fact = source(tmp_path)
     enroll(root, [fact.id], processing=[purpose.DPV+"Retrieve", purpose.DPV+"Store"])
@@ -225,7 +225,7 @@ def test_read_consent_alone_never_grants_export_or_inference(tmp_path):
 
 def test_credentials_expire_with_consent_and_withdrawal_revokes_live_status(tmp_path):
     pytest.importorskip("cryptography")
-    from commontrace import credentials
+    from unimem import credentials
 
     root, fact = source(tmp_path)
     receipt = enroll(root, [fact.id])["receipt"]["record"]
@@ -241,9 +241,9 @@ def test_credentials_expire_with_consent_and_withdrawal_revokes_live_status(tmp_
 
 
 def test_scoped_owner_erasure_does_not_require_a_processing_purpose(tmp_path):
-    from commontrace import record_api
-    from commontrace.memory_journal import Journal
-    from commontrace.memory_record import MemoryRecord
+    from unimem import record_api
+    from unimem.memory_journal import Journal
+    from unimem.memory_record import MemoryRecord
 
     root = str(tmp_path)
     journal = Journal(root)
@@ -262,7 +262,7 @@ def test_scoped_owner_erasure_does_not_require_a_processing_purpose(tmp_path):
 
 
 def test_cli_enrollment_explanation_and_actual_mcp_owner_view(tmp_path, capsys):
-    from commontrace import cli
+    from unimem import cli
 
     root, fact = source(tmp_path)
     body = {"subject": "person", "identities": [fact.id], "purposes": [HEALTH], "controller": "Care provider",
@@ -274,8 +274,8 @@ def test_cli_enrollment_explanation_and_actual_mcp_owner_view(tmp_path, capsys):
                      "--dest", root]) == 0
     assert json.loads(capsys.readouterr().out)["memories"][0]["id"] == fact.id
     pytest.importorskip("mcp")
-    from commontrace import mcp_server
     from tests.test_mcp_server import call
+    from unimem import mcp_server
 
     server = mcp_server.build_server(root, allow_approval=False)
     result = call(server, "explain_memory_about_me", subject="person", context=["project:a"])
@@ -283,8 +283,8 @@ def test_cli_enrollment_explanation_and_actual_mcp_owner_view(tmp_path, capsys):
 
 
 def test_native_purpose_filter_precedes_ranking_and_result_limit(tmp_path):
-    from commontrace.memory_journal import Journal
-    from commontrace.memory_record import MemoryRecord
+    from unimem.memory_journal import Journal
+    from unimem.memory_record import MemoryRecord
 
     root = str(tmp_path)
     journal = Journal(root)
@@ -299,9 +299,9 @@ def test_native_purpose_filter_precedes_ranking_and_result_limit(tmp_path):
 def test_expiry_purges_native_sources_lessons_and_traces(tmp_path, monkeypatch):
     from pathlib import Path
 
-    from commontrace import lesson_io, paths, trace_io
-    from commontrace.memory_journal import Journal
-    from commontrace.memory_record import MemoryRecord
+    from unimem import lesson_io, paths, trace_io
+    from unimem.memory_journal import Journal
+    from unimem.memory_record import MemoryRecord
 
     root = str(tmp_path)
     journal = Journal(root)
@@ -324,8 +324,8 @@ def test_expiry_purges_native_sources_lessons_and_traces(tmp_path, monkeypatch):
 
 
 def test_gateway_capability_purpose_is_bound_to_headers_and_body(tmp_path):
-    from commontrace import capabilities, gateway
     from tests.test_capabilities import A_KEY
+    from unimem import capabilities, gateway
 
     root, _ = test_capability_io.prepare(tmp_path)
     fact = hierarchical.append_facts(root, [{"statement": "Private care limit.", "scopes": ["project:a"]}])[0][0]

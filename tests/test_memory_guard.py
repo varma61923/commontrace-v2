@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from commontrace import memory_guard as mg
+from unimem import memory_guard as mg
 
 
 def _categories(findings):
@@ -204,7 +204,7 @@ def _captured(root: str) -> str:
 
 
 def test_capture_stores_no_credential_anywhere_in_the_trace(tmp_path, capsys):
-    from commontrace.cli import main
+    from unimem.cli import main
 
     root = str(tmp_path / "s")
     assert main(["init", "--dest", root]) == 0
@@ -217,7 +217,7 @@ def test_capture_stores_no_credential_anywhere_in_the_trace(tmp_path, capsys):
 
 
 def test_import_stores_no_credential(tmp_path):
-    from commontrace.cli import main
+    from unimem.cli import main
 
     root = str(tmp_path / "s")
     assert main(["init", "--dest", root]) == 0
@@ -231,9 +231,9 @@ def test_import_stores_no_credential(tmp_path):
 
 def test_the_mcp_capture_tool_stores_no_credential(tmp_path):
     pytest.importorskip("mcp")
-    from commontrace import mcp_server
-    from commontrace.cli import main
     from tests.test_mcp_server import call
+    from unimem import mcp_server
+    from unimem.cli import main
 
     root = str(tmp_path / "s")
     assert main(["init", "--dest", root]) == 0
@@ -259,7 +259,7 @@ Rotated it.
 
 
 def _old_store(tmp_path):
-    from commontrace.cli import main
+    from unimem.cli import main
 
     root = str(tmp_path / "old")
     assert main(["init", "--dest", root]) == 0
@@ -269,8 +269,8 @@ def _old_store(tmp_path):
 
 
 def test_redact_cleans_a_store_that_predates_redaction(tmp_path, capsys):
-    from commontrace import frontmatter
-    from commontrace.cli import main
+    from unimem import frontmatter
+    from unimem.cli import main
 
     root, path = _old_store(tmp_path)
     assert main(["redact", "--dest", root, "--dry-run"]) == 0
@@ -292,7 +292,7 @@ def test_redact_cleans_a_store_that_predates_redaction(tmp_path, capsys):
 
 
 def test_doctor_warns_about_credentials_in_stored_traces(tmp_path, capsys):
-    from commontrace.cli import main
+    from unimem.cli import main
 
     root, _path = _old_store(tmp_path)
     main(["doctor", "--dest", root])

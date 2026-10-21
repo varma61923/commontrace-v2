@@ -18,7 +18,7 @@ Additional next-wave mappings are recorded here as their implementations ship.
 | A2A extension | UniMem `urn:unimem:handoff:v1` | Namespaced negotiated JSON claim shape | Vendor transport interoperability |
 
 See [skill foundry](skill-foundry.md) for artifact encoding and trust assumptions.
-The `commontrace` import path and executable remain stable; the product is UniMem.
+The `unimem` import path and executable remain stable; the product is UniMem.
 
 ## Optimizer serialization contracts
 

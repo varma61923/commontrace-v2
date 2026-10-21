@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from commontrace.conversation.store import ConversationError, Store
+from unimem.conversation.store import ConversationError, Store
 
 SECRET = "Bearer test-private-token-1234567890"
 
@@ -54,7 +54,7 @@ def test_ordinary_labels_and_refs_are_preserved(tmp_path: Path) -> None:
 
 
 def test_private_ref_retains_legacy_key_without_retaining_raw_value(tmp_path: Path) -> None:
-    from commontrace.conversation.store import _hash
+    from unimem.conversation.store import _hash
 
     with Store(str(tmp_path), "private") as store:
         store.add("session", [{"text": "Safe body", "id": SECRET}])
@@ -96,8 +96,8 @@ def test_real_http_ingress_scrubs_speaker_and_rolls_back_forged_label(tmp_path: 
 
 
 def test_native_framework_messages_use_shared_store_boundary(tmp_path: Path) -> None:
-    from commontrace.conversation import Options
-    from commontrace.frameworks import MemoryTools
+    from unimem.conversation import Options
+    from unimem.frameworks import MemoryTools
 
     bundle = MemoryTools(str(tmp_path), "private", "session",
                          options=Options(embedder="none", rerank=None, summaries=False))
@@ -118,7 +118,7 @@ def test_personal_routing_id_is_refused_without_rewriting(tmp_path: Path) -> Non
 
 @pytest.mark.parametrize("requested", ["contact@example.org", "CONTACT@EXAMPLE.ORG", "stored"])
 def test_private_speaker_filter_matches_original_casefolded_and_stored_labels(tmp_path: Path, requested: str) -> None:
-    from commontrace.conversation import Options, recall
+    from unimem.conversation import Options, recall
 
     with Store(str(tmp_path), "private") as store:
         store.add("session", [{"text": "The release codename is Kestrel.", "speaker": "contact@example.org"}])

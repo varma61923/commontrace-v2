@@ -5,10 +5,10 @@ from copy import deepcopy
 
 import pytest
 
-from commontrace import frontmatter, hierarchical, lesson_io, memory_authority, nextwave_store, paths, policy_io
-from commontrace.memory_journal import Journal
-from commontrace.memory_record import MemoryRecord
 from tests import test_policy_io
+from unimem import frontmatter, hierarchical, lesson_io, memory_authority, nextwave_store, paths, policy_io
+from unimem.memory_journal import Journal
+from unimem.memory_record import MemoryRecord
 
 clock = test_policy_io.clock
 configured_policy = test_policy_io.configured_policy
@@ -66,7 +66,7 @@ def test_lesson_artifact_and_policy_administration_have_separate_permissions(tmp
     lesson_io.write_lesson(path, {"status": "active", "scopes": ["project:a"]}, "Original instruction.", root=root)
     nextwave_store.put(root, "reports", "private", {"text": "Private artifact."}, scopes=["project:a"])
     activate(root, configured_policy())
-    from commontrace import lesson_admission
+    from unimem import lesson_admission
 
     fm, body = frontmatter.read(path)
     assert not lesson_admission.eligible(root, path, fm, body)
@@ -84,8 +84,8 @@ def test_lesson_artifact_and_policy_administration_have_separate_permissions(tmp
 
 
 def test_recall_and_export_actions_do_not_inherit_read_permission(tmp_path, clock):
-    from commontrace.commands.export_cmd import _lesson_rows
-    from commontrace.measure import CausalMemory
+    from unimem.commands.export_cmd import _lesson_rows
+    from unimem.measure import CausalMemory
 
     root = str(tmp_path)
     facts = hierarchical.append_facts(root, [{"statement": "Wrist calibration.", "scopes": []}])
@@ -112,7 +112,7 @@ def test_malformed_runtime_labels_fail_closed(tmp_path, clock):
 
 @pytest.mark.parametrize("indexed", [False, True])
 def test_direct_canonical_transaction_cannot_bypass_write_policy_or_block_owner_erasure(tmp_path, clock, indexed):
-    from commontrace import fact_store
+    from unimem import fact_store
 
     root = str(tmp_path)
     facts = hierarchical.append_facts(root, [{"statement": "Original governed instruction."}])
@@ -133,7 +133,7 @@ def test_direct_canonical_transaction_cannot_bypass_write_policy_or_block_owner_
 
 
 def test_read_denial_does_not_prevent_scoped_owner_runtime_erasure(tmp_path, clock):
-    from commontrace import record_api
+    from unimem import record_api
 
     root = str(tmp_path)
     journal = Journal(root)

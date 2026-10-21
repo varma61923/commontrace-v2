@@ -3,17 +3,17 @@ import os
 import pytest
 import yaml
 
-from commontrace import frontmatter, paths
-from commontrace.cli import main
-from commontrace.commands import dream_cmd
+from unimem import frontmatter, paths
+from unimem.cli import main
+from unimem.commands import dream_cmd
 
 REFUND = "customer confused about refund timeline contradictory docs"
 
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
-    monkeypatch.delenv("COMMONTRACE_ROOT", raising=False)
-    monkeypatch.delenv("COMMONTRACE_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("UNIMEM_ROOT", raising=False)
+    monkeypatch.delenv("UNIMEM_LLM_API_KEY", raising=False)
     monkeypatch.chdir(tmp_path)
     main(["init", "--agent-type", "support", "--dest", str(tmp_path)])
     for n in (1, 2, 3):
@@ -42,8 +42,8 @@ def test_without_a_model_it_reports_and_writes_no_lessons(store, capsys):
 def test_with_a_model_it_drafts_from_the_signal_and_everything_stays_in_review(store, monkeypatch, capsys):
     import json
 
-    from commontrace import llm
-    monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "k")
+    from unimem import llm
+    monkeypatch.setenv("UNIMEM_LLM_API_KEY", "k")
     monkeypatch.setattr(llm, "_call_anthropic", lambda cfg, prompt: (json.dumps({
         "rule": "Link the single refund policy page.", "applies_when": "A customer asks about refund timing.",
         "do_not_apply_when": "The refund was already issued.", "evidence": []}), {}))
@@ -54,8 +54,8 @@ def test_with_a_model_it_drafts_from_the_signal_and_everything_stays_in_review(s
 
 
 def test_no_draft_flag_never_calls_a_model_even_when_one_is_configured(store, monkeypatch):
-    from commontrace import llm
-    monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "k")
+    from unimem import llm
+    monkeypatch.setenv("UNIMEM_LLM_API_KEY", "k")
     monkeypatch.setattr(llm, "_call_anthropic", lambda *a: (_ for _ in ()).throw(AssertionError("called")))
     assert main(["dream", "--no-draft", "--dest", str(store)]) == 0
     assert _statuses(store) == {}
@@ -73,7 +73,7 @@ def test_each_recipe_names_the_command_and_installs_nothing(kind, capsys, tmp_pa
     before = set(os.listdir(tmp_path))
     assert main(["dream", "--recipe", kind, "--every", "daily", "--dest", "memory-root"]) == 0
     text = capsys.readouterr().out
-    assert "commontrace dream --dest memory-root" in text and set(os.listdir(tmp_path)) == before
+    assert "unimem dream --dest memory-root" in text and set(os.listdir(tmp_path)) == before
 
 
 def test_the_github_actions_recipe_is_valid_yaml_with_least_privilege():

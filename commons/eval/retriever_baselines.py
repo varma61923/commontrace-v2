@@ -1,12 +1,12 @@
 """The shipped lexical ranker against the standard reference retrievers, on both labelled corpora.
 
-Arms: the shipped ranker (commontrace/retrieval.py), textbook Okapi BM25 (k1=1.2, b=0.75), TF-IDF cosine,
+Arms: the shipped ranker (unimem/retrieval.py), textbook Okapi BM25 (k1=1.2, b=0.75), TF-IDF cosine,
 and, when `sentence-transformers` is installed, dense retrieval with the same local model the `attention`
-extra uses (commontrace/semantic.py) plus a stronger small one, each alone and fused with the shipped ranker
+extra uses (unimem/semantic.py) plus a stronger small one, each alone and fused with the shipped ranker
 by Reciprocal Rank Fusion. All arms see the same lesson text: name, description, applies_when and tags.
 
 Two corpora, reported separately because they answer different questions:
-- commontrace/fixtures/fields/ is the corpus the shipped scorer was tuned on, so it can only show a regression.
+- unimem/fixtures/fields/ is the corpus the shipped scorer was tuned on, so it can only show a regression.
 - commons/ (seed + probes-v1) was written independently with paraphrased queries: the fair comparison.
 
 Run: python commons/eval/retriever_baselines.py [--no-dense]
@@ -31,7 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import retrieval_tiers  # noqa: E402
 
-from commontrace import retrieval  # noqa: E402
+from unimem import retrieval  # noqa: E402
 
 DENSE_MODELS = ("sentence-transformers/all-MiniLM-L6-v2", "BAAI/bge-small-en-v1.5")
 _TOKEN = re.compile(r"[a-z0-9]+")
@@ -110,7 +110,7 @@ def _rrf(*lists: list[str], k: int = 60) -> list[str]:
 
 
 def _corpora():
-    for path in sorted(glob.glob(os.path.join(ROOT, "commontrace", "fixtures", "fields", "*.json"))):
+    for path in sorted(glob.glob(os.path.join(ROOT, "unimem", "fixtures", "fields", "*.json"))):
         with open(path, encoding="utf-8") as fh:
             doc = json.load(fh)
         lessons = [(f"<fixture>/{item['name']}.md", dict(item)) for item in doc["lessons"]]

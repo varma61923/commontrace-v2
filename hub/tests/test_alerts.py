@@ -12,7 +12,7 @@ from hub.db import session_scope
 from hub.models import Organization, Trace, WebhookDelivery
 
 NOW = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
-URL = "https://example.invalid/hooks/commontrace"
+URL = "https://example.invalid/hooks/unimem"
 
 pytestmark = pytest.mark.asyncio
 

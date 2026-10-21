@@ -1,6 +1,6 @@
 # Incident freeze and evidence packs
 
-Use `commontrace incident freeze CASE --valid-time ISO_TIME --dest STORE` to pin
+Use `unimem incident freeze CASE --valid-time ISO_TIME --dest STORE` to pin
 valid-time facts, record-time metadata, lesson bodies/revisions, retrieval receipts,
 delivered dream-rewrite texts and authenticated lineage. Facts are pinned twice: as
 believed at the incident (record time = valid time) and as known at the freeze,

@@ -2,12 +2,12 @@ import os
 
 import pytest
 
-from commontrace.cli import main
+from unimem.cli import main
 
 
 @pytest.fixture
 def fresh_store(tmp_path, monkeypatch):
-    monkeypatch.delenv("COMMONTRACE_ROOT", raising=False)
+    monkeypatch.delenv("UNIMEM_ROOT", raising=False)
     monkeypatch.chdir(tmp_path)
     main(["init", "--agent-type", "code", "--dest", str(tmp_path)])
     return tmp_path
@@ -52,7 +52,7 @@ def test_doctor_still_warns_on_genuine_problems(fresh_store, capsys):
 def test_doctor_warns_when_pilot_metrics_is_missing_from_a_damaged_install(
     fresh_store, capsys, monkeypatch
 ):
-    from commontrace.commands import doctor_cmd
+    from unimem.commands import doctor_cmd
 
     real_find = doctor_cmd.find_reference_script
 
@@ -85,24 +85,24 @@ class TestDoctorReportsAgentNativeAccess:
     def _run(tmp_path, capsys):
         import argparse
 
-        from commontrace.commands import doctor_cmd
+        from unimem.commands import doctor_cmd
 
         doctor_cmd.run(argparse.Namespace(dest=str(tmp_path)))
         return capsys.readouterr().out
 
     def test_it_reports_the_mcp_sdk(self, tmp_path, capsys):
         out = self._run(tmp_path, capsys)
-        assert "commontrace serve" in out
+        assert "unimem serve" in out
 
     def test_its_absence_is_information_not_a_failure(self, tmp_path, capsys, monkeypatch):
-        from commontrace.commands import doctor_cmd
+        from unimem.commands import doctor_cmd
 
         real = doctor_cmd._installed
         monkeypatch.setattr(doctor_cmd, "_installed",
                             lambda name: False if name == "mcp" else real(name))
         out = self._run(tmp_path, capsys)
-        assert "commontrace[serve]" in out
-        line = next(x for x in out.splitlines() if "commontrace serve" in x)
+        assert "unimem[serve]" in out
+        line = next(x for x in out.splitlines() if "unimem serve" in x)
         assert line.startswith("[INFO]"), line
 
 
@@ -111,7 +111,7 @@ class TestAProbeCannotTakeDownTheReport:
         import argparse
         import importlib.util
 
-        from commontrace.commands import doctor_cmd
+        from unimem.commands import doctor_cmd
 
         def explode(name, *args, **kwargs):
             raise ModuleNotFoundError(f"a hostile import hook rejected {name!r}")
@@ -125,7 +125,7 @@ class TestAProbeCannotTakeDownTheReport:
     def test_an_unanswerable_probe_reads_as_not_installed(self, monkeypatch):
         import importlib.util
 
-        from commontrace.commands import doctor_cmd
+        from unimem.commands import doctor_cmd
 
         monkeypatch.setattr(importlib.util, "find_spec",
                             lambda *a, **k: (_ for _ in ()).throw(RuntimeError("hook")))
@@ -133,8 +133,8 @@ class TestAProbeCannotTakeDownTheReport:
 
 
 def test_doctor_says_whether_the_models_a_store_uses_are_cached(fresh_store, capsys, monkeypatch):
-    from commontrace import retrieval_io
-    from commontrace.commands import doctor_cmd
+    from unimem import retrieval_io
+    from unimem.commands import doctor_cmd
 
     monkeypatch.setattr(doctor_cmd, "has_attention_deps", lambda: True, raising=False)
     retrieval_io.configure(str(fresh_store), fusion=retrieval_io.FUSION_GATED, rerank=retrieval_io.RERANK_CE)
@@ -151,7 +151,7 @@ def test_a_bare_model_name_is_looked_up_where_sentence_transformers_puts_it(monk
     import sys
     import types
 
-    from commontrace.commands import doctor_cmd
+    from unimem.commands import doctor_cmd
 
     seen = []
     fake = types.SimpleNamespace(try_to_load_from_cache=lambda repo, filename: seen.append(repo) or None)
@@ -165,7 +165,7 @@ def _check_labels():
     import ast
     import inspect
 
-    from commontrace.commands import doctor_cmd
+    from unimem.commands import doctor_cmd
 
     tree = ast.parse(inspect.getsource(doctor_cmd))
     labels = set()
@@ -181,7 +181,7 @@ def _check_labels():
 
 
 def test_every_check_has_a_why_and_a_fix_so_the_guide_cannot_go_stale():
-    from commontrace.commands import doctor_cmd
+    from unimem.commands import doctor_cmd
 
     labels = _check_labels()
     assert labels and not (labels - set(doctor_cmd.TROUBLESHOOTING)), \
@@ -193,7 +193,7 @@ def test_every_check_has_a_why_and_a_fix_so_the_guide_cannot_go_stale():
 
 
 def test_the_troubleshooting_guide_prints_and_exits_clean(capsys):
-    from commontrace.cli import main
+    from unimem.cli import main
 
     assert main(["doctor", "--troubleshooting"]) == 0
     out = capsys.readouterr().out
@@ -201,19 +201,19 @@ def test_the_troubleshooting_guide_prints_and_exits_clean(capsys):
 
 
 def test_a_failing_check_prints_its_fix(tmp_path, capsys, monkeypatch):
-    from commontrace.cli import main
+    from unimem.cli import main
 
     monkeypatch.chdir(tmp_path)
     main(["doctor", "--dest", str(tmp_path / "nothing")])
     out = capsys.readouterr().out
-    assert "[WARN] memory/ store present" in out and "fix: Run `commontrace init" in out
+    assert "[WARN] memory/ store present" in out and "fix: Run `unimem init" in out
 
 
 def test_a_world_readable_gateway_token_is_flagged(tmp_path, capsys, monkeypatch):
     import os
 
-    from commontrace import gateway
-    from commontrace.cli import main
+    from unimem import gateway
+    from unimem.cli import main
 
     monkeypatch.chdir(tmp_path)
     main(["init", "--agent-type", "support", "--dest", str(tmp_path)])
@@ -228,8 +228,8 @@ def test_a_world_readable_gateway_token_is_flagged(tmp_path, capsys, monkeypatch
 
 
 def test_a_run_that_never_reports_outcomes_and_a_compromised_one_are_named(tmp_path, capsys, monkeypatch):
-    from commontrace import holdout_io
-    from commontrace.cli import main
+    from unimem import holdout_io
+    from unimem.cli import main
 
     monkeypatch.chdir(tmp_path)
     main(["init", "--agent-type", "support", "--dest", str(tmp_path)])

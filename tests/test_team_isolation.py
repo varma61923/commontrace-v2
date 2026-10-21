@@ -1,9 +1,9 @@
 """UniMem stale generations, scoped reads, leases and reviewable merges."""
 import pytest
 
-from commontrace import hierarchical as h
-from commontrace import team_io as io
-from commontrace import team_isolation as pure
+from unimem import hierarchical as h
+from unimem import team_io as io
+from unimem import team_isolation as pure
 
 
 def test_config_and_fetch_are_scoped(tmp_path):
@@ -51,7 +51,7 @@ def test_checked_stops_stale_and_snapshot_conflicts(tmp_path):
 
 @pytest.mark.parametrize('sqlite', [False, True])
 def test_real_transactions_prevent_lost_update(tmp_path, sqlite):
-    from commontrace import fact_store
+    from unimem import fact_store
 
     root = str(tmp_path)
     if sqlite:
@@ -79,7 +79,7 @@ def test_real_transactions_prevent_lost_update(tmp_path, sqlite):
 
 @pytest.mark.parametrize('sqlite', [False, True])
 def test_snapshot_rejects_only_write_conflicts(tmp_path, sqlite):
-    from commontrace import fact_store
+    from unimem import fact_store
 
     root = str(tmp_path)
     if sqlite:
@@ -107,7 +107,7 @@ def test_readset_rejects_malformed_and_ambiguous_versions(bad):
 
 @pytest.mark.parametrize('sqlite', [False, True])
 def test_unavailable_readset_cannot_disclose_or_modify_foreign_fact(tmp_path, sqlite):
-    from commontrace import fact_store
+    from unimem import fact_store
 
     root = str(tmp_path)
     if sqlite:
@@ -130,7 +130,7 @@ def test_simultaneous_readers_only_one_serializable_writer_commits(tmp_path, sql
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier
 
-    from commontrace import fact_store
+    from unimem import fact_store
 
     root = str(tmp_path)
     if sqlite:
@@ -175,7 +175,7 @@ def test_lease_checks_expiry_at_commit_and_rolls_back(tmp_path, monkeypatch):
 @pytest.mark.parametrize('sqlite', [False, True])
 @pytest.mark.parametrize('writer', ['add_fact', 'add_facts', 'append_facts'])
 def test_contradiction_precedes_overeager_near_dedup(tmp_path, monkeypatch, sqlite, writer):
-    from commontrace import fact_conflicts, fact_store
+    from unimem import fact_conflicts, fact_store
 
     root = str(tmp_path)
     if sqlite:
@@ -183,9 +183,9 @@ def test_contradiction_precedes_overeager_near_dedup(tmp_path, monkeypatch, sqli
     older = h.add_fact(root, 'The wrist motor current operating limit is 5 amps')[0]
     io.isolation(root, level='serializable')
     reads = io.fetch(root, identities=[older.id])['read_set']
-    monkeypatch.setenv('COMMONTRACE_FACT_DEDUP', 'near')
+    monkeypatch.setenv('UNIMEM_FACT_DEDUP', 'near')
     # Team safety takes precedence over the legacy off/supersede preference.
-    monkeypatch.setenv('COMMONTRACE_FACT_CONFLICTS', 'off')
+    monkeypatch.setenv('UNIMEM_FACT_CONFLICTS', 'off')
     index_type = fact_store.StatementIndex if sqlite else h._StatementIndex
     def erroneous_near(self, statement, scopes):
         pytest.fail('Contradiction must be checked before a near-dedup call')
@@ -203,7 +203,7 @@ def test_contradiction_precedes_overeager_near_dedup(tmp_path, monkeypatch, sqli
 
 
 def test_semantic_merge_keeps_sources_and_requires_review(tmp_path):
-    from commontrace import fact_conflicts
+    from unimem import fact_conflicts
 
     root = str(tmp_path)
     older = h.add_fact(root, 'Wrist payload limit is 5 kg', scopes=['tenant:a'])[0]
@@ -219,8 +219,8 @@ def test_semantic_merge_keeps_sources_and_requires_review(tmp_path):
 
 
 def test_gateway_returns_structured_stale_generation_and_does_not_write(tmp_path):
-    from commontrace.gateway import Gateway
     from tests.test_gateway import TOKEN, call
+    from unimem.gateway import Gateway
 
     root = str(tmp_path)
     fact = h.add_fact(root, 'Wrist payload limit is 5 kg', scopes=['tenant:a'])[0]
@@ -247,7 +247,7 @@ def test_gateway_returns_structured_stale_generation_and_does_not_write(tmp_path
 def test_team_cli_isolation_read_and_lease(tmp_path, capsys):
     import json
 
-    from commontrace.cli import main
+    from unimem.cli import main
 
     root = str(tmp_path)
     fact = h.add_fact(root, 'Wrist payload limit is 5 kg')[0]
@@ -260,8 +260,8 @@ def test_team_cli_isolation_read_and_lease(tmp_path, capsys):
 
 
 def test_gateway_fetch_by_id_uses_subtenant_scope(tmp_path):
-    from commontrace.gateway import Gateway
     from tests.test_gateway import TOKEN, call
+    from unimem.gateway import Gateway
 
     root = str(tmp_path)
     fact = h.add_fact(root, 'Secret medical history', scopes=['tenant:b'])[0]
@@ -274,9 +274,9 @@ def test_gateway_fetch_by_id_uses_subtenant_scope(tmp_path):
 
 
 def test_local_and_http_client_forward_and_validate_read_sets(tmp_path, monkeypatch):
-    from commontrace.client import MemoryClient
-    from commontrace.gateway import Gateway
     from tests.test_gateway import TOKEN, call
+    from unimem.client import MemoryClient
+    from unimem.gateway import Gateway
 
     root = str(tmp_path)
     fact = h.add_fact(root, 'Payload limit is 5 kg', scopes=['tenant:a'])[0]
@@ -297,7 +297,7 @@ def test_local_and_http_client_forward_and_validate_read_sets(tmp_path, monkeypa
 
 @pytest.mark.parametrize('sqlite', [False, True])
 def test_privacy_erasure_does_not_require_regeneration_or_work_lease(tmp_path, sqlite):
-    from commontrace import fact_store, privacy_erasure
+    from unimem import fact_store, privacy_erasure
 
     root = str(tmp_path)
     if sqlite:
@@ -309,7 +309,7 @@ def test_privacy_erasure_does_not_require_regeneration_or_work_lease(tmp_path, s
 
 
 def test_erasure_bypass_cannot_add_or_edit_and_requires_revocation(tmp_path):
-    from commontrace import memory_authority
+    from unimem import memory_authority
 
     root = str(tmp_path)
     fact = h.add_fact(root, 'Secret medical detail')[0]
@@ -330,8 +330,8 @@ def test_real_otel_span_carries_validated_isolation_and_version(tmp_path, monkey
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-    from commontrace import frontier_protocol as fp
-    from commontrace import otel_memory, telemetry
+    from unimem import frontier_protocol as fp
+    from unimem import otel_memory, telemetry
 
     root = str(tmp_path)
     exporter = InMemorySpanExporter()
@@ -362,7 +362,7 @@ def test_privacy_purge_and_team_forget_use_one_lock_order(tmp_path, monkeypatch)
     import contextlib
     import threading
 
-    from commontrace import incident, privacy_erasure
+    from unimem import incident, privacy_erasure
 
     root = str(tmp_path)
     fact = h.add_fact(root, 'Private detail pending deletion')[0]
@@ -415,6 +415,6 @@ def test_cold_import_order_is_supported(module):
     import subprocess
     import sys
 
-    result = subprocess.run([sys.executable, '-c', 'import commontrace.' + module],
+    result = subprocess.run([sys.executable, '-c', 'import unimem.' + module],
                             capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr

@@ -9,8 +9,8 @@ import pytest
 
 from benchmarks import conversation_bench as bench
 from benchmarks.vendor_adapters import eligible_turns, pack, vendor_profile
-from commontrace.conversation import Store
 from tests.test_benchmark_measurement import _args
+from unimem.conversation import Store
 
 
 def test_locomo_question_limit_exact_stratified_and_repeatable():
@@ -52,7 +52,7 @@ def test_vendor_packing_has_source_attribution_and_no_oversized_partial_proof(tm
             pack(store, [100], 100, profile="test")
 
 
-def test_vendor_runs_native_adapter_not_commontrace_recall(tmp_path, monkeypatch):
+def test_vendor_runs_native_adapter_not_unimem_recall(tmp_path, monkeypatch):
     args = _args(tmp_path, memory_adapter="mem0-raw", limit=2)
     calls, closed = [], []
 
@@ -74,7 +74,7 @@ def test_vendor_runs_native_adapter_not_commontrace_recall(tmp_path, monkeypatch
             closed.append(store.space)
 
     def forbidden(*args, **kwargs):
-        raise AssertionError("CommonTrace recall must not stand in for vendor retrieval")
+        raise AssertionError("UniMem recall must not stand in for vendor retrieval")
 
     monkeypatch.setattr(bench, "vendor_profile", profile)
     monkeypatch.setattr(bench, "recall", forbidden)
@@ -188,7 +188,7 @@ def test_hindsight_raw_refuses_network_fallback_when_local_runtime_is_missing(tm
                 pass
 
 
-@pytest.mark.skipif(os.environ.get("COMMONTRACE_VENDOR_NATIVE_SMOKE") != "1",
+@pytest.mark.skipif(os.environ.get("UNIMEM_VENDOR_NATIVE_SMOKE") != "1",
                     reason="opt-in native local Graphiti backend")
 @pytest.mark.parametrize("space", ["demo", "conv-26", "gpt4_93159ced"])
 def test_native_graphiti_case_namespaces_preserve_sources(tmp_path, space):
@@ -289,8 +289,6 @@ def test_model_binding_includes_nested_pooling_configuration(tmp_path, monkeypat
 
 
 def test_fastembed_model_binding_is_cache_only_and_tracks_artifacts(tmp_path, monkeypatch):
-    import sys
-    import types
 
     from benchmarks.artifacts import model_artifact
 
@@ -304,15 +302,15 @@ def test_fastembed_model_binding_is_cache_only_and_tracks_artifacts(tmp_path, mo
             assert model_name == "BAAI/bge-small-en-v1.5"
             assert local_files_only is True
             self.embedding_size = 384
-            self.model = types.SimpleNamespace(_model_dir=str(model_directory))
+            self.artifact_directory = model_directory
 
         def query_embed(self, texts, **kwargs):
             return iter([[1.0] + [0.0] * 383 for _ in texts])
 
         passage_embed = query_embed
 
-    monkeypatch.setitem(sys.modules, "fastembed", types.SimpleNamespace(TextEmbedding=FakeTextEmbedding))
-    monkeypatch.setattr("importlib.metadata.version", lambda package: "0.8.0")
+    monkeypatch.setattr("unimem.embeddings._OnnxText", FakeTextEmbedding)
+    monkeypatch.setattr("importlib.metadata.version", lambda package: "2.0.0")
     tag = "fastembed:BAAI/bge-small-en-v1.5"
 
     first = model_artifact(tag)
@@ -336,7 +334,7 @@ def test_exact_context_text_counts_report_without_answering(tmp_path, monkeypatc
 
 
 def test_unavailable_requested_reranker_is_not_reported_as_effective(tmp_path, monkeypatch):
-    from commontrace import rerank_arm
+    from unimem import rerank_arm
 
     args = _args(tmp_path, rerank="cross-encoder")
     monkeypatch.setattr(bench, "model_artifact", lambda name: {"fixture": name})

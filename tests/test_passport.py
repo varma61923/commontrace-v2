@@ -5,7 +5,7 @@ from copy import deepcopy
 
 import pytest
 
-from commontrace import passport
+from unimem import passport
 
 NOW = "2026-10-18T00:00:00+00:00"
 AGENT = {"name": "support", "runtime": "unimem", "model_digest": "sha256:"+"a"*64,

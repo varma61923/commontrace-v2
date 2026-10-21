@@ -6,7 +6,7 @@ The product strategy calls this link 2 and marks it *"measured, holds"*, citing
 is the one thing that makes this more than a good DevTools business.
 
 Those numbers are real. They were measured by `commons/eval/retrieval_tiers.py`
-against `commontrace/retrieval.py:rank_lessons` -- the **local, file-based
+against `unimem/retrieval.py:rank_lessons` -- the **local, file-based
 tier**. Nothing has ever measured `hub/crud.py:search_traces`, which is the
 path every Hub customer's agent actually calls, and the two tiers do not
 merely differ in implementation. They combine query terms with opposite
@@ -96,12 +96,12 @@ from hub.models import Base, Organization, Trace
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from commontrace import retrieval  # noqa: E402
+from unimem import retrieval  # noqa: E402
 
-CORPUS = Path(os.environ.get("COMMONTRACE_EVAL_CORPUS", "corpus.jsonl"))  # bring your own corpus
+CORPUS = Path(os.environ.get("UNIMEM_EVAL_CORPUS", "corpus.jsonl"))  # bring your own corpus
 PROBE_SETS = {
-    "v1": Path(os.environ.get("COMMONTRACE_EVAL_PROBES_V1", "probes-v1.jsonl")),
-    "v2": Path(os.environ.get("COMMONTRACE_EVAL_PROBES_V2", "probes-v2.jsonl")),
+    "v1": Path(os.environ.get("UNIMEM_EVAL_PROBES_V1", "probes-v1.jsonl")),
+    "v2": Path(os.environ.get("UNIMEM_EVAL_PROBES_V2", "probes-v2.jsonl")),
 }
 
 KS = (1, 3, 5, 10)

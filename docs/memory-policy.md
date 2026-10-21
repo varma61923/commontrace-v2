@@ -117,11 +117,11 @@ Save the policy above as `policy.json`. CLI request arguments accept JSON object
 or JSON request files:
 
 ```sh
-commontrace prove policy diff certify-request.json --dest ./store
-commontrace prove policy certify certify-request.json --dest ./store
-commontrace prove policy review review-request.json --dest ./store
-commontrace prove policy activate activate-request.json --dest ./store
-commontrace prove policy current --dest ./store
+unimem prove policy diff certify-request.json --dest ./store
+unimem prove policy certify certify-request.json --dest ./store
+unimem prove policy review review-request.json --dest ./store
+unimem prove policy activate activate-request.json --dest ./store
+unimem prove policy current --dest ./store
 ```
 
 `certify-request.json` contains `{"policy": <complete policy>}`; save the returned
@@ -141,7 +141,7 @@ transparency insertion commit in the same activation transaction.
 
 ## Optional native Cedar adapter
 
-Install `commontrace[policy-cedar]` for the pinned `cedarpy==4.12.2` SDK (Cedar
+Install `unimem[policy-cedar]` for the pinned `cedarpy==4.12.2` SDK (Cedar
 engine 4.12.0). The core remains standard-library-only. `policy_cedar.export`
 produces actual Cedar policy text and a Cedar JSON schema, validates it with the
 native SDK, and compares every bounded decision using `is_authorized_batch`.

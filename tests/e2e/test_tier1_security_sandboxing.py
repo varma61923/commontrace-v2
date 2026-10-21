@@ -10,7 +10,7 @@ from tests.e2e.conftest import CLIResult
 
 
 def test_enforce_boundary_resolves_valid_relative_path(tmp_path: Path) -> None:
-    from commontrace.paths import enforce_boundary
+    from unimem.paths import enforce_boundary
 
     base = tmp_path / "base"
     base.mkdir(parents=True, exist_ok=True)
@@ -23,7 +23,7 @@ def test_enforce_boundary_resolves_valid_relative_path(tmp_path: Path) -> None:
 
 
 def test_enforce_boundary_rejects_parent_traversal(tmp_path: Path) -> None:
-    from commontrace.paths import PathTraversalError, enforce_boundary
+    from unimem.paths import PathTraversalError, enforce_boundary
 
     base = tmp_path / "base"
     base.mkdir()
@@ -34,7 +34,7 @@ def test_enforce_boundary_rejects_parent_traversal(tmp_path: Path) -> None:
 
 
 def test_enforce_boundary_rejects_absolute_path_outside(tmp_path: Path) -> None:
-    from commontrace.paths import PathTraversalError, enforce_boundary
+    from unimem.paths import PathTraversalError, enforce_boundary
 
     base = tmp_path / "base"
     base.mkdir()
@@ -46,7 +46,7 @@ def test_enforce_boundary_rejects_absolute_path_outside(tmp_path: Path) -> None:
 
 
 def test_enforce_boundary_rejects_symlink_pointing_outside(tmp_path: Path) -> None:
-    from commontrace.paths import PathTraversalError, enforce_boundary
+    from unimem.paths import PathTraversalError, enforce_boundary
 
     base = tmp_path / "base"
     base.mkdir()
@@ -61,7 +61,7 @@ def test_enforce_boundary_rejects_symlink_pointing_outside(tmp_path: Path) -> No
 
 
 def test_enforce_boundary_rejects_empty_paths(tmp_path: Path) -> None:
-    from commontrace.paths import enforce_boundary
+    from unimem.paths import enforce_boundary
 
     base = tmp_path / "base"
     base.mkdir()
@@ -74,7 +74,7 @@ def test_enforce_boundary_rejects_empty_paths(tmp_path: Path) -> None:
 
 
 def test_enforce_boundary_exact_match_allowed(tmp_path: Path) -> None:
-    from commontrace.paths import enforce_boundary
+    from unimem.paths import enforce_boundary
 
     base = tmp_path / "base"
     base.mkdir()
@@ -145,7 +145,7 @@ def test_validation_within_store_allowed(
 
 
 def test_safe_prepare_output_path_unlinks_leaf_symlink(tmp_path: Path) -> None:
-    from commontrace.paths import safe_prepare_output_path
+    from unimem.paths import safe_prepare_output_path
 
     target_file = tmp_path / "sensitive_target.txt"
     target_file.write_text("original content", encoding="utf-8")
@@ -159,7 +159,7 @@ def test_safe_prepare_output_path_unlinks_leaf_symlink(tmp_path: Path) -> None:
 
 
 def test_safe_prepare_output_path_rejects_symlink_intermediate_dir(tmp_path: Path) -> None:
-    from commontrace.paths import PathTraversalError, safe_prepare_output_path
+    from unimem.paths import PathTraversalError, safe_prepare_output_path
 
     real_dir = tmp_path / "real_dir"
     real_dir.mkdir()
@@ -175,7 +175,7 @@ def test_safe_prepare_output_path_rejects_symlink_intermediate_dir(tmp_path: Pat
 
 
 def test_safe_prepare_output_path_rejects_empty() -> None:
-    from commontrace.paths import safe_prepare_output_path
+    from unimem.paths import safe_prepare_output_path
 
     with pytest.raises(ValueError):
         safe_prepare_output_path("")
@@ -219,7 +219,7 @@ def test_export_blocks_symlinked_directory_output(
 def test_shellout_enforces_python_safe_path() -> None:
     import inspect
 
-    from commontrace.commands import _shellout
+    from unimem.commands import _shellout
 
     source = inspect.getsource(_shellout.run_script)
     assert 'env["PYTHONSAFEPATH"] = "1"' in source or "PYTHONSAFEPATH" in source
@@ -228,7 +228,7 @@ def test_shellout_enforces_python_safe_path() -> None:
 def test_shellout_enforces_python_utf8() -> None:
     import inspect
 
-    from commontrace.commands import _shellout
+    from unimem.commands import _shellout
 
     source = inspect.getsource(_shellout.run_script)
     assert 'env["PYTHONUTF8"] = "1"' in source or "PYTHONUTF8" in source
@@ -237,7 +237,7 @@ def test_shellout_enforces_python_utf8() -> None:
 def test_shellout_uses_shell_false() -> None:
     import inspect
 
-    from commontrace.commands import _shellout
+    from unimem.commands import _shellout
 
     source = inspect.getsource(_shellout.run_script)
     assert "shell=True" not in source
@@ -248,7 +248,7 @@ def test_cwd_module_shadowing_mitigated(
     isolated_store: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from commontrace.commands import _shellout
+    from unimem.commands import _shellout
 
     shadowing_dir = tmp_path / "shadow_cwd"
     shadowing_dir.mkdir()
@@ -260,7 +260,7 @@ def test_cwd_module_shadowing_mitigated(
 
     rc = _shellout.run_script(
         str(isolated_store),
-        "commontrace/reference/measure_performance.py",
+        "unimem/reference/measure_performance.py",
         ["--help"],
         missing_hint="test script not found",
     )
@@ -270,7 +270,7 @@ def test_cwd_module_shadowing_mitigated(
 def test_run_script_sets_canonical_root_in_child_env(isolated_store: Path) -> None:
     import inspect
 
-    from commontrace.commands import _shellout
+    from unimem.commands import _shellout
 
     source = inspect.getsource(_shellout.run_script)
-    assert 'env["COMMONTRACE_ROOT"] = root' in source
+    assert 'env["UNIMEM_ROOT"] = root' in source

@@ -5,8 +5,8 @@ import json
 
 import pytest
 
-from commontrace import api_schema, holdout_io
-from commontrace.gateway import Gateway
+from unimem import api_schema, holdout_io
+from unimem.gateway import Gateway
 
 
 def test_openapi_models_match_live_memory_operations(tmp_path):
@@ -67,9 +67,9 @@ def test_gateway_enforces_the_schema_before_any_write(tmp_path):
 
 
 def test_record_reaping_contract_is_bounded_and_local_gateway_owner_only(tmp_path):
-    from commontrace.memory_journal import Journal
-    from commontrace.memory_record import MemoryRecord
-    from commontrace.record_api import operate
+    from unimem.memory_journal import Journal
+    from unimem.memory_record import MemoryRecord
+    from unimem.record_api import operate
 
     due = MemoryRecord(
         "due-local",

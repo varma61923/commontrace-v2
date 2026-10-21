@@ -4,7 +4,7 @@ import {createRequire} from "node:module";
 import {pathToFileURL} from "node:url";
 import {MemoryClient, vercelMemoryTools, mastraMemoryTools} from "../sdk/typescript/dist/src/index.js";
 
-const requireSDK = createRequire(`${process.env.COMMONTRACE_TS_FRAMEWORKS}/package.json`);
+const requireSDK = createRequire(`${process.env.UNIMEM_TS_FRAMEWORKS}/package.json`);
 const ai = await import(pathToFileURL(requireSDK.resolve("ai")));
 const mastra = await import(pathToFileURL(requireSDK.resolve("@mastra/core/tools")));
 const {z} = await import(pathToFileURL(requireSDK.resolve("zod")));

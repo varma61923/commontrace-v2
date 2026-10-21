@@ -69,7 +69,7 @@ def _failure(label, title, context, tags=None):
 @pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
 class TestSignatureCompatibility:
     def test_hub_and_client_produce_identical_signatures(self):
-        from commontrace import overlap
+        from unimem import overlap
 
         text = commons.matchable_text("Stripe webhook", "duplicate delivery", ["stripe"])
         assert commons.signature_for("Stripe webhook", "duplicate delivery", ["stripe"]) == \

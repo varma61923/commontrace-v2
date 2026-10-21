@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from commontrace import compile_memory, evidence, holdout_io, lineage
+from unimem import compile_memory, evidence, holdout_io, lineage
 
 pytest.importorskip("mcp")
 from tests.test_mcp_server import _write_lesson
@@ -11,7 +11,7 @@ from tests.test_mcp_server import _write_lesson
 def test_source_retraction_removes_compiled_artifact_from_serving(tmp_path, monkeypatch):
     root = str(tmp_path)
     path = _write_lesson(root, "rule", body="Verify the target object before planning a grasp.")
-    from commontrace import frontmatter, lesson_admission
+    from unimem import frontmatter, lesson_admission
     fm, body = frontmatter.read(path)
     fm["approval_receipt"] = lesson_admission.issue(root, path, fm, body, actor="operator")
     frontmatter.write(path, fm, body)
@@ -25,7 +25,7 @@ def test_source_retraction_removes_compiled_artifact_from_serving(tmp_path, monk
     compile_memory.register_trial(root, "tiny", "compile-trial", propensity_floor=.5)
     modes = {compile_memory.assign(root, "tiny", str(i))["mode"] for i in range(10)}
     assert modes == {"compiled", "retrieval"}
-    from commontrace import promotion
+    from unimem import promotion
     for i in range(10, 610):
         decision = compile_memory.assign(root, "tiny", str(i))
         holdout_io.record_outcome(root, str(i), decision["mode"] == "compiled")

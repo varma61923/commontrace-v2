@@ -22,16 +22,16 @@ import sys
 
 import pytest
 
-from commontrace import memory_blocks, memory_guard
-from commontrace.conversation import search as csearch
-from commontrace.conversation.store import Store, fact_hash
+from unimem import memory_blocks, memory_guard
+from unimem.conversation import search as csearch
+from unimem.conversation.store import Store, fact_hash
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def cli(*argv: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [sys.executable, "-m", "commontrace.cli", *argv],
+        [sys.executable, "-m", "unimem.cli", *argv],
         capture_output=True, text=True, cwd=REPO_ROOT, check=False,
     )
 
@@ -246,7 +246,7 @@ def _mcp_call(server, tool, **kw):
 @pytest.fixture
 def mcp_server(store):
     pytest.importorskip("mcp")
-    from commontrace import mcp_server as mcp_mod
+    from unimem import mcp_server as mcp_mod
     return mcp_mod.build_server(store)
 
 
@@ -329,12 +329,12 @@ class TestBlockCLI:
 
 class TestRetry:
     def test_success_no_sleep(self):
-        from commontrace.retry import call_with_retries
+        from unimem.retry import call_with_retries
 
         assert call_with_retries(lambda: 42, sleep=lambda s: None) == (42, None)
 
     def test_flaky_transport_retried_then_ok(self):
-        from commontrace.retry import call_with_retries
+        from unimem.retry import call_with_retries
 
         calls = {"n": 0}
 
@@ -350,7 +350,7 @@ class TestRetry:
     def test_non_retryable_surfaces_immediately(self):
         import urllib.error
 
-        from commontrace.retry import call_with_retries
+        from unimem.retry import call_with_retries
 
         calls = {"n": 0}
 
@@ -365,7 +365,7 @@ class TestRetry:
     def test_5xx_idempotent_retries_non_idempotent_does_not(self):
         import urllib.error
 
-        from commontrace.retry import call_with_retries
+        from unimem.retry import call_with_retries
 
         def always_500():
             raise urllib.error.HTTPError("http://x", 503, "down", {}, None)
@@ -378,7 +378,7 @@ class TestRetry:
         assert getattr(err_once, "code", None) == 503
 
     def test_retry_after_capped_and_garbage_falls_back(self):
-        from commontrace.retry import retry_after_seconds
+        from unimem.retry import retry_after_seconds
 
         assert retry_after_seconds("120", 1) == 60.0
         assert 0 < retry_after_seconds("not-a-date", 2) <= 60.0
@@ -390,7 +390,7 @@ class TestRetry:
         import urllib.error
         import urllib.request
 
-        from commontrace import llm
+        from unimem import llm
 
         attempts = {"n": 0}
 
@@ -416,7 +416,7 @@ class TestRetry:
         import urllib.error
         import urllib.request
 
-        from commontrace import llm
+        from unimem import llm
 
         attempts = {"n": 0}
 
@@ -435,7 +435,7 @@ class TestRetry:
         import json as json_mod
         import urllib.request
 
-        from commontrace import llm
+        from unimem import llm
 
         class FakeResp:
             def __enter__(self): return self
@@ -480,7 +480,7 @@ class TestAddMemoriesSnapshot:
 class TestApprovalGate:
     def test_no_approval_hides_both_tools(self, store):
         pytest.importorskip("mcp")
-        from commontrace import mcp_server as mcp_mod
+        from unimem import mcp_server as mcp_mod
 
         async def names():
             return [t.name for t in await mcp_mod.build_server(store, allow_approval=False).list_tools()]
@@ -490,7 +490,7 @@ class TestApprovalGate:
 
     def test_approval_on_keeps_both_tools(self, store):
         pytest.importorskip("mcp")
-        from commontrace import mcp_server as mcp_mod
+        from unimem import mcp_server as mcp_mod
 
         async def names():
             return [t.name for t in await mcp_mod.build_server(store, allow_approval=True).list_tools()]
@@ -531,7 +531,7 @@ class TestCallToolCompat:
 
 class TestExpiryEnforcement:
     def test_expired_hidden_by_default(self, store):
-        from commontrace import hierarchical
+        from unimem import hierarchical
 
         hierarchical.add_fact(store, "Old API key works", expires_at="2020-01-01")
         hierarchical.add_fact(store, "New API key works")
@@ -542,7 +542,7 @@ class TestExpiryEnforcement:
         assert len(hierarchical.list_facts(store, show_expired=True)) == 2
 
     def test_cli_search_show_expired(self, store):
-        from commontrace import hierarchical
+        from unimem import hierarchical
 
         hierarchical.add_fact(store, "Old API key works", expires_at="2020-01-01")
         res = cli("fact", "search", "API key", "--dest", store)
@@ -555,7 +555,7 @@ class TestExpiryEnforcement:
 
 class TestFactCompatibilityAndHistory:
     def test_legacy_rows_are_backfilled_instead_of_dropped(self, store):
-        from commontrace import hierarchical
+        from unimem import hierarchical
 
         path = os.path.join(store, "memory", "facts", "facts.jsonl")
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -570,7 +570,7 @@ class TestFactCompatibilityAndHistory:
         assert hierarchical.search_facts(store, "legacy deployment")
 
     def test_historical_lookup_keeps_superseded_fact_in_its_old_window(self, store):
-        from commontrace import hierarchical
+        from unimem import hierarchical
 
         old, _ = hierarchical.add_fact(store, "Deploy on Fridays", valid_from="2024-01-01")
         new, _ = hierarchical.add_fact(store, "Never deploy on Fridays", valid_from="2024-06-01")
@@ -579,7 +579,7 @@ class TestFactCompatibilityAndHistory:
         assert [fact.statement for fact in historical] == ["Deploy on Fridays"]
 
     def test_scoped_write_never_reuses_global_fact(self, store):
-        from commontrace import hierarchical
+        from unimem import hierarchical
 
         global_fact, _ = hierarchical.add_fact(store, "Tenant-isolated rule")
         scoped_fact, action = hierarchical.add_fact(store, "Tenant-isolated rule", scopes=["tenant-b"])
@@ -590,7 +590,7 @@ class TestFactCompatibilityAndHistory:
 
 class TestResolveContradiction:
     def test_resolve_invalidates_with_guard(self, store):
-        from commontrace import hierarchical
+        from unimem import hierarchical
 
         old, _ = hierarchical.add_fact(store, "Deploy on Fridays", valid_from="2024-01-01")
         new, _ = hierarchical.add_fact(store, "Never deploy on Fridays", valid_from="2024-06-01")
@@ -598,14 +598,14 @@ class TestResolveContradiction:
         assert o.status == "superseded" and o.superseded_by == new.id
 
     def test_older_replacement_refused(self, store):
-        from commontrace import hierarchical
+        from unimem import hierarchical
 
         future, _ = hierarchical.add_fact(store, "Future policy", valid_from="2027-01-01")
         with pytest.raises(ValueError, match="predates"):
             hierarchical.resolve_contradiction(store, future.id, "Current policy")
 
     def test_disjoint_windows_refused(self, store):
-        from commontrace import hierarchical
+        from unimem import hierarchical
 
         a, _ = hierarchical.add_fact(store, "X is red", valid_from="2020-01-01",
                                      valid_until="2020-06-01")
@@ -614,7 +614,7 @@ class TestResolveContradiction:
             hierarchical.resolve_contradiction(store, a.id, b.id)
 
     def test_cli_resolve(self, store):
-        from commontrace import hierarchical
+        from unimem import hierarchical
 
         old, _ = hierarchical.add_fact(store, "Deploy on Fridays", valid_from="2024-01-01")
         new, _ = hierarchical.add_fact(store, "Never deploy on Fridays", valid_from="2024-06-01")
@@ -626,7 +626,7 @@ class TestResolveContradiction:
 
 class TestScopeImmutability:
     def test_update_scopes_refused(self, store):
-        from commontrace import hierarchical
+        from unimem import hierarchical
 
         fact, _ = hierarchical.add_fact(store, "Tenant secret", scopes=["acme"])
         with pytest.raises(ValueError, match="immutable"):
@@ -640,7 +640,7 @@ class TestScopeImmutability:
 
 class TestInteropFidelity:
     def test_mem0_expiration_survives(self, store):
-        from commontrace import hierarchical, interop
+        from unimem import hierarchical, interop
 
         recs = interop.import_mem0_dump([{"memory": "Old news", "expiration_date": "2020-01-01"}])
         assert interop.apply_store(store, recs)["fact"] == 1
@@ -648,7 +648,7 @@ class TestInteropFidelity:
         assert len(hierarchical.search_facts(store, "Old news", show_expired=True)) == 1
 
     def test_mem0_recorded_timestamp_survives_fact_import(self, store):
-        from commontrace import hierarchical, interop
+        from unimem import hierarchical, interop
 
         recs = interop.import_mem0_dump([{
             "memory": "A dated fact", "created_at": "2022-02-03T04:05:06Z",
@@ -658,7 +658,7 @@ class TestInteropFidelity:
         assert fact.created_at.startswith("2022-02-03T04:05:06")
 
     def test_zep_temporal_survives(self):
-        from commontrace import interop
+        from unimem import interop
 
         recs = interop.import_zep_episodes(
             [{"content": "Friday rule", "valid_at": "2024-01-01", "invalid_at": "2024-06-01"}])
@@ -666,7 +666,7 @@ class TestInteropFidelity:
         assert fm["valid_from"] == "2024-01-01" and fm["valid_until"] == "2024-06-01"
 
     def test_letta_passages_become_facts(self, store):
-        from commontrace import interop
+        from unimem import interop
 
         recs = interop.import_letta_blocks(
             {"blocks": [{"label": "persona", "value": "Be brief"}],
@@ -692,8 +692,8 @@ class TestOntologyCLI:
 
 class TestSigmoidHome:
     def test_single_canonical_definition(self):
-        from commontrace.conversation import search as search_mod
-        from commontrace.conversation import store as store_mod
+        from unimem.conversation import search as search_mod
+        from unimem.conversation import store as store_mod
 
         assert search_mod.sigmoid_bm25 is store_mod.sigmoid_bm25
 
@@ -702,14 +702,14 @@ class TestSigmoidHome:
 
 class TestBoundedMap:
     def test_order_empty_single(self):
-        from commontrace.parallel import bounded_map
+        from unimem.parallel import bounded_map
 
         assert bounded_map(lambda x: x * 2, []) == []
         assert bounded_map(lambda x: x * 2, [3]) == [6]
         assert bounded_map(lambda x: x * 2, range(10), max_workers=3) == [x * 2 for x in range(10)]
 
     def test_exception_propagates(self):
-        from commontrace.parallel import bounded_map
+        from unimem.parallel import bounded_map
 
         def boom(x):
             if x == 2:
@@ -731,7 +731,7 @@ class TestBoundedMap:
 
 class TestLLMCache:
     def test_roundtrip_miss_and_corrupt(self, tmp_path):
-        from commontrace import llm_cache as mod
+        from unimem import llm_cache as mod
 
         cache = mod.LLMCache(str(tmp_path / "c.db"))
         assert cache.get("nope") is None
@@ -745,17 +745,17 @@ class TestLLMCache:
         assert cache.get("bad") is None and cache.get("lst") is None
 
     def test_disabled_by_default(self, monkeypatch):
-        from commontrace import llm_cache as mod
+        from unimem import llm_cache as mod
 
-        monkeypatch.delenv("COMMONTRACE_LLM_CACHE", raising=False)
+        monkeypatch.delenv("UNIMEM_LLM_CACHE", raising=False)
         assert mod.enabled() is False
 
     def test_complete_caches_identical_prompts(self, tmp_path, monkeypatch):
-        from commontrace import llm as llm_mod
-        from commontrace.llm import Config
+        from unimem import llm as llm_mod
+        from unimem.llm import Config
 
-        monkeypatch.setenv("COMMONTRACE_LLM_CACHE", "1")
-        monkeypatch.setenv("COMMONTRACE_LLM_CACHE_PATH", str(tmp_path / "llm.db"))
+        monkeypatch.setenv("UNIMEM_LLM_CACHE", "1")
+        monkeypatch.setenv("UNIMEM_LLM_CACHE_PATH", str(tmp_path / "llm.db"))
         calls = {"n": 0}
 
         def fake(cfg, prompt):
@@ -773,7 +773,7 @@ class TestLLMCache:
 
 class TestTopOneFloor:
     def test_tiny_budget_still_returns_hit(self, tmp_path):
-        from commontrace.conversation.search import Options, recall
+        from unimem.conversation.search import Options, recall
 
         st = Store(str(tmp_path), "f")
         st.add("s", [{"role": "user", "text": "Biscuit the beagle loves peanut butter"}])
@@ -791,7 +791,7 @@ class TestSQLitePragmas:
 
 class TestRecallCache:
     def test_repeat_hit_returns_equal_new_object(self, tmp_path):
-        from commontrace.conversation import search as mod
+        from unimem.conversation import search as mod
 
         st = Store(str(tmp_path), "c")
         st.add("s", [{"role": "user", "text": "Biscuit loves peanut butter"}])
@@ -801,7 +801,7 @@ class TestRecallCache:
         assert first.context == second.context and first is not second
 
     def test_write_invalidates(self, tmp_path):
-        from commontrace.conversation import search as mod
+        from unimem.conversation import search as mod
 
         st = Store(str(tmp_path), "c")
         st.add("s", [{"role": "user", "text": "Biscuit loves peanut butter"}])
@@ -816,7 +816,7 @@ class TestRecallCache:
 
 class TestFactTokenMemo:
     def test_memo_consistent_and_keyed_by_revision(self, store):
-        from commontrace import hierarchical
+        from unimem import hierarchical
 
         fact, action = hierarchical.add_fact(store, statement="Refunds over 50 need approval",
                                              category="constraint")
@@ -829,7 +829,7 @@ class TestFactTokenMemo:
         assert hierarchical._fact_tokens(fact) is toks  # memoized, same object
 
     def test_retrieval_corpus_bin_hoisted(self):
-        import commontrace.retrieval as ret
+        import unimem.retrieval as ret
 
         assert ret.corpus_bin is not None  # top-level import, not per-query importlib
 
@@ -838,7 +838,7 @@ class TestFactTokenMemo:
 
 class TestIngestLifecycleAndCatalog:
     def test_job_lifecycle_transitions(self, store):
-        from commontrace.ingest import catalog
+        from unimem.ingest import catalog
 
         job = catalog.create_ingest_job(store, "docs/architecture.md")
         assert job.stage == "queued"
@@ -866,7 +866,7 @@ class TestIngestLifecycleAndCatalog:
         assert fetched.stage == "done"
 
     def test_job_failure_visibility(self, store):
-        from commontrace.ingest import catalog
+        from unimem.ingest import catalog
 
         job = catalog.create_ingest_job(store, "corrupt.pdf")
         catalog.update_ingest_job(store, job.id, "extracting")
@@ -875,7 +875,7 @@ class TestIngestLifecycleAndCatalog:
         assert job.error == "Malformed PDF syntax"
 
     def test_summary_list_vs_full_content_get(self, store):
-        from commontrace.ingest import catalog
+        from unimem.ingest import catalog
 
         full_doc = "A" * 5000 + "\n\nImportant section about auth limits."
         doc = catalog.record_document(
@@ -911,7 +911,7 @@ class TestIngestLifecycleAndCatalog:
 
 class TestSagasNarratives:
     def test_saga_lifecycle_and_events(self, store):
-        from commontrace import sagas
+        from unimem import sagas
 
         saga = sagas.create_saga(
             store,
@@ -952,7 +952,7 @@ class TestSagasNarratives:
         assert loaded.watermark == "2026-10-04T08:00:00Z"
 
     def test_watermarked_running_brief_updates(self, store):
-        from commontrace import sagas
+        from unimem import sagas
 
         sagas.create_saga(store, "migration-pg", "Postgres 16 Migration")
         sagas.update_running_brief(
@@ -965,7 +965,7 @@ class TestSagasNarratives:
         assert saga.watermark == "step-3-schema-done"
 
     def test_saga_filtering_and_search(self, store):
-        from commontrace import sagas
+        from unimem import sagas
 
         sagas.create_saga(store, "s1", "Alpha Project", tags=["alpha", "infra"])
         sagas.create_saga(store, "s2", "Beta Project", tags=["beta", "infra"], status="resolved")
@@ -985,7 +985,7 @@ class TestSagasNarratives:
 
 class TestKnowledgePagesCurated:
     def test_create_and_dry_run_diff(self, store):
-        from commontrace import knowledge_pages
+        from unimem import knowledge_pages
 
         content_v1 = "# Auth Flow\n\n1. User enters credentials\n2. Gateway issues JWT"
         res_v1 = knowledge_pages.update_page(
@@ -1014,7 +1014,7 @@ class TestKnowledgePagesCurated:
         assert "JWT" in page.content
 
     def test_version_concurrency_and_history(self, store):
-        from commontrace import knowledge_pages
+        from unimem import knowledge_pages
 
         knowledge_pages.update_page(store, "runbook/restart", "Initial body", title="Restart Guide")
         # Conflicting version must fail
@@ -1040,7 +1040,7 @@ class TestKnowledgePagesCurated:
 
 class TestSessionLedgerAttribution:
     def test_record_usage_and_cost_estimation(self, store):
-        from commontrace import session_ledger
+        from unimem import session_ledger
 
         entry1 = session_ledger.record_usage(
             store, session_id="sess_123", model="gpt-4o",
@@ -1059,7 +1059,7 @@ class TestSessionLedgerAttribution:
         assert entry2.cost_usd > 0
 
     def test_session_summary_breakdown(self, store):
-        from commontrace import session_ledger
+        from unimem import session_ledger
 
         sess = "sess_breakdown"
         session_ledger.record_usage(store, sess, "gpt-4o", 1000, 100, occasion="answer")
@@ -1078,7 +1078,7 @@ class TestSessionLedgerAttribution:
         assert "extract" in summary["by_occasion"]
 
     def test_overall_ledger_summary(self, store):
-        from commontrace import session_ledger
+        from unimem import session_ledger
 
         session_ledger.record_usage(store, "sA", "gpt-4o", 500, 50)
         session_ledger.record_usage(store, "sB", "gpt-4o-mini", 500, 50)
@@ -1149,7 +1149,7 @@ class TestMCPCompetitorTools:
         assert res_sum["total_tokens"] == 1800
 
         # 4. Ingest Document Catalog tools
-        from commontrace.ingest import catalog
+        from unimem.ingest import catalog
         catalog.record_document(
             store, "/test/doc.md", "# Test Title\n\nDocument body for catalog test",
         )
@@ -1170,7 +1170,7 @@ class TestMCPCompetitorTools:
 
 class TestMemoryDefense:
     def test_catalog_redaction(self):
-        from commontrace import defense
+        from unimem import defense
 
         text = "Anthropic: sk-ant-api03-abcdefghijklmnopqrstuvwxyz1234, AWS: AKIAIOSFODNN7EXAMPLE"
         res = defense.apply_redaction(text)
@@ -1182,7 +1182,7 @@ class TestMemoryDefense:
             assert "..." in hit["preview"]
 
     def test_luhn_card_check(self):
-        from commontrace import defense
+        from unimem import defense
 
         valid_res = defense.apply_redaction("Card 4111 1111 1111 1111")
         assert "credit_card" in valid_res.matched_types
@@ -1192,7 +1192,7 @@ class TestMemoryDefense:
         assert "credit_card" not in invalid_res.matched_types
 
     def test_screen_policies(self):
-        from commontrace import defense
+        from unimem import defense
 
         pol_block = defense.DefensePolicy(
             enabled=True,
@@ -1206,7 +1206,7 @@ class TestMemoryDefense:
 
 class TestGatewayHardening:
     def test_transient_classifier(self):
-        from commontrace.gateway import TransientAuthError, is_transient_auth_error
+        from unimem.gateway import TransientAuthError, is_transient_auth_error
 
         assert is_transient_auth_error(TransientAuthError("timeout", status=504))
         assert is_transient_auth_error(TimeoutError())
@@ -1220,7 +1220,7 @@ class TestGatewayHardening:
     def test_whoami_and_container_scoping(self, store):
         import json
 
-        from commontrace import gateway
+        from unimem import gateway
 
         gw = gateway.Gateway(store, token="test-token-xyz")
         resp = gw.handle(
@@ -1237,7 +1237,7 @@ class TestGatewayHardening:
     def test_capabilities_tier(self, store):
         import json
 
-        from commontrace import gateway
+        from unimem import gateway
 
         gw = gateway.Gateway(store)
         resp = gw.handle("GET", "/v1/capabilities")
@@ -1252,7 +1252,7 @@ class TestGatewayHardening:
 
 class TestProceduralMemory:
     def test_create_and_budget_replay(self, store):
-        from commontrace import procedural
+        from unimem import procedural
 
         steps = [
             procedural.ProceduralStep(1, "crawl page", "HTML content " * 100, key_findings="found target"),
@@ -1280,7 +1280,7 @@ class TestProceduralMemory:
 
 class TestGuardedSql:
     def test_select_validation_and_clamp(self):
-        from commontrace import sql_guard
+        from unimem import sql_guard
 
         assert sql_guard.validate_select("SELECT * FROM users") == "SELECT * FROM users"
         assert sql_guard.ensure_limit("SELECT * FROM users", 25) == "SELECT * FROM users LIMIT 25"
@@ -1294,7 +1294,7 @@ class TestGuardedSql:
     def test_read_only_execution(self, tmp_path):
         import sqlite3
 
-        from commontrace import sql_guard
+        from unimem import sql_guard
 
         db = str(tmp_path / "app.db")
         conn = sqlite3.connect(db)
@@ -1312,9 +1312,9 @@ class TestGuardedSql:
 
 class TestLiteLLMWrapper:
     def test_message_augmentation(self, store):
-        from commontrace import litellm_wrapper
+        from unimem import litellm_wrapper
 
-        wrapper = litellm_wrapper.CommonTraceLiteLLM(root=store)
+        wrapper = litellm_wrapper.UniMemLiteLLM(root=store)
         msgs = [{"role": "user", "content": "How do I test?"}]
         augmented = wrapper._augment_messages(msgs, "Project uses pytest.")
 
@@ -1323,9 +1323,9 @@ class TestLiteLLMWrapper:
         assert "Project uses pytest." in augmented[0]["content"]
 
     def test_custom_completion(self, store):
-        from commontrace import litellm_wrapper
+        from unimem import litellm_wrapper
 
-        wrapper = litellm_wrapper.CommonTraceLiteLLM(root=store, auto_extract=False)
+        wrapper = litellm_wrapper.UniMemLiteLLM(root=store, auto_extract=False)
 
         def mock_call(model, messages, **kwargs):
             return {"choices": [{"message": {"content": "ok"}}]}
@@ -1369,7 +1369,7 @@ class TestBenchmarkAdaptersAndJudges:
 
 class TestTypedHubMethods:
     def test_typed_methods_exist_on_hub_session(self):
-        from commontrace.hub_client import HubSession
+        from unimem.hub_client import HubSession
 
         methods = [
             "search_traces",
@@ -1394,7 +1394,7 @@ class TestTypedHubMethods:
 
 class TestCliSubcommands:
     def test_cli_help_hyphen_and_underscore(self):
-        from commontrace import cli
+        from unimem import cli
 
         for cmd in [
             "sql-query", "sql_query",

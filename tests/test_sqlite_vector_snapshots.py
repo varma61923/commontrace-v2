@@ -7,8 +7,8 @@ from dataclasses import replace
 
 import pytest
 
-from commontrace.vector_snapshots import SnapshotConflict
-from commontrace.vector_store import SQLiteVectorIndex, VectorRecord
+from unimem.vector_snapshots import SnapshotConflict
+from unimem.vector_store import SQLiteVectorIndex, VectorRecord
 
 
 def test_hard_erasure_overrides_old_pins_and_revokes_private_builders(tmp_path):
@@ -36,9 +36,9 @@ def test_hard_erasure_overrides_old_pins_and_revokes_private_builders(tmp_path):
             with pytest.raises(SnapshotConflict):
                 await snapshots.stage(pending, [VectorRecord("a", [1, 0, 0])])
             with sqlite3.connect(path) as db:
-                assert db.execute("SELECT count(*) FROM commontrace_snapshot_versions WHERE tenant='owner' "
+                assert db.execute("SELECT count(*) FROM unimem_snapshot_versions WHERE tenant='owner' "
                                   "AND key='a'").fetchone()[0] == 0
-                assert db.execute("SELECT count(*) FROM commontrace_snapshot_stage WHERE tenant='owner' "
+                assert db.execute("SELECT count(*) FROM unimem_snapshot_stage WHERE tenant='owner' "
                                   "AND key='a'").fetchone()[0] == 0
             other_read = await other.snapshots.pin("other")
             assert [hit.key for hit in await other.snapshots.search(other_read, [1, 0, 0])] == ["a"]
@@ -121,13 +121,13 @@ def test_expiry_cannot_be_resurrected_and_live_stage_renews(tmp_path):
             lease = await index.snapshots.begin(1, 'valid', lease_seconds=10)
             assert lease is not None
             with sqlite3.connect(path) as db:
-                db.execute('UPDATE commontrace_snapshot_builds SET expires=expires-9')
-                before = db.execute('SELECT expires FROM commontrace_snapshot_builds').fetchone()[0]
+                db.execute('UPDATE unimem_snapshot_builds SET expires=expires-9')
+                before = db.execute('SELECT expires FROM unimem_snapshot_builds').fetchone()[0]
             await index.snapshots.stage(lease, [VectorRecord('a', [1, 0, 0])])
             with sqlite3.connect(path) as db:
-                after = db.execute('SELECT expires FROM commontrace_snapshot_builds').fetchone()[0]
+                after = db.execute('SELECT expires FROM unimem_snapshot_builds').fetchone()[0]
                 assert after > before + 8
-                db.execute('UPDATE commontrace_snapshot_builds SET expires=0')
+                db.execute('UPDATE unimem_snapshot_builds SET expires=0')
             with pytest.raises(SnapshotConflict):
                 await index.snapshots.stage(lease, [])
             assert not await index.snapshots.publish(lease)

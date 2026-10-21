@@ -8,7 +8,7 @@ import statistics
 import tempfile
 import time
 
-from commontrace import hierarchical, tiering
+from unimem import hierarchical, tiering
 
 
 def run(iterations: int = 100) -> dict:

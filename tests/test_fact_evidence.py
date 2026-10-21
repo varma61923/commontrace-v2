@@ -11,14 +11,14 @@ from pathlib import Path
 
 import pytest
 
-from commontrace import frontmatter, hierarchical, lesson_admission, observations, recall
-from commontrace.fact_evidence import EvidenceError, EvidenceResolver, FactEvidence, bind_evidence, claim_revision
+from unimem import frontmatter, hierarchical, lesson_admission, observations, recall
+from unimem.fact_evidence import EvidenceError, EvidenceResolver, FactEvidence, bind_evidence, claim_revision
 
 
 @pytest.fixture(params=["jsonl", "sqlite"])
 def root(tmp_path: Path, request) -> str:
     if request.param == "sqlite":
-        from commontrace import fact_store
+        from unimem import fact_store
         fact_store.migrate(str(tmp_path))
     return str(tmp_path)
 
@@ -37,7 +37,7 @@ def derived(root: str, sources, *, statement="The Lumen database timeout is 5 se
 
 
 def cli(root: str, *arguments: str):
-    return subprocess.run([sys.executable, "-m", "commontrace.cli", *arguments, "--dest", root],
+    return subprocess.run([sys.executable, "-m", "unimem.cli", *arguments, "--dest", root],
                           text=True, capture_output=True, check=False)
 
 
@@ -220,7 +220,7 @@ def test_cycle_guard_terminates_with_corrupted_dependencies(root, monkeypatch):
                                evidence=[FactEvidence("fact", second.id, "0" * 64)]),
              second.id: replace(second, evidence_bound=True, evidence_revision="0" * 64,
                                 evidence=[FactEvidence("fact", first.id, "0" * 64)])}
-    monkeypatch.setattr("commontrace.fact_evidence.claim_revision", lambda fact: "0" * 64)
+    monkeypatch.setattr("unimem.fact_evidence.claim_revision", lambda fact: "0" * 64)
     assert not EvidenceResolver(root, facts).assess(first.id).eligible
 
 
@@ -349,7 +349,7 @@ def test_cli_evidence_and_temporal_resolution_flow(root):
 
 def test_real_mcp_admits_queries_and_revokes_bound_facts(root):
     pytest.importorskip("mcp")
-    from commontrace import mcp_server
+    from unimem import mcp_server
     assert cli(root, "init", "--agent-type", "coding").returncode == 0
     premise = source(root, "Instrument logged a Lumen timeout of 5 seconds")
     server = mcp_server.build_server(root)

@@ -1,4 +1,4 @@
-from commontrace import fact_store, hierarchical
+from unimem import fact_store, hierarchical
 
 
 def test_candidates_use_fts_and_preserve_governance(tmp_path, monkeypatch):

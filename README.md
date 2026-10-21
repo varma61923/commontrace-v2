@@ -2,7 +2,7 @@
 
 **A referee for how agents and robots change themselves.**
 
-Agents with memory repeat fewer mistakes, until a memory goes stale. Then the agent acts confidently on something that is no longer true, and nothing tells you which memory caused it. UniMem is the independent referee for how agents and robots change themselves: it measures memories, skills, writers and optimizer edits through randomized evidence; governs promotion and rollback; and carries verifiable evidence across trust boundaries. Its memory trials withhold eligible memories from a small random share of tasks, compare outcomes, withdraw harmful memories, and learn where each memory helps. The Python package and executable remain `commontrace`.
+Agents with memory repeat fewer mistakes, until a memory goes stale. Then the agent acts confidently on something that is no longer true, and nothing tells you which memory caused it. UniMem is the independent referee for how agents and robots change themselves: it measures memories, skills, writers and optimizer edits through randomized evidence; governs promotion and rollback; and carries verifiable evidence across trust boundaries. Its memory trials withhold eligible memories from a small random share of tasks, compare outcomes, withdraw harmful memories, and learn where each memory helps. The Python package and executable remain `unimem`.
 
 - **Causal, not correlational.** A randomized holdout per memory and per task gives a real cause-and-effect estimate for each memory, with integrity checks that catch a broken experiment before you quote it.
 - **Governed.** Lessons need review receipts, facts carry valid time and record time, every write is scoped to a tenant, and anything an agent cannot see can never leak into its answers.
@@ -35,15 +35,31 @@ pip install -e .        # Python 3.10+
 ```bash
 python -m pip install -e .
 
-commontrace init --dest ./mem
-commontrace fact add "The launch checklist is stored in the blue folder." --dest ./mem
-commontrace recall "Where is the launch checklist stored?" --dest ./mem
+unimem init --dest ./mem
+unimem fact add "The launch checklist is stored in the blue folder." --dest ./mem
+unimem recall "Where is the launch checklist stored?" --dest ./mem
 ```
 
 To run a local gateway and console against a project (the default port is 8787):
 
 ```bash
-commontrace up --dest /path/to/agent-project
+unimem up --dest /path/to/agent-project
+```
+
+Optional CPU semantic retrieval is installed with `pip install -e '.[fastembed]'`.
+The existing `fastembed:BAAI/bge-small-en-v1.5` and
+`fastembed:BAAI/bge-base-en-v1.5` tags use pinned quantized ONNX text models
+directly, without image decoder dependencies. `FASTEMBED_CACHE_PATH` selects the
+model cache. The shipped default reads cached weights only and keeps lexical
+retrieval available on a cache miss. To populate a cache explicitly before
+starting a server:
+
+```bash
+FASTEMBED_CACHE_PATH=/path/to/model-cache python - <<'PY'
+from unimem import embeddings
+model = embeddings.provider("fastembed:BAAI/bge-small-en-v1.5")
+model.embed(["Prepare the local retrieval model."], query=False)
+PY
 ```
 
 To run an offline end-to-end check that needs no model and no server:
@@ -63,11 +79,11 @@ Every memory system claims to make agents better. UniMem measures whether it doe
 Start an experiment, wrap your existing retrieval, and report outcomes:
 
 ```bash
-commontrace experiment --configure --rate 0.5 --dest ./mem
+unimem experiment --configure --rate 0.5 --dest ./mem
 ```
 
 ```python
-from commontrace.measure import CausalMemory
+from unimem.measure import CausalMemory
 
 memories = [
     {"id": "retry-429", "text": "On HTTP 429, back off exponentially and retry."},
@@ -84,7 +100,7 @@ memory.record_outcome("ticket-1042", succeeded=True)
 Then read the evidence:
 
 ```bash
-commontrace experiment --dest ./mem
+unimem experiment --dest ./mem
 ```
 
 ```
@@ -101,7 +117,7 @@ The integrity audit runs before any effect is shown. It checks for differential 
 To act on the evidence automatically:
 
 ```bash
-commontrace retrieval --on-harm withdraw --dest ./mem   # stop delivering memories proven to hurt
+unimem retrieval --on-harm withdraw --dest ./mem   # stop delivering memories proven to hurt
 ```
 
 The other measurement tools:
@@ -123,13 +139,13 @@ An average can hide two opposite effects. A lesson about the test runner helps t
 - **An honest off-policy check.** The gate is fitted on earlier occasions and scored on later ones by importance sampling over each occasion's full assignment, against what was actually delivered.
 
 ```bash
-commontrace allocate enable --mode thompson --dest ./mem
-commontrace allocate plan --if-due --dest ./mem      # run on a schedule, e.g. hourly
-commontrace allocate gate --dest ./mem
+unimem allocate enable --mode thompson --dest ./mem
+unimem allocate plan --if-due --dest ./mem      # run on a schedule, e.g. hourly
+unimem allocate gate --dest ./mem
 ```
 
 ```
-[commontrace] causal gate over 800 resolved assignments (between-lesson sd 20.7%, between-context sd 2.0%)
+[unimem] causal gate over 800 resolved assignments (between-lesson sd 20.7%, between-context sd 2.0%)
   memories (posterior effect, P(helps), proposed withholding):
     retry-429: -2.8% +/- 4.8%, P(helps) 28%, withhold 72% [189 shown / 211 withheld, source local]
     verify-owner: +25.8% +/- 4.6%, P(helps) 100%, withhold 5% [208 shown / 192 withheld, source local]
@@ -184,13 +200,13 @@ JSONL and Markdown are the canonical stores, with SQLite (WAL with FTS5) for fac
 **MCP.** Run the server over stdio, SSE or streamable HTTP:
 
 ```bash
-commontrace serve --transport stdio --dest ./mem
+unimem serve --transport stdio --dest ./mem
 ```
 
 **Coding agents.** One command writes the configuration and hooks:
 
 ```bash
-commontrace install --target claude-code     # also: cursor, windsurf, codex, copilot, gemini, devin, opencode, generic-mcp
+unimem install --target claude-code     # also: cursor, windsurf, codex, copilot, gemini, devin, opencode, generic-mcp
 ```
 
 **Frameworks.**
@@ -225,7 +241,7 @@ docker compose up    # set POSTGRES_PASSWORD and HUB_CONSOLE_SECRET for anything
 ```mermaid
 flowchart LR
     Agent["Agent or framework"] -->|"MCP · HTTP · Python"| Recall
-    subgraph CT["UniMem"]
+    subgraph UNIMEM["UniMem"]
         Recall["Retrieval<br/>hybrid · rerank · multi-hop"] --> Holdout["Holdout<br/>per memory, per occasion"]
         Holdout --> Deliver["Delivered context"]
         Outcomes["Outcomes"] --> Evidence["Evidence<br/>AIPW · integrity audit"]
@@ -254,7 +270,7 @@ seller sandboxes and vendor authentication are pluggable deployment interfaces;
 the CPU trainer, mock robot loop and metadata ingest do not claim to replace them.
 
 The `frontier` CLI accepts a bounded JSON request and `--dest STORE`. Run
-`commontrace frontier --help` for the operation list. Dedicated `lineage`, `log`,
+`unimem frontier --help` for the operation list. Dedicated `lineage`, `log`,
 `incident`, `promote`, `safety`, `experiment`, `allocate`, `dream`, `retrieval` and
 `defense` workflows remain available. Existing stores retain their canonical
 legacy hashes and defaults.
@@ -357,7 +373,7 @@ audit. The exact gates are defined in [CI](.github/workflows/ci.yml),
 [security checks](.github/workflows/security.yml), and the
 [architecture audit](.github/workflows/graphify.yml). Use the [Graphify exploration guide](docs/architecture-exploration.md)
 for local dependency queries and impact analysis. See the branch's
-[Actions runs](https://github.com/varma61923/commontrace-v2/actions) for current
+[Actions runs](https://github.com/varma61923/unimem/actions) for current
 results. Optional integrations use mocks or local fixtures; CI does not exercise
 live vendor requests, payments, enclaves or robot actuation.
 

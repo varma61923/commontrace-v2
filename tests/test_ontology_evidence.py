@@ -6,7 +6,7 @@ import json
 import pytest
 
 from benchmarks import ontology_typing_eval
-from commontrace import entities, graph, ontology, ontology_classify
+from unimem import entities, graph, ontology, ontology_classify
 
 ONTO = ontology.Ontology.default()
 
@@ -104,7 +104,7 @@ def test_independent_evidence_combines_by_noisy_or():
 
 def test_a_personal_name_needs_a_cue(monkeypatch):
     assert typed("Kaelen Voss", "Kaelen Voss.").method == "learned"  # the learned typer reads the form
-    monkeypatch.setenv("COMMONTRACE_TYPING_MODEL", "off")
+    monkeypatch.setenv("UNIMEM_TYPING_MODEL", "off")
     assert typed("Kaelen Voss", "Kaelen Voss.").type is None  # for the rules the name form alone is not enough
     assert typed("Kaelen Voss", "Kaelen Voss should review the pull request.").type == "person"
     assert typed("Aetheria Systems", "Aetheria Systems should review it.").type == "organization"

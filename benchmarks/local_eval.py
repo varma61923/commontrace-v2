@@ -93,7 +93,7 @@ def execute(checkout: str, call_log: str, argv: list[str], timeout_seconds: int)
     """Observe provider responses without changing answer prompts, judges or scores."""
     sys.path.insert(0, checkout)
     from benchmarks import conversation_bench
-    from commontrace import llm
+    from unimem import llm
 
     llm._TIMEOUT_SECONDS = timeout_seconds
     original = llm._post_json
@@ -164,8 +164,8 @@ def main(argv=None) -> int:
                 "judge_profile": "locomo-downstream-binary-v1" if args.dataset == "locomo" else args.dataset,
                 "runs": []}
     environment = dict(os.environ)
-    environment.update(COMMONTRACE_LLM_PROVIDER="openai-compatible", COMMONTRACE_LLM_API_KEY="local-only",
-                       COMMONTRACE_LLM_BASE_URL=args.endpoint, COMMONTRACE_LLM_MODEL=args.model,
+    environment.update(UNIMEM_LLM_PROVIDER="openai-compatible", UNIMEM_LLM_API_KEY="local-only",
+                       UNIMEM_LLM_BASE_URL=args.endpoint, UNIMEM_LLM_MODEL=args.model,
                        HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", OMP_NUM_THREADS="1",
                        OPENBLAS_NUM_THREADS="1", MKL_NUM_THREADS="1", PYTHONUNBUFFERED="1")
     for index, checkout in enumerate(args.checkout):

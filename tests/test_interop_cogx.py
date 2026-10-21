@@ -4,19 +4,19 @@ import os
 
 import pytest
 
-from commontrace import interop
-from commontrace.cli import main
+from unimem import interop
+from unimem.cli import main
 
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
-    monkeypatch.delenv("COMMONTRACE_ROOT", raising=False)
+    monkeypatch.delenv("UNIMEM_ROOT", raising=False)
     monkeypatch.chdir(tmp_path)
     return tmp_path
 
 
 def _seed_store(root) -> dict[str, str]:
-    from commontrace import frontmatter, graph, hierarchical, memory_blocks
+    from unimem import frontmatter, graph, hierarchical, memory_blocks
 
     root_s = str(root)
     main(["init", "--agent-type", "code", "--dest", root_s])
@@ -95,7 +95,7 @@ class TestEnvelope:
 
 class TestCliRoundTrip:
     def test_export_import_round_trip(self, store, tmp_path, capsys):
-        from commontrace import graph, hierarchical, memory_blocks
+        from unimem import graph, hierarchical, memory_blocks
 
         seeded = _seed_store(store)
         capsys.readouterr()
@@ -173,7 +173,7 @@ class TestMem0Adapter:
         assert interop.import_mem0_dump(None) == []
 
     def test_mem0_records_apply_to_store(self, store):
-        from commontrace import hierarchical
+        from unimem import hierarchical
 
         main(["init", "--agent-type", "code", "--dest", str(store)])
         counts = interop.apply_store(str(store), interop.import_mem0_dump(self.MEM0))
@@ -233,7 +233,7 @@ class TestLettaAdapter:
         assert {r["data"]["name"] for r in records} == {"persona", "human"}
 
     def test_letta_records_apply_to_store(self, store):
-        from commontrace import memory_blocks
+        from unimem import memory_blocks
 
         main(["init", "--agent-type", "code", "--dest", str(store)])
         counts = interop.apply_store(str(store), interop.import_letta_blocks(self.LETTA))
@@ -280,7 +280,7 @@ class TestCogneeAdapter:
         assert kinds.count("fact") == 3
 
     def test_cognee_records_apply_to_store(self, store):
-        from commontrace import hierarchical
+        from unimem import hierarchical
 
         main(["init", "--agent-type", "code", "--dest", str(store)])
         counts = interop.apply_store(str(store), interop.import_cognee_dump(self.COGNEE))
@@ -313,7 +313,7 @@ class TestSupermemoryAdapter:
         assert kinds.count("fact") == 3
 
     def test_supermemory_records_apply_to_store(self, store):
-        from commontrace import memory_blocks
+        from unimem import memory_blocks
 
         main(["init", "--agent-type", "code", "--dest", str(store)])
         counts = interop.apply_store(str(store), interop.import_supermemory_dump(self.SUPERMEMORY))
@@ -346,7 +346,7 @@ class TestHindsightAdapter:
         assert kinds.count("block") == 1
 
     def test_hindsight_records_apply_to_store(self, store):
-        from commontrace import hierarchical
+        from unimem import hierarchical
 
         main(["init", "--agent-type", "code", "--dest", str(store)])
         counts = interop.apply_store(str(store), interop.import_hindsight_dump(self.HINDSIGHT))

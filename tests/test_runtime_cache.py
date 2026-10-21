@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from commontrace.runtime_cache import RuntimeCache
+from unimem.runtime_cache import RuntimeCache
 
 
 def make_cache(**kwargs):

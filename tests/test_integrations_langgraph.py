@@ -8,9 +8,9 @@ langgraph = pytest.importorskip("langgraph.graph", reason="langgraph is an optio
 
 from typing import TypedDict  # noqa: E402
 
-from commontrace import holdout_io  # noqa: E402
-from commontrace.integrations import langgraph as ct_langgraph  # noqa: E402
-from commontrace.measure import CausalMemory  # noqa: E402
+from unimem import holdout_io  # noqa: E402
+from unimem.integrations import langgraph as unimem_langgraph  # noqa: E402
+from unimem.measure import CausalMemory  # noqa: E402
 
 StateGraph = langgraph.StateGraph
 END = langgraph.END
@@ -18,7 +18,7 @@ END = langgraph.END
 
 class _State(TypedDict, total=False):
     input: str
-    commontrace_lessons: list
+    unimem_lessons: list
     resolved: bool
 
 
@@ -45,19 +45,19 @@ def _build_graph(node):
 class TestThreadId:
     def test_extracts_the_configurable_thread_id(self):
         config = {"configurable": {"thread_id": "conv-42"}}
-        assert ct_langgraph.thread_id(config) == "conv-42"
+        assert unimem_langgraph.thread_id(config) == "conv-42"
 
     def test_raises_when_config_is_none(self):
         with pytest.raises(ValueError, match="thread_id"):
-            ct_langgraph.thread_id(None)
+            unimem_langgraph.thread_id(None)
 
     def test_raises_when_configurable_is_missing(self):
         with pytest.raises(ValueError, match="thread_id"):
-            ct_langgraph.thread_id({"metadata": {}})
+            unimem_langgraph.thread_id({"metadata": {}})
 
     def test_raises_when_thread_id_is_not_a_string(self):
         with pytest.raises(ValueError, match="thread_id"):
-            ct_langgraph.thread_id({"configurable": {"thread_id": 42}})
+            unimem_langgraph.thread_id({"configurable": {"thread_id": 42}})
 
 
 class TestWithLessons:
@@ -67,9 +67,9 @@ class TestWithLessons:
         memory = CausalMemory(store.search, root=str(tmp_path))
 
         def node(state, config=None):
-            return {"resolved": bool(state.get("commontrace_lessons"))}
+            return {"resolved": bool(state.get("unimem_lessons"))}
 
-        wrapped = ct_langgraph.with_lessons(node, memory)
+        wrapped = unimem_langgraph.with_lessons(node, memory)
         compiled = _build_graph(wrapped)
         result = compiled.invoke(
             {"input": "webhook fired twice"},
@@ -85,7 +85,7 @@ class TestWithLessons:
         def node(state, config=None):
             return {"resolved": True}
 
-        compiled = _build_graph(ct_langgraph.with_lessons(node, memory))
+        compiled = _build_graph(unimem_langgraph.with_lessons(node, memory))
         compiled.invoke({"input": "q"}, config={"configurable": {"thread_id": "conv-99"}})
 
         log_path = holdout_io.holdout_log_path(str(tmp_path))
@@ -99,10 +99,10 @@ class TestWithLessons:
         seen = {}
 
         def node(state, config=None):
-            seen["lessons"] = state.get("commontrace_lessons")
+            seen["lessons"] = state.get("unimem_lessons")
             return {"resolved": True}
 
-        compiled = _build_graph(ct_langgraph.with_lessons(node, memory))
+        compiled = _build_graph(unimem_langgraph.with_lessons(node, memory))
         compiled.invoke({"input": "q"})
         assert seen["lessons"] == []
 
@@ -119,7 +119,7 @@ class TestWithLessons:
         def node(state, config=None):
             return {"resolved": True}
 
-        wrapped = ct_langgraph.with_lessons(
+        wrapped = unimem_langgraph.with_lessons(
             node, memory, state_query=lambda state: state["input"].upper(),
         )
         compiled = _build_graph(wrapped)
@@ -134,10 +134,10 @@ class TestWithLessons:
         seen = {}
 
         def node(state, config=None):
-            seen["lessons"] = state.get("commontrace_lessons")
+            seen["lessons"] = state.get("unimem_lessons")
             return {"resolved": True}
 
-        compiled = _build_graph(ct_langgraph.with_lessons(node, memory))
+        compiled = _build_graph(unimem_langgraph.with_lessons(node, memory))
         result = compiled.invoke(
             {"input": "q"}, config={"configurable": {"thread_id": "conv-3"}},
         )
@@ -155,12 +155,12 @@ class TestRecordOutcome:
         def node(state, config=None):
             return {"resolved": True}
 
-        compiled = _build_graph(ct_langgraph.with_lessons(node, memory))
+        compiled = _build_graph(unimem_langgraph.with_lessons(node, memory))
         compiled.invoke({"input": "q"}, config=config)
 
-        assert ct_langgraph.record_outcome(memory, config, succeeded=True) is True
+        assert unimem_langgraph.record_outcome(memory, config, succeeded=True) is True
         assert holdout_io.read_outcomes(str(tmp_path)) == {"conv-7": True}
 
     def test_returns_false_rather_than_raising_with_no_thread_id(self, tmp_path):
         memory = CausalMemory(lambda q, **kw: [], root=str(tmp_path))
-        assert ct_langgraph.record_outcome(memory, None, succeeded=True) is False
+        assert unimem_langgraph.record_outcome(memory, None, succeeded=True) is False

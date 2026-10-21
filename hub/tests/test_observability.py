@@ -330,11 +330,11 @@ class TestNoSecretsInRequestLogs:
 
         app = Starlette(routes=[Route("/app/proof/shared/{token}", _ok), Route("/app/memory", _ok)])
         app.add_middleware(observability.RequestContextMiddleware)
-        caplog.set_level(logging.INFO, logger="commontrace.hub.request")
+        caplog.set_level(logging.INFO, logger="unimem.hub.request")
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c:
             await c.get("/app/proof/shared/SECRET-TOKEN-abc")
             await c.get("/app/memory?q=customer+search+text")
-        hub_records = [r for r in caplog.records if r.name == "commontrace.hub.request"]
+        hub_records = [r for r in caplog.records if r.name == "unimem.hub.request"]
         assert [r.http_path for r in hub_records] == ["/app/proof/shared/[redacted]", "/app/memory"]
         logged = " ".join(str(vars(r)) for r in hub_records)
         assert "SECRET-TOKEN" not in logged and "customer" not in logged

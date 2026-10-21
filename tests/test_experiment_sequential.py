@@ -15,9 +15,9 @@ import json
 import pytest
 import yaml
 
-from commontrace import evidence
-from commontrace import experiment as ex
-from commontrace.cli import main
+from unimem import evidence
+from unimem import experiment as ex
+from unimem.cli import main
 
 
 def _obs(slug, n, injected, success_rate, offset=0):
@@ -130,7 +130,7 @@ class TestUnifiedSequentialRule:
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
-    monkeypatch.delenv("COMMONTRACE_ROOT", raising=False)
+    monkeypatch.delenv("UNIMEM_ROOT", raising=False)
     monkeypatch.chdir(tmp_path)
     main(["init", "--agent-type", "code", "--dest", str(tmp_path)])
     return tmp_path
@@ -151,7 +151,7 @@ def _write_episode(store, name, verdict, day):
 
 
 def _seed_two_lessons(store):
-    from commontrace.commands.experiment_cmd import holdout_log_path
+    from unimem.commands.experiment_cmd import holdout_log_path
 
     lines = []
     for lesson in ("a", "b"):

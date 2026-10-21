@@ -1,1 +1,1 @@
-rootProject.name = "commontrace-jetbrains"
+rootProject.name = "unimem-jetbrains"

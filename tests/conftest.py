@@ -5,16 +5,16 @@ import pytest
 import yaml
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(REPO_ROOT, "commontrace", "reference"))
+sys.path.insert(0, os.path.join(REPO_ROOT, "unimem", "reference"))
 
-os.environ.setdefault("COMMONTRACE_DEFAULT_RERANK", "none")
-os.environ.setdefault("COMMONTRACE_WARM", "0")
+os.environ.setdefault("UNIMEM_DEFAULT_RERANK", "none")
+os.environ.setdefault("UNIMEM_WARM", "0")
 
 
 @pytest.fixture(autouse=True)
 def close_idle_fact_connections():
     yield
-    from commontrace import fact_store, memory_journal
+    from unimem import fact_store, memory_journal
 
     fact_store.close_connections()
     memory_journal.close_connections()
@@ -86,7 +86,7 @@ def write_episode(mem_dir, name, description="A test episode", project="test-pro
     fm = {
         "name": name,
         "description": description,
-        "task_invocation": f"/commontrace {task}",
+        "task_invocation": f"/unimem {task}",
         "tags": tags or ["test"],
         "project": project,
         "verdict": verdict,

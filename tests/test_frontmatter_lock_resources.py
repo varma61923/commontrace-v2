@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from commontrace import frontmatter
+from unimem import frontmatter
 
 
 def _hold_lock(path, ready, release):

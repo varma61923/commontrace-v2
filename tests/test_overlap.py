@@ -3,8 +3,8 @@ import os
 
 import pytest
 
-from commontrace import overlap
-from commontrace.cli import main
+from unimem import overlap
+from unimem.cli import main
 
 
 def _true_jaccard(a: set, b: set) -> float:
@@ -42,7 +42,7 @@ class TestMinHashEstimator:
         import sys
 
         code = (
-            "from commontrace import overlap; "
+            "from unimem import overlap; "
             "print(overlap.minhash('stripe webhook idempotency')[:4])"
         )
         env = dict(os.environ, PYTHONHASHSEED="0")
@@ -155,7 +155,7 @@ class TestDisclosureBoundary:
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
-    monkeypatch.delenv("COMMONTRACE_ROOT", raising=False)
+    monkeypatch.delenv("UNIMEM_ROOT", raising=False)
     monkeypatch.chdir(tmp_path)
     return tmp_path
 

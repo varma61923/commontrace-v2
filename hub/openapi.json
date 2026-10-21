@@ -907,7 +907,7 @@
         "description": "A span with neither context nor solution text is skipped.",
         "properties": {
           "attributes": {
-            "description": "OTLP KeyValue list, or a flat object. Read: gen_ai.prompt / gen_ai.input.messages / gen_ai.request.messages / traceloop.entity.input / input.value (context); gen_ai.completion / gen_ai.output.messages / gen_ai.response.messages / traceloop.entity.output / output.value (solution); gen_ai.system and gen_ai.request.model (tags); commontrace.occasion_id / session.id / gen_ai.conversation.id with commontrace.occasion.succeeded (occasion outcome).",
+            "description": "OTLP KeyValue list, or a flat object. Read: gen_ai.prompt / gen_ai.input.messages / gen_ai.request.messages / traceloop.entity.input / input.value (context); gen_ai.completion / gen_ai.output.messages / gen_ai.response.messages / traceloop.entity.output / output.value (solution); gen_ai.system and gen_ai.request.model (tags); unimem.occasion_id / session.id / gen_ai.conversation.id with unimem.occasion.succeeded (occasion outcome).",
             "oneOf": [
               {
                 "items": {
@@ -1560,7 +1560,7 @@
         "allOf": [
           {
             "additionalProperties": true,
-            "description": "A signed receipt (commontrace/origin.py `sign`).",
+            "description": "A signed receipt (unimem/origin.py `sign`).",
             "properties": {
               "algorithm": {
                 "description": "Signature algorithm (`ed25519`, or absent for HMAC).",
@@ -1608,11 +1608,11 @@
             "type": "object"
           }
         ],
-        "description": "A publisher-signed lesson listing (commontrace/market_listing.py). `record` holds `kind` (`lesson-listing`), `schema_version` (1), `lesson` {frontmatter, body}, `lesson_sha256`, `licence` {id, terms, price?, outcome_share?}, `certificate` (a referee-signed replicated-lift certificate) and `listed_at`."
+        "description": "A publisher-signed lesson listing (unimem/market_listing.py). `record` holds `kind` (`lesson-listing`), `schema_version` (1), `lesson` {frontmatter, body}, `lesson_sha256`, `licence` {id, terms, price?, outcome_share?}, `certificate` (a referee-signed replicated-lift certificate) and `listed_at`."
       },
       "SignedReceipt": {
         "additionalProperties": true,
-        "description": "A signed receipt (commontrace/origin.py `sign`).",
+        "description": "A signed receipt (unimem/origin.py `sign`).",
         "properties": {
           "algorithm": {
             "description": "Signature algorithm (`ed25519`, or absent for HMAC).",
@@ -1888,7 +1888,7 @@
         "type": "http"
       },
       "apiKey": {
-        "description": "An org API key (`ct_...`). Each route also requires a scope on that key (read, write); a key without it gets 403.",
+        "description": "An org API key (`unimem_...`). Each route also requires a scope on that key (read, write); a key without it gets 403.",
         "in": "header",
         "name": "X-API-Key",
         "type": "apiKey"
@@ -1896,7 +1896,7 @@
       "consoleSession": {
         "description": "Signed session cookie set by POST /app/signin (HttpOnly, SameSite=Strict, Path=/app, 8 hours). It names the API key used to sign in; revoking that key ends the session.",
         "in": "cookie",
-        "name": "ct_console",
+        "name": "unimem_console",
         "type": "apiKey"
       },
       "githubSignature": {
@@ -1964,9 +1964,9 @@
       "identifier": "AGPL-3.0-only",
       "name": "GNU AGPLv3"
     },
-    "summary": "Every HTTP route the CommonTrace Hub serves.",
-    "title": "CommonTrace Hub",
-    "version": "2.0.0"
+    "summary": "Every HTTP route the UniMem Hub serves.",
+    "title": "UniMem Hub",
+    "version": "1.0.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -6662,7 +6662,7 @@
                 }
               }
             },
-            "description": "Attachment `commontrace-assignments.csv`."
+            "description": "Attachment `unimem-assignments.csv`."
           },
           "303": {
             "$ref": "#/components/responses/SignInRedirect"
@@ -7027,13 +7027,13 @@
             "description": "The form with an error (rejected key, or too many attempts)."
           },
           "303": {
-            "description": "Signed in: sets the ct_console cookie and redirects to /app.",
+            "description": "Signed in: sets the unimem_console cookie and redirects to /app.",
             "headers": {
               "Location": {
                 "$ref": "#/components/headers/Location"
               },
               "Set-Cookie": {
-                "description": "ct_console session cookie.",
+                "description": "unimem_console session cookie.",
                 "schema": {
                   "type": "string"
                 }
@@ -10778,7 +10778,7 @@
       "name": "MCP"
     },
     {
-      "description": "The /api/v1 REST API (HUB_REST_API_ENABLED) the CommonTrace client plugin speaks. X-API-Key.",
+      "description": "The /api/v1 REST API (HUB_REST_API_ENABLED) the UniMem client plugin speaks. X-API-Key.",
       "name": "REST"
     },
     {

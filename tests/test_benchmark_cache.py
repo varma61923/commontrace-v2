@@ -8,7 +8,7 @@ def test_bound_cache_isolates_provider_account_endpoint_and_generation(tmp_path)
     from dataclasses import replace
 
     from benchmarks.cache import completion_binding
-    from commontrace.llm import Config
+    from unimem.llm import Config
 
     cache = BenchmarkCache(str(tmp_path))
     config = Config("openai-compatible", "same-model", "private-credential", base_url="https://a.example/v1")
@@ -40,7 +40,7 @@ def test_unbound_v1_database_cannot_satisfy_new_lookup(tmp_path):
 
 def test_ambient_cloud_auth_requires_explicit_account_namespace():
     from benchmarks.cache import completion_binding
-    from commontrace.llm import Config
+    from unimem.llm import Config
 
     for provider in ("bedrock", "vertex"):
         with pytest.raises(ValueError, match="CACHE_NAMESPACE"):
@@ -52,16 +52,16 @@ def test_ambient_cloud_auth_requires_explicit_account_namespace():
 def test_cached_offline_config_keeps_explicit_routing_namespace(monkeypatch):
     from benchmarks.cache import completion_binding
     from benchmarks.conversation_bench import _get_llm_config
-    from commontrace import llm
+    from unimem import llm
 
     def unavailable():
         raise llm.LLMUnavailable("no credentials")
     monkeypatch.setattr(llm, "load_config", unavailable)
-    monkeypatch.setenv("COMMONTRACE_LLM_CACHE_NAMESPACE", "tenant-a")
-    monkeypatch.setenv("COMMONTRACE_LLM_REGION", "region-a")
-    monkeypatch.setenv("COMMONTRACE_LLM_PROJECT", "project-a")
+    monkeypatch.setenv("UNIMEM_LLM_CACHE_NAMESPACE", "tenant-a")
+    monkeypatch.setenv("UNIMEM_LLM_REGION", "region-a")
+    monkeypatch.setenv("UNIMEM_LLM_PROJECT", "project-a")
     config_a = _get_llm_config("model")
-    monkeypatch.setenv("COMMONTRACE_LLM_CACHE_NAMESPACE", "tenant-b")
+    monkeypatch.setenv("UNIMEM_LLM_CACHE_NAMESPACE", "tenant-b")
     config_b = _get_llm_config("model")
     assert config_a.region == "region-a" and config_a.project == "project-a"
     assert config_a.cache_namespace == "tenant-a"

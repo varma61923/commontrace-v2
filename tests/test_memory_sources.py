@@ -4,8 +4,8 @@ import json
 import os
 import random
 
-from commontrace import experiment, holdout_io, memory_sources
-from commontrace.commands import experiment_cmd
+from unimem import experiment, holdout_io, memory_sources
+from unimem.commands import experiment_cmd
 
 FIXED_SALT = "test-memory-sources-fixed-salt"
 

@@ -16,6 +16,12 @@ RUN pip install --prefix=/install -r hub/requirements.txt -c hub/requirements-lo
 
 FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f AS runtime
 
+# Apply fixes newer than the pinned base image (PCRE2 and OpenSSL).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends --only-upgrade \
+        libpcre2-8-0 libssl3t64 openssl openssl-provider-legacy \
+    && rm -rf /var/lib/apt/lists/*
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/app \
@@ -29,7 +35,7 @@ WORKDIR /app
 
 COPY hub/ /app/hub/
 COPY protocol/ /app/protocol/
-COPY commontrace/ /app/commontrace/
+COPY unimem/ /app/unimem/
 
 # Checkouts may use a private umask; the non-root service must read packaged code.
 RUN chmod -R u=rwX,go=rX /app

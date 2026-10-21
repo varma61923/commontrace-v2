@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from commontrace import semantic
+from unimem import semantic
 
 np = pytest.importorskip("numpy")
 

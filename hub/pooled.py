@@ -7,11 +7,11 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from starlette.responses import JSONResponse
 
-from commontrace import frontier_protocol as fp
-from commontrace import pooled_evidence
 from hub import transparency
 from hub.db import session_scope
 from hub.models import PooledContribution
+from unimem import frontier_protocol as fp
+from unimem import pooled_evidence
 
 
 def add_routes(app, session_factory, *, authenticate, require_scope, config):

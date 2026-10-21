@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-from commontrace import store_state
+from unimem import store_state
 
 
 def _store(tmp_path, *, traces=(), lessons=()):
@@ -12,7 +12,7 @@ def _store(tmp_path, *, traces=(), lessons=()):
     os.makedirs(os.path.join(root, "memory", "traces"), exist_ok=True)
     os.makedirs(os.path.join(root, "memory", "lessons"), exist_ok=True)
     with open(os.path.join(root, "memory", "traces", "README.md"), "w") as fh:
-        fh.write("# Traces\nExplanatory scaffolding written by `commontrace init`.\n")
+        fh.write("# Traces\nExplanatory scaffolding written by `unimem init`.\n")
     with open(os.path.join(root, "memory", "lessons", "lesson_template.md"), "w") as fh:
         fh.write("---\nname: lesson-slug\nstatus: review\n---\n# template\n")
     for i, title in enumerate(traces):
@@ -57,26 +57,26 @@ class TestItNamesTheRightNextCommand:
     def test_an_empty_store_is_told_to_capture_or_write(self, tmp_path):
         msg = store_state.why_no_results(_store(tmp_path))
         assert "empty" in msg
-        assert "commontrace capture" in msg
-        assert "commontrace lesson new" in msg
+        assert "unimem capture" in msg
+        assert "unimem lesson new" in msg
 
     def test_traces_without_lessons_explains_that_query_ranks_lessons(self, tmp_path):
         msg = store_state.why_no_results(_store(tmp_path, traces=["a", "b"]))
         assert "2 traces" in msg
         assert "LESSONS, not traces" in msg
-        assert "commontrace distill" in msg
+        assert "unimem distill" in msg
 
     def test_it_offers_the_direct_path_when_distill_cannot_help(self, tmp_path):
         msg = store_state.why_no_results(_store(tmp_path, traces=["only one"]))
         assert "1 trace captured" in msg
-        assert "commontrace lesson new" in msg
+        assert "unimem lesson new" in msg
 
     def test_review_only_lessons_name_the_actual_blocker_and_the_slug(self, tmp_path):
         root = _store(tmp_path, lessons=[("lesson_mine", "review")])
         msg = store_state.why_no_results(root)
         assert "status=review" in msg
         assert "only returns ACTIVE" in msg
-        assert "commontrace lesson approve lesson_mine" in msg
+        assert "unimem lesson approve lesson_mine" in msg
 
     def test_a_genuine_miss_says_so_rather_than_blaming_the_pipeline(self, tmp_path):
         root = _store(tmp_path, lessons=[("lesson_a", "active")])
@@ -102,7 +102,7 @@ class TestItNamesTheRightNextCommand:
 
 class TestTheMcpRetrieveToolMakesTheSameDistinction:
     def test_review_pending_names_approval_rather_than_more_capturing(self, tmp_path):
-        from commontrace import mcp_server
+        from unimem import mcp_server
 
         root = _store(tmp_path, traces=["a", "b"], lessons=[("lesson_mine", "review")])
         note = mcp_server._no_active_lessons_note(root)
@@ -114,29 +114,29 @@ class TestTheMcpRetrieveToolMakesTheSameDistinction:
         )
 
     def test_traces_without_lessons_points_at_proposing(self, tmp_path):
-        from commontrace import mcp_server
+        from unimem import mcp_server
 
         note = mcp_server._no_active_lessons_note(_store(tmp_path, traces=["a"]))
         assert "propose_lessons" in note
         assert "1 trace" in note
 
     def test_an_empty_store_says_so(self, tmp_path):
-        from commontrace import mcp_server
+        from unimem import mcp_server
 
         note = mcp_server._no_active_lessons_note(_store(tmp_path))
         assert "empty" in note
 
     def test_the_note_is_plain_prose_for_a_json_field(self, tmp_path):
         note = __import__(
-            "commontrace.mcp_server", fromlist=["x"]
+            "unimem.mcp_server", fromlist=["x"]
         )._no_active_lessons_note(_store(tmp_path, traces=["a"]))
-        assert not note.startswith("[commontrace]")
+        assert not note.startswith("[unimem]")
         assert "\n" not in note
 
 
 class TestDoctorAnswersWhyRetrievalIsEmpty:
     def _doctor(self, root, capsys):
-        from commontrace.cli import main
+        from unimem.cli import main
 
         main(["doctor", "--dest", str(root)])
         return capsys.readouterr().out
@@ -156,7 +156,7 @@ class TestDoctorAnswersWhyRetrievalIsEmpty:
     def test_it_prints_the_same_next_step_query_would(self, tmp_path, capsys):
         root = _store(tmp_path, lessons=[("lesson_mine", "review")])
         out = self._doctor(root, capsys)
-        assert "commontrace lesson approve lesson_mine" in out
+        assert "unimem lesson approve lesson_mine" in out
 
     def test_a_healthy_store_passes_without_the_extra_advice(self, tmp_path, capsys):
         root = _store(tmp_path, lessons=[("lesson_a", "active")])

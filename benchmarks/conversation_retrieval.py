@@ -1,10 +1,10 @@
 """Paired public-dataset retrieval evaluation; stdout JSON, temporary stores only.
 
-This measures CommonTrace context selection, not Mem0 answer accuracy. No gold
+This measures UniMem context selection, not Mem0 answer accuracy. No gold
 answers, evidence labels or question categories enter ingestion or retrieval.
 Full-source retention is deliberately stricter than selecting a source ID:
 an excerpt does not establish that every claim in its original turn was emitted.
-Budgets use CommonTrace's character estimate, explicitly not provider tokens.
+Budgets use UniMem's character estimate, explicitly not provider tokens.
 
 python -m benchmarks.conversation_retrieval --dataset locomo --data /tmp/locomo10.json
 """
@@ -28,9 +28,9 @@ from typing import Any, Literal
 
 from benchmarks.bootstrap import percentile
 from benchmarks.conversation_bench import beam_cases, locomo_cases, longmemeval_cases
-from commontrace.conversation import Options, Store, recall
-from commontrace.conversation.search import forget_store, tokens
-from commontrace.exceptions import CommonTraceError
+from unimem.conversation import Options, Store, recall
+from unimem.conversation.search import forget_store, tokens
+from unimem.exceptions import UniMemError
 
 Strategy = Literal["legacy", "coverage-v1", "coverage-v2"]
 STRATEGIES: tuple[Strategy, ...] = ("legacy", "coverage-v1", "coverage-v2")
@@ -220,9 +220,9 @@ def summarize(rows: Sequence[Measurement]) -> dict[str, object]:
 
 def implementation_digest() -> str:
     """Identify the evaluator and Python implementation without exposing paths."""
-    import commontrace
+    import unimem
 
-    package = Path(commontrace.__file__).resolve().parent
+    package = Path(unimem.__file__).resolve().parent
     files = [(path.relative_to(package).as_posix(), path.read_bytes()) for path in sorted(package.rglob("*.py"))]
     files.append(("benchmarks/conversation_retrieval.py", Path(__file__).read_bytes()))
     for helper in ("conversation_bench.py", "bootstrap.py"):
@@ -243,11 +243,11 @@ def evaluate(dataset: str, data: str, *, budgets: Sequence[int] = (1500, 7000),
     if candidate not in ("coverage-v1", "coverage-v2"):
         raise ValueError("candidate must be coverage-v1 or coverage-v2")
     if embedder is not None and embedder not in ("auto", "none"):
-        from commontrace.conversation.embed import canonical
+        from unimem.conversation.embed import canonical
 
         embedder = canonical(embedder)
     if reranker is not None and reranker not in ("auto", "none"):
-        from commontrace.providers import validate_reranker
+        from unimem.providers import validate_reranker
 
         validate_reranker(reranker)
     strategies: tuple[Strategy, Strategy] = ("legacy", candidate)
@@ -264,7 +264,7 @@ def evaluate(dataset: str, data: str, *, budgets: Sequence[int] = (1500, 7000),
     effective_embedders: set[str] = set()
     dense_failures = 0
     rerank_failures = 0
-    with tempfile.TemporaryDirectory(prefix="commontrace-retrieval-") as root:
+    with tempfile.TemporaryDirectory(prefix="unimem-retrieval-") as root:
         for index, case in enumerate(cases):
             with Store(root, f"case-{index}") as store:
                 started = time.perf_counter()
@@ -323,7 +323,7 @@ def evaluate(dataset: str, data: str, *, budgets: Sequence[int] = (1500, 7000),
                            "token_accounting": "ceil(characters/4), not provider tokenization",
                            "final_response_cache": "disabled", "ingestion": "production redaction enabled",
                            "gold_labels": "evaluation only", "timing": "recall only; excludes ingestion/evaluation",
-                           "comparison": f"CommonTrace legacy vs {candidate}; not a competitor accuracy benchmark"},
+                           "comparison": f"UniMem legacy vs {candidate}; not a competitor accuracy benchmark"},
             "budgets": summaries}
 
 
@@ -343,7 +343,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = evaluate(args.dataset, args.data, budgets=budgets, limit=args.limit, seed=args.seed,
                           candidate=args.candidate, embedder=None if args.embedder == "none" else args.embedder,
                           reranker=None if args.reranker == "none" else args.reranker)
-    except (ValueError, OSError, CommonTraceError) as exc:
+    except (ValueError, OSError, UniMemError) as exc:
         parser.error(str(exc))
     print(json.dumps(result, ensure_ascii=False, sort_keys=True, allow_nan=False))
     return 0

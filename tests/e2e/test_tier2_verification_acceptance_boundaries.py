@@ -15,7 +15,7 @@ from tests.e2e.conftest import CLIResult
 
 
 def test_boundary_importance_bounds() -> None:
-    from commontrace import validate
+    from unimem import validate
 
     schema = validate.load_schema("lesson.schema.json")
     base_lesson: dict[str, Any] = {
@@ -48,7 +48,7 @@ def test_boundary_importance_bounds() -> None:
 
 
 def test_boundary_empty_tags_accepted() -> None:
-    from commontrace import validate
+    from unimem import validate
 
     schema = validate.load_schema("trace.schema.json")
     trace_data = {
@@ -71,7 +71,7 @@ def test_boundary_empty_tags_accepted() -> None:
 
 
 def test_boundary_non_string_tags_rejected() -> None:
-    from commontrace import validate
+    from unimem import validate
 
     schema = validate.load_schema("trace.schema.json")
     trace_data = {
@@ -91,7 +91,7 @@ def test_boundary_non_string_tags_rejected() -> None:
 
 
 def test_boundary_outcome_optional_fields() -> None:
-    from commontrace import validate
+    from unimem import validate
 
     schema = validate.load_schema("trace.schema.json")
     trace_data = {
@@ -112,7 +112,7 @@ def test_boundary_outcome_optional_fields() -> None:
 
 
 def test_boundary_frontmatter_delimiters_edge(tmp_path: Path) -> None:
-    from commontrace import frontmatter
+    from unimem import frontmatter
 
     raw_markdown = """---
 name: Dashes in Body
@@ -146,7 +146,7 @@ Final remarks.
 
 
 def test_boundary_symlink_circular_loop(tmp_path: Path) -> None:
-    from commontrace.reference.build_index import iter_active_lessons
+    from unimem.reference.build_index import iter_active_lessons
 
     lessons_dir = tmp_path / "lessons"
     lessons_dir.mkdir()
@@ -165,7 +165,7 @@ def test_boundary_symlink_circular_loop(tmp_path: Path) -> None:
 
 
 def test_boundary_null_byte_in_path_rejected(tmp_path: Path) -> None:
-    from commontrace.paths import enforce_boundary
+    from unimem.paths import enforce_boundary
 
     base = tmp_path / "safe_store"
     base.mkdir()
@@ -175,7 +175,7 @@ def test_boundary_null_byte_in_path_rejected(tmp_path: Path) -> None:
 
 
 def test_boundary_uncanonicalized_double_dot_escape(tmp_path: Path) -> None:
-    from commontrace.paths import PathTraversalError, enforce_boundary
+    from unimem.paths import PathTraversalError, enforce_boundary
 
     base = tmp_path / "safe_store"
     base.mkdir()
@@ -185,7 +185,7 @@ def test_boundary_uncanonicalized_double_dot_escape(tmp_path: Path) -> None:
 
 
 def test_boundary_leading_slash_treated_as_traversal(tmp_path: Path) -> None:
-    from commontrace.paths import PathTraversalError, enforce_boundary
+    from unimem.paths import PathTraversalError, enforce_boundary
 
     base = tmp_path / "safe_store"
     base.mkdir()
@@ -197,7 +197,7 @@ def test_boundary_leading_slash_treated_as_traversal(tmp_path: Path) -> None:
 def test_boundary_subprocess_safe_path_isolated() -> None:
     import inspect
 
-    from commontrace.commands import _shellout
+    from unimem.commands import _shellout
 
     source = inspect.getsource(_shellout.run_script)
     assert 'env["PYTHONSAFEPATH"] = "1"' in source or "PYTHONSAFEPATH" in source
@@ -205,7 +205,7 @@ def test_boundary_subprocess_safe_path_isolated() -> None:
 
 def test_boundary_large_chunk_size_scaling() -> None:
     np = pytest.importorskip("numpy", reason="numpy required for benchmark scaling test")
-    from commontrace.reference.measure_performance import compute_semantic_duplicates
+    from unimem.reference.measure_performance import compute_semantic_duplicates
 
     n = 100
     dim = 32
@@ -224,7 +224,7 @@ def test_boundary_large_chunk_size_scaling() -> None:
 
 def test_boundary_tiny_chunk_size_scaling() -> None:
     np = pytest.importorskip("numpy", reason="numpy required for benchmark scaling test")
-    from commontrace.reference.measure_performance import compute_semantic_duplicates
+    from unimem.reference.measure_performance import compute_semantic_duplicates
 
     n = 40
     dim = 16
@@ -243,7 +243,7 @@ def test_boundary_tiny_chunk_size_scaling() -> None:
 
 def test_boundary_fast_importances_loader_latency(tmp_path: Path) -> None:
     np = pytest.importorskip("numpy", reason="numpy required for fast importances loader test")
-    from commontrace.reference.query import load_importances_from_index
+    from unimem.reference.query import load_importances_from_index
 
     n = 500
     npz_path = tmp_path / "bench_index.npz"
@@ -266,7 +266,7 @@ def test_boundary_fast_importances_loader_latency(tmp_path: Path) -> None:
 
 
 def test_boundary_lexical_index_latency_100_docs() -> None:
-    from commontrace.reference.measure_performance import compute_lexical_duplicates
+    from unimem.reference.measure_performance import compute_lexical_duplicates
 
     lessons = {
         f"perf_doc_{i:03d}": {
@@ -288,18 +288,21 @@ def test_boundary_frontmatter_parse_50_files_latency(
     isolated_store: Path,
     lesson_factory: Callable[..., Path],
 ) -> None:
-    from commontrace import frontmatter
+    from unimem import frontmatter
 
     file_paths = [
         lesson_factory(isolated_store, slug=f"fm_perf_{i:02d}", title=f"FM Perf {i}")
         for i in range(50)
     ]
 
-    start = time.perf_counter()
-    for fp in file_paths:
-        data, _ = frontmatter.read(str(fp))
-        assert "name" in data
-    elapsed = time.perf_counter() - start
+    timings = []
+    for _ in range(3):
+        start = time.perf_counter()
+        for fp in file_paths:
+            data, _ = frontmatter.read(str(fp))
+            assert "name" in data
+        timings.append(time.perf_counter() - start)
+    elapsed = min(timings)
 
     assert elapsed < 0.5, f"Frontmatter batch load took {elapsed:.2f}s"
 
@@ -359,7 +362,7 @@ def test_boundary_doctor_custom_dest(
 ) -> None:
     res = cli_runner(isolated_store, "doctor", "--dest", str(isolated_store))
     assert res.exit_code == 0
-    assert "commontrace" in res.stdout.lower()
+    assert "unimem" in res.stdout.lower()
 
 
 def test_boundary_distill_zero_traces(

@@ -1,0 +1,370 @@
+"""`unimem fact`: manage atomic facts lifecycle."""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+
+from unimem import hierarchical, paths
+from unimem.fact_evidence import EvidenceKind, EvidencePolarity, FactEvidence, bind_evidence
+
+
+def add_parser(subparsers: argparse._SubParsersAction) -> None:
+    p = subparsers.add_parser(
+        "fact",
+        help="Manage atomic facts lifecycle (ADD, UPDATE, SUPERSEDE, DELETE, search).",
+    )
+    sub = p.add_subparsers(dest="subcommand", required=True)
+
+    for command, help_text, handler in (
+        ("migrate", "Activate SQLite WAL storage with a checksum report; preserve the original JSONL.", run_migrate),
+        ("export", "Export migrated facts to portable JSONL.", run_export),
+        ("rebuild", "Rebuild SQLite indexes from the committed event ledger.", run_rebuild),
+        ("purge", "Erase a fact, derived payloads, history and cached vectors locally.", run_purge),
+    ):
+        storage = sub.add_parser(command, help=help_text)
+        storage.add_argument("--dest", default=None)
+        if command == "purge":
+            storage.add_argument("fact_id")
+            storage.add_argument("--reason", required=True)
+        if command == "export":
+            storage.add_argument("--output", required=True, help="Destination JSONL file.")
+        storage.set_defaults(func=handler)
+
+    p_list = sub.add_parser("list", help="List facts with optional filters.")
+    p_list.add_argument("--status", default="active", choices=("active", "superseded", "invalidated", "deleted", "all"))
+    p_list.add_argument("--category", default="", choices=("", *hierarchical.CATEGORIES))
+    p_list.add_argument("--scope", default="", help="Filter by routing scope.")
+    p_list.add_argument("--as-of", default="", help="Point-in-time temporal evaluation date.")
+    p_list.add_argument("--known-at", default="",
+                        help="Record time: the facts the store believed at this moment, whatever happened later.")
+    p_list.add_argument(
+        "--include-forgotten", action="store_true",
+        help="Include forgotten facts (hidden by default); shown with a [forgotten] marker.",
+    )
+    p_list.add_argument(
+        "--show-expired", action="store_true",
+        help="Include TTL-expired facts (hidden by default).",
+    )
+    p_list.add_argument("--dest", default=None)
+    p_list.set_defaults(func=run_list)
+
+    p_add = sub.add_parser("add", help="Add or reinforce an atomic fact.")
+    p_add.add_argument("statement", help="The atomic declarative statement.")
+    p_add.add_argument("--category", default=hierarchical.DEFAULT_CATEGORY, choices=hierarchical.CATEGORIES)
+    p_add.add_argument("--scope", action="append", default=[], help="Routing scope (repeatable).")
+    p_add.add_argument("--confidence", type=float, default=0.8, help="Confidence score 0.0 to 1.0.")
+    p_add.add_argument("--valid-from", default=None, help="Start date (YYYY-MM-DD or ISO 8601).")
+    p_add.add_argument("--valid-until", default=None, help="End date (YYYY-MM-DD or ISO 8601).")
+    p_add.add_argument("--expires-at", default=None, help="TTL expiry instant (YYYY-MM-DD or ISO 8601).")
+    p_add.add_argument("--source-trace", default="", help="Trace ID where this was observed.")
+    p_add.add_argument("--evidence", action="append", default=[], metavar="KIND:ID",
+                       help="Bind supporting fact:ID or lesson:SLUG evidence (repeatable).")
+    p_add.add_argument("--refuting-evidence", action="append", default=[], metavar="KIND:ID",
+                       help="Bind refuting evidence; unresolved conflicts are withheld from recall.")
+    p_add.add_argument("--min-support", type=int, default=1,
+                       help="Required distinct supporting sources for bound facts (default 1).")
+    p_add.add_argument("--dest", default=None)
+    p_add.set_defaults(func=run_add)
+
+    p_srch = sub.add_parser("search", help="Search active facts by relevance and confidence.")
+    p_srch.add_argument("query", help="Search query string.")
+    p_srch.add_argument("--scope", default="", help="Filter by scope.")
+    p_srch.add_argument("--category", default="", choices=("", *hierarchical.CATEGORIES))
+    p_srch.add_argument("--limit", type=int, default=10)
+    p_srch.add_argument("--scorer", default="overlap-v1", choices=("overlap-v1", "bm25-v1"),
+                        help="Fact ranking: compatible overlap or stemmed multilingual BM25.")
+    p_srch.add_argument("--as-of", default="", help="Point-in-time date.")
+    p_srch.add_argument("--known-at", default="",
+                        help="Record time: search what the store believed at this moment, whatever happened later.")
+    p_srch.add_argument(
+        "--show-expired", action="store_true",
+        help="Include TTL-expired facts (hidden by default).",
+    )
+    p_srch.add_argument("--dest", default=None)
+    p_srch.set_defaults(func=run_search)
+
+    p_explain = sub.add_parser("explain", help="Read a fact's bounded source quotes and proof relationships.")
+    p_explain.add_argument("fact_id")
+    p_explain.add_argument("--scope", default="", help="Route to an authorized scope or public memory.")
+    p_explain.add_argument("--as-of", default=None, help="Valid-time query; current trust checks still apply.")
+    p_explain.add_argument("--budget", type=int, default=512, help="Evidence quote token allowance.")
+    p_explain.add_argument("--max-sources", type=int, default=16)
+    p_explain.add_argument("--max-depth", type=int, default=4)
+    p_explain.add_argument("--json", action="store_true")
+    p_explain.add_argument("--dest", default=None)
+    p_explain.set_defaults(func=run_explain)
+
+    p_sup = sub.add_parser("supersede", help="Supersede an existing fact with a new one.")
+    p_sup.add_argument("old_id", help="ID of the outdated fact.")
+    p_sup.add_argument("new_statement", help="New replacement fact statement or fact ID.")
+    p_sup.add_argument("--dest", default=None)
+    p_sup.set_defaults(func=run_supersede)
+
+    p_res = sub.add_parser(
+        "resolve", help="Resolve a contradiction: invalidate an older fact in favor of newer evidence.")
+    p_res.add_argument("old_id", help="ID of the contradicted (older) fact.")
+    p_res.add_argument("new_statement", help="Newer replacement fact statement or fact ID.")
+    p_res.add_argument("--dest", default=None)
+    p_res.set_defaults(func=run_resolve)
+
+    p_inv = sub.add_parser(
+        "invalidate", help="End a fact's validity without a replacement; it stays queryable with --as-of.")
+    p_inv.add_argument("fact_id", help="ID of the fact that stopped being true.")
+    p_inv.add_argument("--at", default=None, help="When it stopped being true (ISO date or time; default now).")
+    p_inv.add_argument("--dest", default=None)
+    p_inv.set_defaults(func=run_invalidate)
+
+    p_del = sub.add_parser("delete", help="Soft-delete a fact.")
+    p_del.add_argument("fact_id", help="ID of the fact to delete.")
+    p_del.add_argument("--dest", default=None)
+    p_del.set_defaults(func=run_delete)
+
+    p_forget = sub.add_parser(
+        "forget",
+        help="Hide a fact from default listings (reversible, git-audited).",
+    )
+    p_forget.add_argument("fact_id", help="ID of the fact to forget.")
+    p_forget.add_argument(
+        "--undo", action="store_true",
+        help="Restore a forgotten fact to default listings.",
+    )
+    p_forget.add_argument("--dest", default=None)
+    p_forget.set_defaults(func=run_forget)
+
+
+def run_list(args: argparse.Namespace) -> int:
+    root = paths.resolve_root(args.dest)
+    status_filter = "" if args.status == "all" else args.status
+    facts = hierarchical.list_facts(
+        root=root,
+        status=status_filter,
+        scope=args.scope,
+        category=args.category,
+        as_of=args.as_of or None,
+        known_at=getattr(args, "known_at", "") or None,
+        include_forgotten=bool(getattr(args, "include_forgotten", False)),
+        show_expired=bool(getattr(args, "show_expired", False)),
+    )
+    if not facts:
+        print("No matching facts found.")
+        return 0
+
+    print(f"{'ID':<18} {'CAT':<14} {'CONF':<6} {'SCOPES':<16} {'STATEMENT'}")
+    print("-" * 80)
+    for f in facts:
+        scopes_str = ",".join(f.scopes) if f.scopes else "(global)"
+        stmt = f.statement if len(f.statement) <= 45 else f.statement[:42] + "..."
+        if f.forgotten:
+            stmt += " [forgotten]"
+        print(f"{f.id:<18} {f.category:<14} {f.confidence:<6.2f} {scopes_str:<16} {stmt}")
+    return 0
+
+
+def run_add(args: argparse.Namespace) -> int:
+    root = paths.resolve_root(args.dest)
+    try:
+        receipts: list[FactEvidence] | None = None
+        if args.evidence or args.refuting_evidence:
+            receipts = []
+            polarized: tuple[tuple[list[str], EvidencePolarity], ...] = (
+                (args.evidence, "support"), (args.refuting_evidence, "refute"),
+            )
+            for values, polarity in polarized:
+                for value in values:
+                    kind, _, identity = value.partition(":")
+                    if kind not in ("fact", "lesson") or not identity:
+                        raise ValueError("evidence must name fact:ID or lesson:SLUG")
+                    source_kind: EvidenceKind = "fact" if kind == "fact" else "lesson"
+                    receipts.append(bind_evidence(root, source_kind, identity, polarity=polarity))
+        fact, action = hierarchical.add_fact(
+            root=root,
+            statement=args.statement,
+            category=args.category,
+            scopes=args.scope,
+            valid_from=args.valid_from,
+            valid_until=args.valid_until,
+            expires_at=args.expires_at,
+            confidence=args.confidence,
+            source_trace_id=args.source_trace,
+            evidence=receipts,
+            min_support=args.min_support,
+        )
+    except Exception as exc:
+        print(f"[unimem] {exc}", file=sys.stderr)
+        return 1
+
+    if action == "NOOP":
+        if fact.evidence_bound:
+            verb = "Retained source-bound fact (NOOP)"
+        elif args.source_trace:
+            verb = "Existing fact (NOOP)"
+        else:
+            verb = "Reinforced existing fact"
+        print(f"{verb} '{fact.id}' (confirmations: {fact.confirmations}, conf: {fact.confidence}).")
+    else:
+        print(f"Added fact '{fact.id}' (category: {fact.category}, conf: {fact.confidence}).")
+    return 0
+
+
+def run_explain(args: argparse.Namespace) -> int:
+    from unimem.evidence_context import explain_fact
+
+    try:
+        proof = explain_fact(paths.resolve_root(args.dest), args.fact_id, scope=args.scope, as_of=args.as_of,
+                             budget=args.budget, max_sources=args.max_sources, max_depth=args.max_depth)
+    except ValueError as exc:
+        print(f"[unimem] {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(proof.to_dict(), indent=2, ensure_ascii=False))
+    else:
+        print(f"{proof.statement}\nEvidence admission: {proof.assessment.status}")
+        print(proof.context or "(no eligible source quotations within the budget)")
+        for reason in proof.omissions:
+            print(f"[unimem] {reason}", file=sys.stderr)
+    return 0
+
+
+def run_search(args: argparse.Namespace) -> int:
+    root = paths.resolve_root(args.dest)
+    scored = hierarchical.search_facts(
+        root=root,
+        query=args.query,
+        scope=args.scope,
+        category=args.category,
+        as_of=args.as_of or None,
+        known_at=getattr(args, "known_at", "") or None,
+        limit=args.limit,
+        show_expired=bool(getattr(args, "show_expired", False)),
+        scorer=getattr(args, "scorer", "overlap-v1"),
+    )
+    if not scored:
+        print(f"No facts found matching '{args.query}'.")
+        return 0
+
+    print(f"{'SCORE':<8} {'CONF':<6} {'ID':<18} {'STATEMENT'}")
+    print("-" * 75)
+    for fact, score in scored:
+        print(f"{score:<8.3f} {fact.confidence:<6.2f} {fact.id:<18} {fact.statement}")
+    return 0
+
+
+def run_invalidate(args: argparse.Namespace) -> int:
+    root = paths.resolve_root(args.dest)
+    try:
+        fact = hierarchical.invalidate_fact(root, args.fact_id, at=args.at)
+    except (KeyError, ValueError) as exc:
+        print(f"[unimem] {exc}", file=sys.stderr)
+        return 1
+    state = "invalidated" if fact.status == "invalidated" else "scheduled to end"
+    print(f"Fact '{fact.id}' {state} at {fact.valid_until}; `fact list --as-of` before then still shows it.")
+    return 0
+
+
+def run_supersede(args: argparse.Namespace) -> int:
+    root = paths.resolve_root(args.dest)
+    try:
+        old, new = hierarchical.supersede_fact(
+            root=root,
+            old_fact_id=args.old_id,
+            new_fact_id_or_statement=args.new_statement,
+        )
+    except Exception as exc:
+        print(f"[unimem] {exc}", file=sys.stderr)
+        return 1
+
+    print(f"Superseded fact '{old.id}' with '{new.id}'.")
+    return 0
+
+
+def run_resolve(args: argparse.Namespace) -> int:
+    root = paths.resolve_root(args.dest)
+    try:
+        old, new = hierarchical.resolve_contradiction(
+            root=root,
+            old_fact_id=args.old_id,
+            new_fact_id_or_statement=args.new_statement,
+        )
+    except Exception as exc:
+        print(f"[unimem] {exc}", file=sys.stderr)
+        return 1
+
+    print(f"Resolved contradiction: invalidated '{old.id}' in favor of '{new.id}'.")
+    return 0
+
+
+def run_delete(args: argparse.Namespace) -> int:
+    root = paths.resolve_root(args.dest)
+    ok = hierarchical.delete_fact(root, args.fact_id)
+    if not ok:
+        print(f"Fact '{args.fact_id}' not found.", file=sys.stderr)
+        return 1
+    print(f"Deleted fact '{args.fact_id}'.")
+    return 0
+
+
+def run_forget(args: argparse.Namespace) -> int:
+    root = paths.resolve_root(args.dest)
+    try:
+        fact = hierarchical.forget_fact(
+            root, args.fact_id, undo=bool(getattr(args, "undo", False)),
+        )
+    except KeyError:
+        print(f"Fact '{args.fact_id}' not found.", file=sys.stderr)
+        return 1
+    except Exception as exc:
+        print(f"[unimem] {exc}", file=sys.stderr)
+        return 1
+    if fact.forgotten:
+        print(f"Forgot fact '{fact.id}' (hidden from default listings).")
+    else:
+        print(f"Restored fact '{fact.id}' to default listings.")
+    return 0
+
+
+def run_migrate(args: argparse.Namespace) -> int:
+    from unimem import fact_store
+
+    try:
+        report = fact_store.migrate(paths.resolve_root(args.dest))
+    except (OSError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(json.dumps(report, indent=2))
+    return 0
+
+
+def run_export(args: argparse.Namespace) -> int:
+    from unimem import fact_store
+
+    root = paths.resolve_root(args.dest)
+    if not fact_store.enabled(root):
+        print("Store has not been migrated; run unimem fact migrate first.", file=sys.stderr)
+        return 1
+    try:
+        fact_store.export(root, args.output)
+    except (OSError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(args.output)
+    return 0
+
+
+def run_rebuild(args: argparse.Namespace) -> int:
+    from unimem import fact_store
+
+    root = paths.resolve_root(args.dest)
+    if not fact_store.enabled(root):
+        print("Store has not been migrated; run unimem fact migrate first.", file=sys.stderr)
+        return 1
+    fact_store.rebuild(root)
+    print("Rebuilt SQLite fact projections from committed events.")
+    return 0
+
+
+def run_purge(args):
+    from unimem.privacy_erasure import purge_fact
+    result = purge_fact(paths.resolve_root(args.dest), args.fact_id, reason=args.reason)
+    print(json.dumps(result, indent=2))
+    return 0

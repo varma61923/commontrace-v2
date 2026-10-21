@@ -8,7 +8,7 @@ screen, the licence, and replicated positive lift across two or more
 organizations. Every org can browse the catalog; only the owner withdraws.
 
 The Hub's acceptance is a filter, not the buyer's trust decision: buyers verify
-again locally against keys they chose (``commontrace market verify``), and an
+again locally against keys they chose (``unimem market verify``), and an
 install always lands in review.
 """
 from __future__ import annotations
@@ -22,10 +22,10 @@ from sqlalchemy import or_, select
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-from commontrace import market_listing, origin
 from hub import audit, scopes
 from hub.db import session_scope
 from hub.models import MarketListing, MarketPublisher
+from unimem import market_listing, origin
 
 API_PREFIX = "/api/v1/market"
 ACTOR = "rest-api-market"

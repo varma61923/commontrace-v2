@@ -1,9 +1,9 @@
-"""`commontrace lesson edit`: Markdown-first editing that keeps governance intact."""
+"""`unimem lesson edit`: Markdown-first editing that keeps governance intact."""
 import os
 import sys
 
-from commontrace import frontmatter, lesson_io
-from commontrace.cli import main
+from unimem import frontmatter, lesson_io
+from unimem.cli import main
 
 FILLED = """## Rule
 Retry an upload that failed with 503 using exponential backoff and jitter.
@@ -91,5 +91,5 @@ def test_failed_editor_and_missing_lesson(tmp_path, capsys):
     assert main(["lesson", "edit", "nope", "--dest", root, "--editor", "true"]) == 1
     import tempfile
 
-    assert not [n for n in os.listdir(tempfile.gettempdir()) if n.startswith("commontrace-lesson-edit-")]
+    assert not [n for n in os.listdir(tempfile.gettempdir()) if n.startswith("unimem-lesson-edit-")]
     assert not [n for n in os.listdir(os.path.join(root, "memory")) if "edit" in n]

@@ -9,13 +9,13 @@ import time
 from dataclasses import dataclass
 from types import ModuleType, SimpleNamespace
 
-from commontrace.client import MemoryClient
-from commontrace.memory_journal import Journal
-from commontrace.memory_record import MemoryRecord
+from unimem.client import MemoryClient
+from unimem.memory_journal import Journal
+from unimem.memory_record import MemoryRecord
 
 
 def _install_fake_agents(monkeypatch, request):
-    module_name = "commontrace.integrations.openai_agents"
+    module_name = "unimem.integrations.openai_agents"
     previous_adapter = sys.modules.pop(module_name, None)
 
     class RunHooks:
@@ -50,7 +50,7 @@ def _request(ModelInputData, context, items, instructions="Be useful."):
 
 
 def test_openai_agents_adapter_import_is_safe_without_optional_sdk(monkeypatch, tmp_path):
-    module_name = "commontrace.integrations.openai_agents"
+    module_name = "unimem.integrations.openai_agents"
     previous = sys.modules.pop(module_name, None)
     original_import = builtins.__import__
 
@@ -136,7 +136,7 @@ def test_call_model_filter_uses_one_scoped_turn_and_hook_captures_final_output(m
         continued = await adapter.call_model_input_filter(second)
         assert len(calls) == 1
         assert "Refunds take five business days." in continued.instructions
-        assert continued.instructions.count("<COMMONTRACE_MEMORY>") == 1
+        assert continued.instructions.count("<UNIMEM_MEMORY>") == 1
 
         hooks = adapter.run_hooks()
         assert isinstance(hooks, RunHooks)

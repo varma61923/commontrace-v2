@@ -6,7 +6,7 @@ import random
 
 import pytest
 
-from commontrace import sentinel
+from unimem import sentinel
 
 
 def rows(rng, effect, context, n=200):

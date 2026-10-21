@@ -19,8 +19,8 @@ from typing import Any, Iterator
 
 import pytest
 
-from commontrace import gateway, hierarchical
-from commontrace.fact_evidence import bind_evidence
+from unimem import gateway, hierarchical
+from unimem.fact_evidence import bind_evidence
 
 SCORERS = ("overlap-v1", "bm25-v1")
 QUERY = "Aster gateway timeout"
@@ -72,7 +72,7 @@ def endpoint(corpus: Corpus) -> Iterator[str]:
 
 
 def cli(corpus: Corpus, *arguments: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run([sys.executable, "-m", "commontrace.cli", *arguments, "--dest", corpus.root],
+    return subprocess.run([sys.executable, "-m", "unimem.cli", *arguments, "--dest", corpus.root],
                           capture_output=True, text=True, check=False, timeout=30)
 
 
@@ -215,7 +215,7 @@ def test_cli_rejects_unknown_scorer_without_a_traceback(corpus: Corpus, argument
 @pytest.mark.parametrize("scorer", SCORERS)
 def test_public_mcp_tools_transport_scorer_and_preserve_governed_result_limits(corpus: Corpus, scorer: str) -> None:
     pytest.importorskip("mcp")
-    from commontrace import mcp_server
+    from unimem import mcp_server
 
     server = mcp_server.build_server(corpus.root)
     for name in ("query_facts", "archival_memory_search"):
@@ -235,7 +235,7 @@ def test_public_mcp_tools_transport_scorer_and_preserve_governed_result_limits(c
 
 def test_mcp_schemas_expose_default_profile_and_unknown_names_fail(corpus: Corpus) -> None:
     pytest.importorskip("mcp")
-    from commontrace import mcp_server
+    from unimem import mcp_server
 
     server = mcp_server.build_server(corpus.root)
     schemas = {item.name: getattr(item, "input_schema", getattr(item, "inputSchema", None))

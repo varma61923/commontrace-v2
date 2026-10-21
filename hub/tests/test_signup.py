@@ -52,7 +52,7 @@ class TestSuccessfulSignup:
 
         async with _client(_app(session_factory)) as client:
             response = await client.post(signup.SIGNUP_PATH, data={"org_name": "Acme"})
-        match = re.search(r'value="(ct_live_[^"]+)"', response.text)
+        match = re.search(r'value="(unimem_live_[^"]+)"', response.text)
         assert match, response.text
         raw_key = match.group(1)
 
@@ -66,7 +66,7 @@ class TestSuccessfulSignup:
 
         async with _client(_app(session_factory)) as client:
             response = await client.post(signup.SIGNUP_PATH, data={"org_name": "Acme"})
-        match = re.search(r'value="(ct_live_[^"]+)"', response.text)
+        match = re.search(r'value="(unimem_live_[^"]+)"', response.text)
         raw_key = match.group(1)
 
         console_app = Starlette()

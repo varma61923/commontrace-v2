@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from commontrace import hierarchical
 from e2e_tests.harness.cli_runner import run_cli
+from unimem import hierarchical
 
 
 def test_t2_fact_empty_statement_rejection(isolated_store: str):

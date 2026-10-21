@@ -8,8 +8,8 @@ from dataclasses import replace
 import pytest
 
 from benchmarks import fact_mutation
-from commontrace import fact_index, hierarchical
-from commontrace.fact_evidence import EvidenceResolver
+from unimem import fact_index, hierarchical
+from unimem.fact_evidence import EvidenceResolver
 
 
 @pytest.fixture(autouse=True)

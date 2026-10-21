@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://commontrace.dev/schemas/memory_block.schema.json",
-  "title": "CommonTrace Working Memory Block",
+  "$id": "https://unimem.dev/schemas/memory_block.schema.json",
+  "title": "UniMem Working Memory Block",
   "description": "A stateful, bounded, auditable working memory block used by autonomous agents for persistent prompt scratchpads.",
   "type": "object",
   "required": [

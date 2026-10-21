@@ -328,7 +328,7 @@ class TestToolsRequireAPerson:
 
         trace_id = await _trace(session_factory, org)
         org_token = auth.current_org_id.set(org)
-        actor_token = auth.current_actor.set("ct_live_test")
+        actor_token = auth.current_actor.set("unimem_live_test")
         scope_token = auth.current_scopes.set(scopes.ALL_SCOPES)
         try:
             result = _payload(await mcp.call_tool("add_comment", {
@@ -344,7 +344,7 @@ class TestToolsRequireAPerson:
         from hub import scopes
 
         org_token = auth.current_org_id.set(org)
-        actor_token = auth.current_actor.set("ct_live_test")
+        actor_token = auth.current_actor.set("unimem_live_test")
         scope_token = auth.current_scopes.set(scopes.ALL_SCOPES)
         try:
             result = _payload(await mcp.call_tool("list_my_notifications", {}))

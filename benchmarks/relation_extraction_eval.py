@@ -75,7 +75,7 @@ def score(rows: list[dict[str, Any]], predictions: list[list[tuple[str, str, str
 
 
 def run(path: str, *, llm=None) -> dict[str, Any]:
-    from commontrace import ontology, relation_extraction
+    from unimem import ontology, relation_extraction
 
     rows = load_fixture(path)
     onto = ontology.Ontology.default()
@@ -98,7 +98,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     llm = None
     if args.llm:
-        from commontrace import llm as llm_mod
+        from unimem import llm as llm_mod
 
         llm_mod.load_config()
         llm = llm_mod.complete

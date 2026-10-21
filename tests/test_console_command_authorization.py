@@ -6,9 +6,9 @@ import os
 
 import pytest
 
-from commontrace import frontmatter, gateway, lesson_io, ui_commands
-from commontrace.cli import main
 from tests.test_workbench import AUTH, TOKEN, _lesson, call
+from unimem import frontmatter, gateway, lesson_io, ui_commands
+from unimem.cli import main
 
 
 @pytest.fixture
@@ -87,7 +87,7 @@ def test_literal_help_after_end_of_options_is_not_a_policy_bypass(root):
 
 
 def test_command_denial_restores_process_root(root, monkeypatch):
-    monkeypatch.setenv("COMMONTRACE_ROOT", "previous-root")
+    monkeypatch.setenv("UNIMEM_ROOT", "previous-root")
     with pytest.raises(ui_commands.UICommandError):
         ui_commands.run(root, "lesson", ["approve", "lesson_good"])
-    assert os.environ["COMMONTRACE_ROOT"] == "previous-root"
+    assert os.environ["UNIMEM_ROOT"] == "previous-root"

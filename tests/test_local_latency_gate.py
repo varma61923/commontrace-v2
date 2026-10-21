@@ -11,7 +11,7 @@ _FAST_ARGS = ["--sizes", "50,200", "--runs", "2"]
 class TestItRunsAsACommand:
     def test_emits_parseable_json(self, tmp_path):
         result = subprocess.run(
-            [sys.executable, "-m", "commontrace.reference.measure_local_latency",
+            [sys.executable, "-m", "unimem.reference.measure_local_latency",
              *_FAST_ARGS, "--json"],
             cwd=REPO_ROOT, capture_output=True, text=True,
         )
@@ -22,7 +22,7 @@ class TestItRunsAsACommand:
 
     def test_passes_with_a_generous_ceiling(self, tmp_path):
         result = subprocess.run(
-            [sys.executable, "-m", "commontrace.reference.measure_local_latency",
+            [sys.executable, "-m", "unimem.reference.measure_local_latency",
              *_FAST_ARGS, "--max-total-ms", "5000"],
             cwd=REPO_ROOT, capture_output=True, text=True,
         )
@@ -32,7 +32,7 @@ class TestItRunsAsACommand:
 class TestTheGateActuallyCatchesTheRegressionItExistsFor:
     def test_the_uncached_path_fails_a_ceiling_the_cached_path_clears(self, tmp_path):
         cached = subprocess.run(
-            [sys.executable, "-m", "commontrace.reference.measure_local_latency",
+            [sys.executable, "-m", "unimem.reference.measure_local_latency",
              "--sizes", "100,1600", "--runs", "2", "--json"],
             cwd=REPO_ROOT, capture_output=True, text=True,
         )
@@ -40,7 +40,7 @@ class TestTheGateActuallyCatchesTheRegressionItExistsFor:
         cached_worst_ms = max(p["total_ms"] for p in json.loads(cached.stdout)["points"])
 
         uncached = subprocess.run(
-            [sys.executable, "-m", "commontrace.reference.measure_local_latency",
+            [sys.executable, "-m", "unimem.reference.measure_local_latency",
              "--sizes", "100,1600", "--runs", "2", "--no-cache", "--json"],
             cwd=REPO_ROOT, capture_output=True, text=True,
         )
@@ -54,7 +54,7 @@ class TestTheGateActuallyCatchesTheRegressionItExistsFor:
         # at 23-55 ms cached, 104-140 ms uncached) cannot carry a rerun under it.
         ceiling = cached_worst_ms + (uncached_worst_ms - cached_worst_ms) / 4
         gated = subprocess.run(
-            [sys.executable, "-m", "commontrace.reference.measure_local_latency",
+            [sys.executable, "-m", "unimem.reference.measure_local_latency",
              "--sizes", "100,1600", "--runs", "2", "--no-cache",
              "--max-total-ms", str(ceiling)],
             cwd=REPO_ROOT, capture_output=True, text=True,
@@ -68,7 +68,7 @@ class TestTheGateActuallyCatchesTheRegressionItExistsFor:
         # Exercise the CLI gate with known linear measurements, not noisy timing.
         script = """
 import sys
-from commontrace.reference import measure_local_latency as benchmark
+from unimem.reference import measure_local_latency as benchmark
 points = [{"n_lessons": 50, "total_ms": 1.0}, {"n_lessons": 200, "total_ms": 4.0}]
 report = {"points": points, "alpha_total": benchmark.fit_alpha(points, "total_ms")}
 benchmark.compute = lambda **kwargs: report

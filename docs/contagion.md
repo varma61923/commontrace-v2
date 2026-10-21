@@ -9,8 +9,8 @@ expired payloads; signed commitments remain auditable. Archive a scoped graph
 namespace when its bounded artifact journal fills.
 
 ```sh
-commontrace lineage contagion fact-id --context team:release
-commontrace lineage contagion fact-id --context team:release --freeze incident-17
+unimem lineage contagion fact-id --context team:release
+unimem lineage contagion fact-id --context team:release --freeze incident-17
 ```
 
 The second command requires operator authority and creates a frozen incident

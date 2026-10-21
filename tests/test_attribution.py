@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from commontrace import attribution
+from unimem import attribution
 
 
 def test_planted_poison_and_replay_cost_cap(tmp_path):

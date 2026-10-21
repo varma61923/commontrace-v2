@@ -29,7 +29,7 @@ async def _tool_names(cfg: HubConfig, session_factory) -> set[str]:
 
 
 async def test_mcp_server_reports_the_unified_product_version(enabled_config, session_factory):
-    from commontrace import __version__
+    from unimem import __version__
 
     mcp = build_mcp_server(enabled_config, session_factory, make_rate_limiter(enabled_config))
     assert mcp.version == __version__
@@ -121,7 +121,7 @@ class TestTheHandMaintainedToolInventoriesMatchReality:
     async def test_the_generated_client_template_lists_the_real_surface(
         self, enabled_config, session_factory
     ):
-        from commontrace.commands import install_cmd
+        from unimem.commands import install_cmd
 
         assert await _tool_names(enabled_config, session_factory) == set(
             install_cmd._HUB_TOOLS

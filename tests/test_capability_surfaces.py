@@ -5,14 +5,14 @@ import json
 
 import pytest
 
-from commontrace import capability_io as io
-from commontrace import hierarchical
 from tests.test_capabilities import policy
 from tests.test_capability_io import authenticate, fixed_time, prepare, proof  # noqa: F401
+from unimem import capability_io as io
+from unimem import hierarchical
 
 
 def test_cli_grant_attenuate_and_revoke_use_pinned_agent_keys(tmp_path, capsys):
-    from commontrace.cli import main
+    from unimem.cli import main
 
     root, _ = prepare(tmp_path)
     assert main(["team", "grant", json.dumps({"caveats": policy()}), "--dest", root]) == 0
@@ -32,9 +32,9 @@ def test_cli_grant_attenuate_and_revoke_use_pinned_agent_keys(tmp_path, capsys):
 
 def test_native_mcp_handoff_bundle_is_registered_and_calls_canonical_admission(tmp_path):
     pytest.importorskip("mcp")
-    from commontrace import mcp_server
-    from commontrace.mcp_tools import LOCAL_TOOLS
     from tests.test_mcp_server import call, tool_names
+    from unimem import mcp_server
+    from unimem.mcp_tools import LOCAL_TOOLS
 
     root, _ = prepare(tmp_path)
     fact = hierarchical.append_facts(root, [{"statement": "Inspect wrist calibration.", "scopes": ["project:a"]}])[0][0]
@@ -51,7 +51,7 @@ def test_real_otel_span_contains_authenticated_chain_digest_and_ceiling(tmp_path
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-    from commontrace import otel_memory, telemetry
+    from unimem import otel_memory, telemetry
 
     root, token = prepare(tmp_path)
     exporter = InMemorySpanExporter()
@@ -77,9 +77,9 @@ def test_agents_input_filter_replaces_all_incoming_histories_and_preserves_runti
     from dataclasses import dataclass
     from pathlib import Path
 
-    from commontrace import frontier_protocol as fp
     from tests.test_capabilities import B_KEY
     from tests.test_capability_io import proof
+    from unimem import frontier_protocol as fp
 
     fixture = json.loads((Path(__file__).parent / "fixtures" / "capability_handoff_contract.json").read_text())
     @dataclass

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from commontrace import lesson_io, revision, templates
+from unimem import lesson_io, revision, templates
 
 
 def lesson(**overrides) -> tuple[dict, str]:
@@ -96,7 +96,7 @@ class TestWhatCountsAsTheSameTreatment:
 
 class TestItCoversWhatTheAgentIsActuallyHanded:
     def test_every_injected_frontmatter_field_is_hashed(self):
-        from commontrace import mcp_server
+        from unimem import mcp_server
 
         fm, body = lesson()
         wire = mcp_server._lesson_wire(fm, body, include_body=True)
@@ -196,7 +196,7 @@ class TestTheHistoryCommand:
         import sys
 
         repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        return subprocess.run([sys.executable, "-m", "commontrace.cli", *argv],
+        return subprocess.run([sys.executable, "-m", "unimem.cli", *argv],
                               capture_output=True, text=True, cwd=repo, check=False)
 
     def test_it_shows_each_change_in_the_order_it_happened(self, tmp_path):
@@ -223,7 +223,7 @@ class TestTheHistoryCommand:
     def test_a_lesson_with_no_recorded_history_is_not_a_missing_lesson(self, tmp_path):
         import os
 
-        from commontrace import frontmatter
+        from unimem import frontmatter
 
         root = str(tmp_path / "fleet")
         assert self._cli("init", "--dest", root, "--agent-type", "code").returncode == 0

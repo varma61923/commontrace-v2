@@ -5,10 +5,10 @@ import math
 
 import pytest
 
-from commontrace import conformal_gate, experiment, holdout_io
-from commontrace import optimizer_intake as pure
-from commontrace import optimizer_io as io
 from tests import test_skill_foundry
+from unimem import conformal_gate, experiment, holdout_io
+from unimem import optimizer_intake as pure
+from unimem import optimizer_io as io
 
 clock = test_skill_foundry.clock
 
@@ -144,8 +144,8 @@ def test_pinned_gepa_and_dspy_serialization_subsets_discard_runtime_configuratio
 def test_cli_and_native_mcp_submit_candidates(tmp_path, clock, capsys):
     import json
 
-    from commontrace.cli import main
-    from commontrace.mcp_tools import LOCAL_TOOLS
+    from unimem.cli import main
+    from unimem.mcp_tools import LOCAL_TOOLS
 
     root = str(tmp_path)
     prepare(root,clock)
@@ -158,8 +158,8 @@ def test_cli_and_native_mcp_submit_candidates(tmp_path, clock, capsys):
     assert main(['skill','optimize','frontier','--dest',root]) == 0
     assert json.loads(capsys.readouterr().out)['frontier'] == []
     pytest.importorskip('mcp')
-    from commontrace import mcp_server
     from tests.test_mcp_server import call, tool_names
+    from unimem import mcp_server
 
     server = mcp_server.build_server(root)
     assert 'submit_candidate' in LOCAL_TOOLS and 'submit_candidate' in tool_names(server)
@@ -170,7 +170,7 @@ def test_cli_and_native_mcp_submit_candidates(tmp_path, clock, capsys):
 
 
 def test_changed_or_private_sources_cannot_be_delivered(tmp_path, clock):
-    from commontrace import hierarchical
+    from unimem import hierarchical
 
     root = str(tmp_path)
     prepare(root,clock)
@@ -187,7 +187,7 @@ def test_changed_or_private_sources_cannot_be_delivered(tmp_path, clock):
 
 
 def test_positive_delta_certificate_binds_canonical_data_and_current_gate(tmp_path, clock):
-    from commontrace import promotion, unit_trials
+    from unimem import promotion, unit_trials
 
     root = str(tmp_path)
     prepare(root,clock)
@@ -245,9 +245,9 @@ def test_entire_catalog_is_validated_before_assignment(tmp_path, clock):
 
 
 def test_facts_only_capability_cannot_read_optimizer_artifacts(tmp_path, clock):
-    from commontrace import capabilities, capability_io
-    from commontrace import frontier_protocol as fp
     from tests.test_capabilities import A_KEY, policy
+    from unimem import capabilities, capability_io
+    from unimem import frontier_protocol as fp
 
     root = str(tmp_path)
     prepare(root,clock)

@@ -10,8 +10,8 @@ import sys
 import pytest
 
 from benchmarks.robot_fleet_demo import _png
-from commontrace import gateway, gateway_contract
 from tests.test_ledger_views import _lesson, seeded_store
+from unimem import gateway, gateway_contract
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TOKEN = "c" * 40
@@ -62,7 +62,7 @@ def test_an_undocumented_route_refuses_to_build(tmp_path):
 
 
 def test_team_read_is_an_operation_and_never_a_write_field(tmp_path):
-    from commontrace import api_schema
+    from unimem import api_schema
 
     document = _doc(str(tmp_path))
     for operation in ("add", "batch"):
@@ -196,7 +196,7 @@ def test_live_responses_match_the_declared_schemas(tmp_path):
 
     call("POST", "/v1/memory/turn", {"session_id": "turn-1", "query": "pytest", "text": "I prefer pytest."})
 
-    from commontrace import hierarchical, holdout_io, rl_io
+    from unimem import hierarchical, holdout_io, rl_io
 
     unit, _ = hierarchical.add_fact(root, "UniMem RL contract signature check.")
     config = holdout_io.configure(root, rate=.5, salt="rl-contract")
@@ -210,7 +210,7 @@ def test_live_responses_match_the_declared_schemas(tmp_path):
     assert len(wire.splitlines()) == 16
     assert all(json.loads(line)["meta"]["unit"] == unit.id for line in wire.splitlines())
 
-    from commontrace import change_stream
+    from unimem import change_stream
 
     change_stream.subscribe(root, "contract-observer")
     change_stream.publish(root, "assert", unit.id)

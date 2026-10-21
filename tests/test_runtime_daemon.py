@@ -8,10 +8,10 @@ import time
 
 import pytest
 
-from commontrace import daemon as daemon_mod
-from commontrace import memory_git
-from commontrace import watch as watch_mod
-from commontrace.commands import daemon_cmd, watch_cmd
+from unimem import daemon as daemon_mod
+from unimem import memory_git
+from unimem import watch as watch_mod
+from unimem.commands import daemon_cmd, watch_cmd
 
 GIT = shutil.which("git")
 needs_git = pytest.mark.skipif(GIT is None, reason="git not on PATH")
@@ -70,7 +70,7 @@ def test_a_store_inside_another_repo_is_never_committed(tmp_path):
     (store / "memory" / "facts.jsonl").write_text("{}\n")
 
     assert memory_git.is_repo(str(store)) and not memory_git.owns_repo(str(store))
-    result = memory_git.commit_all(str(store), "commontrace: fact forget x")
+    result = memory_git.commit_all(str(store), "unimem: fact forget x")
     assert result["committed"] is False
     assert memory_git.log(str(project))["entries"] == []
 
@@ -172,7 +172,7 @@ def test_daemon_run_once_invokes_hooks(tmp_path, monkeypatch):
     os.makedirs(os.path.join(root, "memory", "lessons"), exist_ok=True)
     calls: list[str] = []
 
-    from commontrace.commands import dream_cmd
+    from unimem.commands import dream_cmd
     monkeypatch.setattr(dream_cmd, "main_dream",
                         lambda r, draft=False: calls.append(r) or 0)
     result = daemon_mod.run_once(root, "once")
@@ -188,7 +188,7 @@ def test_daemon_run_once_invokes_hooks(tmp_path, monkeypatch):
 def test_daemon_run_once_recovers_crash_marker(tmp_path, monkeypatch):
     root = str(tmp_path)
     os.makedirs(os.path.join(root, "memory", "lessons"), exist_ok=True)
-    from commontrace.commands import dream_cmd
+    from unimem.commands import dream_cmd
     monkeypatch.setattr(dream_cmd, "main_dream", lambda r, draft=False: 0)
     mpath = daemon_mod.marker_path(root)
     os.makedirs(os.path.dirname(mpath), exist_ok=True)
@@ -218,7 +218,7 @@ def test_daemon_run_once_real_hooks_on_empty_store(tmp_path):
 
 
 def _parser_with(mod) -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="commontrace")
+    parser = argparse.ArgumentParser(prog="unimem")
     sub = parser.add_subparsers(dest="command")
     mod.add_parser(sub)
     return parser

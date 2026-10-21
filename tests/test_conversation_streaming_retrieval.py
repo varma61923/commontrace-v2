@@ -3,9 +3,9 @@ import math
 import random
 import re
 
-from commontrace._stem import stem
-from commontrace.conversation import profile
-from commontrace.conversation import store as storage
+from unimem._stem import stem
+from unimem.conversation import profile
+from unimem.conversation import store as storage
 
 
 def _reference_bm25(units, query, limit):

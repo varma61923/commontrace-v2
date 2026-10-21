@@ -1,5 +1,5 @@
-from commontrace.client import MemoryClient
-from commontrace.memory_record import rerank_profile_results
+from unimem.client import MemoryClient
+from unimem.memory_record import rerank_profile_results
 
 
 def test_only_scoped_user_dynamic_preferences_boost_matching_results():
@@ -74,7 +74,7 @@ def test_preference_with_a_negative_clause_does_not_boost_either_side():
 
 
 def test_profile_preference_reranking_respects_decay_and_scope(tmp_path, monkeypatch):
-    from commontrace import search_recipes
+    from unimem import search_recipes
 
     results = [
         {"id": "unrelated", "text": "A long and detailed answer", "score": 0.8},

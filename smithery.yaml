@@ -19,6 +19,6 @@ startCommand:
       if (typeof config.storeRoot !== 'string' || !config.storeRoot.startsWith('/')) {
         throw new Error('storeRoot must be an absolute path');
       }
-      return {command: 'commontrace', args: ['serve', '--dest', config.storeRoot,
+      return {command: 'unimem', args: ['serve', '--dest', config.storeRoot,
         ...(config.approvalTools === true ? [] : ['--no-approval'])]};
     }

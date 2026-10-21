@@ -8,9 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from commontrace import change_stream as stream
-from commontrace import erasure_verify, hierarchical, memory_authority, privacy_erasure
-from commontrace import frontier_protocol as fp
+from unimem import change_stream as stream
+from unimem import erasure_verify, hierarchical, memory_authority, privacy_erasure
+from unimem import frontier_protocol as fp
 
 
 def seed(root, scopes=()):
@@ -166,7 +166,7 @@ def test_aborted_outbox_emits_no_phantom_and_symlink_store_is_unverified(tmp_pat
 
 @pytest.mark.parametrize("sqlite", [False, True])
 def test_canonical_writes_publish_through_durable_outbox(tmp_path, monkeypatch, sqlite):
-    from commontrace import fact_store
+    from unimem import fact_store
 
     monkeypatch.setattr("os.fsync", lambda _: None)
     root = str(tmp_path)
@@ -188,7 +188,7 @@ def test_canonical_writes_publish_through_durable_outbox(tmp_path, monkeypatch, 
 def test_cli_gateway_sse_and_header_resume(tmp_path, monkeypatch, capsys):
     import json
 
-    from commontrace import cli, gateway
+    from unimem import cli, gateway
 
     monkeypatch.setattr("os.fsync", lambda _: None)
     root = str(tmp_path)
@@ -232,7 +232,7 @@ def test_mcp_subscription_resource_and_native_notification_handler(tmp_path, mon
     pytest.importorskip("mcp")
     import mcp_types
 
-    from commontrace import mcp_server
+    from unimem import mcp_server
 
     monkeypatch.setattr("os.fsync", lambda _: None)
     root = str(tmp_path)

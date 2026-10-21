@@ -5,17 +5,17 @@ from copy import deepcopy
 
 import pytest
 
-from commontrace import hierarchical, memory_authority, nextwave_store, privacy_erasure
-from commontrace import person_io as person
 from tests import test_capability_io, test_skill_foundry
+from unimem import hierarchical, memory_authority, nextwave_store, privacy_erasure
+from unimem import person_io as person
 
 clock = test_skill_foundry.clock
 
 
 @pytest.fixture
 def cap_clock(monkeypatch):
-    from commontrace import frontier_protocol as fp
     from tests.test_capabilities import NOW
+    from unimem import frontier_protocol as fp
 
     monkeypatch.setattr(fp, "now", lambda: NOW.isoformat())
 
@@ -100,7 +100,7 @@ def test_staged_injection_and_redacted_assistant_text_never_enter_canonical_memo
 
 
 def credentials_setup(tmp_path):
-    from commontrace import credentials
+    from unimem import credentials
 
     root, fact = source(tmp_path)
     person.configure_credentials(root, "https://issuer.example.test/status/1")
@@ -111,7 +111,7 @@ def credentials_setup(tmp_path):
 
 
 def presentation(root, issued, holder, *, audience="https://verifier.example.test"):
-    from commontrace import credentials
+    from unimem import credentials
 
     question = person.challenge(root, audience)
     token = credentials.present(issued["issued"], ["statement"], holder_key=holder,
@@ -127,7 +127,7 @@ def test_credential_issue_disclose_and_single_use_verification(tmp_path):
     assert "private-owner" not in str(result) and result["nonce_consumed"]
     with pytest.raises(PermissionError, match="used"):
         person.verify_credential(root, token, question["audience"], question["nonce"])
-    from commontrace import frontier_protocol as fp
+    from unimem import frontier_protocol as fp
 
     for name in ("credential-index", "credential-state", "credential-issuances"):
         records = fp.rows(fp.filename(root, nextwave_store.journal_name(name)))
@@ -156,7 +156,7 @@ def test_canonical_erasure_revokes_credential_and_deletes_managed_disclosures(tm
 
 
 def test_foreign_verifier_requires_operator_pin_and_fresh_signed_status(tmp_path):
-    from commontrace import credentials
+    from unimem import credentials
 
     root, _, holder, issued = credentials_setup(tmp_path/"issuer")
     receiver = str(tmp_path/"verifier")
@@ -189,7 +189,7 @@ def test_concurrent_nonce_consumption_has_exactly_one_winner(tmp_path):
 
 
 def test_interrupted_issuance_never_reuses_or_activates_reserved_status_index(tmp_path, monkeypatch):
-    from commontrace import credentials
+    from unimem import credentials
 
     root, fact = source(tmp_path)
     settings = person.configure_credentials(root, "https://issuer.example.test/status/1")
@@ -214,7 +214,7 @@ def test_person_cli_file_stage_issue_present_verify_and_revoke(tmp_path, capsys)
     import json
     import os
 
-    from commontrace import cli, credentials
+    from unimem import cli, credentials
 
     root, fact = source(tmp_path/"store")
     def invoke(operation, body=None, *arguments):
@@ -241,7 +241,7 @@ def test_person_cli_file_stage_issue_present_verify_and_revoke(tmp_path, capsys)
 
 
 def test_browser_commands_cannot_open_holder_keys_or_local_summary_files(tmp_path):
-    from commontrace import ui_commands
+    from unimem import ui_commands
 
     root = str(tmp_path)
     for arguments in (["present"], ["stage", "--file", "/private/summary.txt"]):
@@ -251,8 +251,8 @@ def test_browser_commands_cannot_open_holder_keys_or_local_summary_files(tmp_pat
 
 def test_mcp_challenge_and_verify_use_real_holder_signatures(tmp_path):
     pytest.importorskip("mcp")
-    from commontrace import credentials, mcp_server
     from tests.test_mcp_server import call
+    from unimem import credentials, mcp_server
 
     root, fact, holder, issued = credentials_setup(tmp_path)
     server = mcp_server.build_server(root, allow_approval=False)
@@ -268,7 +268,7 @@ def test_mcp_challenge_and_verify_use_real_holder_signatures(tmp_path):
 
 
 def test_trace_passport_preserves_original_frontmatter_and_entire_markdown_body(tmp_path):
-    from commontrace import frontmatter, trace_io
+    from unimem import frontmatter, trace_io
 
     root = str(tmp_path)
     filename = trace_io.write_new(root, title="Reviewed wrist procedure", context="A wrist offset is known.",
@@ -281,7 +281,7 @@ def test_trace_passport_preserves_original_frontmatter_and_entire_markdown_body(
     result = export(root, [trace["id"]])
     content = person.verify_passport(root, result["bundle"])["components"]["episodic"][0]["content"]
     assert content["body"] == body
-    from commontrace.lesson_admission import _json_value
+    from unimem.lesson_admission import _json_value
     assert content["frontmatter"] == _json_value(fm)
 
 
@@ -301,8 +301,8 @@ def test_expired_verifier_nonce_and_stale_foreign_status_are_rejected(tmp_path, 
 
 
 def test_per_segment_grant_is_actual_verified_capability_with_export_permission(tmp_path, cap_clock):
-    from commontrace import capability_io
     from tests.test_capabilities import policy
+    from unimem import capability_io
 
     root, _ = test_capability_io.prepare(tmp_path)
     fact = hierarchical.append_facts(root, [{"statement": "The reviewed wrist offset is 0.12.",
@@ -351,7 +351,7 @@ def test_foreign_status_requires_quote_for_exact_verifier_challenge(tmp_path):
 
 
 def test_public_status_bits_do_not_reveal_whether_an_unrevoked_credential_was_issued(tmp_path):
-    from commontrace import credentials
+    from unimem import credentials
 
     root, fact = source(tmp_path)
     person.configure_credentials(root, "https://issuer.example.test/status/1")
@@ -367,7 +367,7 @@ def test_public_status_bits_do_not_reveal_whether_an_unrevoked_credential_was_is
 
 
 def test_indexed_passport_and_credential_use_point_reads_without_loading_the_whole_fact_store(tmp_path, monkeypatch):
-    from commontrace import credentials, fact_store
+    from unimem import credentials, fact_store
 
     root, fact = source(tmp_path)
     fact_store.migrate(root)
@@ -383,9 +383,9 @@ def test_indexed_passport_and_credential_use_point_reads_without_loading_the_who
 
 
 def test_plain_native_record_and_capture_aliases_roundtrip_and_erase_managed_passport(tmp_path):
-    from commontrace import capability_io
-    from commontrace.memory_journal import Journal
-    from commontrace.memory_record import MemoryRecord
+    from unimem import capability_io
+    from unimem.memory_journal import Journal
+    from unimem.memory_record import MemoryRecord
 
     root = str(tmp_path)
     journal = Journal(root)
@@ -405,8 +405,8 @@ def test_plain_native_record_and_capture_aliases_roundtrip_and_erase_managed_pas
 
 
 def test_cross_scope_native_shadowing_cannot_create_an_erasure_confusion(tmp_path):
-    from commontrace.memory_journal import Journal
-    from commontrace.memory_record import MemoryRecord
+    from unimem.memory_journal import Journal
+    from unimem.memory_record import MemoryRecord
 
     journal = Journal(str(tmp_path))
     journal.capture("run", "UserMessage", {"text": "Private source."}, scope={"agent": "a"}, event_id="same")
@@ -418,10 +418,10 @@ def test_cross_scope_native_shadowing_cannot_create_an_erasure_confusion(tmp_pat
 
 
 def test_fact_only_leaf_cannot_erase_a_hidden_capture_by_claiming_it_as_evidence(tmp_path, cap_clock):
-    from commontrace import capability_io
-    from commontrace.memory_journal import Journal
-    from commontrace.memory_record import MemoryRecord
     from tests.test_capabilities import policy
+    from unimem import capability_io
+    from unimem.memory_journal import Journal
+    from unimem.memory_record import MemoryRecord
 
     root, _ = test_capability_io.prepare(tmp_path)
     journal = Journal(root)
@@ -442,10 +442,10 @@ def test_fact_only_leaf_cannot_erase_a_hidden_capture_by_claiming_it_as_evidence
 
 
 def test_delegated_canonical_cascade_requires_authenticated_native_mirror(tmp_path, cap_clock):
-    from commontrace import capability_io
-    from commontrace.memory_journal import Journal
-    from commontrace.memory_record import MemoryRecord
     from tests.test_capabilities import policy
+    from unimem import capability_io
+    from unimem.memory_journal import Journal
+    from unimem.memory_record import MemoryRecord
 
     root, _ = test_capability_io.prepare(tmp_path)
     journal = Journal(root)

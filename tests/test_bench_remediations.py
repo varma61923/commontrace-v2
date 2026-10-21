@@ -4,9 +4,9 @@ import subprocess
 import sys
 from unittest.mock import patch
 
-from commontrace.commands import bench_cmd, doctor_cmd
-from commontrace.reference import measure_performance as mp
-from commontrace.reference import pilot_metrics as pm
+from unimem.commands import bench_cmd, doctor_cmd
+from unimem.reference import measure_performance as mp
+from unimem.reference import pilot_metrics as pm
 
 
 class TestStandaloneRootPathResolution:
@@ -14,16 +14,16 @@ class TestStandaloneRootPathResolution:
         script_dir = os.path.dirname(os.path.abspath(mp.__file__))
         expected_repo = os.path.dirname(os.path.dirname(script_dir))
         assert os.path.abspath(mp._AUTO_ROOT) == os.path.abspath(expected_repo)
-        assert os.path.isdir(os.path.join(mp._AUTO_ROOT, "commontrace"))
+        assert os.path.isdir(os.path.join(mp._AUTO_ROOT, "unimem"))
 
     def test_pilot_metrics_root_points_to_repo_root(self, monkeypatch):
-        monkeypatch.delenv("COMMONTRACE_ROOT", raising=False)
+        monkeypatch.delenv("UNIMEM_ROOT", raising=False)
         monkeypatch.delenv("JUSTDOIT_ROOT", raising=False)
 
         # _ROOT is selected at import time. Import in a fresh process after
         # clearing overrides so an inherited root cannot invalidate this test.
         result = subprocess.run(
-            [sys.executable, "-c", "from commontrace.reference import pilot_metrics; print(pilot_metrics._ROOT)"],
+            [sys.executable, "-c", "from unimem.reference import pilot_metrics; print(pilot_metrics._ROOT)"],
             capture_output=True, text=True, check=True,
             cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         )
@@ -32,10 +32,10 @@ class TestStandaloneRootPathResolution:
 
     def test_measure_performance_standalone_execution(self):
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        script_path = os.path.join(repo_root, "commontrace", "reference", "measure_performance.py")
+        script_path = os.path.join(repo_root, "unimem", "reference", "measure_performance.py")
 
         env = dict(os.environ)
-        env.pop("COMMONTRACE_ROOT", None)
+        env.pop("UNIMEM_ROOT", None)
         env.pop("JUSTDOIT_ROOT", None)
 
         proc = subprocess.run(
@@ -50,10 +50,10 @@ class TestStandaloneRootPathResolution:
 
     def test_pilot_metrics_standalone_execution(self):
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        script_path = os.path.join(repo_root, "commontrace", "reference", "pilot_metrics.py")
+        script_path = os.path.join(repo_root, "unimem", "reference", "pilot_metrics.py")
 
         env = dict(os.environ)
-        env.pop("COMMONTRACE_ROOT", None)
+        env.pop("UNIMEM_ROOT", None)
         env.pop("JUSTDOIT_ROOT", None)
 
         proc = subprocess.run(
@@ -122,7 +122,7 @@ class TestBenchCliArgumentForwarding:
             "--dest", str(tmp_path),
         ])
 
-        with patch("commontrace.commands.bench_cmd.run_script", return_value=0) as mock_run:
+        with patch("unimem.commands.bench_cmd.run_script", return_value=0) as mock_run:
             rc = bench_cmd.run(args)
             assert rc == 0
             assert mock_run.called
@@ -159,7 +159,7 @@ class TestBenchCliArgumentForwarding:
             "--dest", str(tmp_path),
         ])
 
-        with patch("commontrace.commands.bench_cmd.run_script", return_value=0) as mock_run:
+        with patch("unimem.commands.bench_cmd.run_script", return_value=0) as mock_run:
             rc = bench_cmd.run(args)
             assert rc == 0
             assert mock_run.called
@@ -181,7 +181,7 @@ class TestBenchCliArgumentForwarding:
 
         args = parser.parse_args(["bench", "--pilot", "--strict", "--dest", str(tmp_path)])
 
-        with patch("commontrace.commands.bench_cmd.run_script", return_value=0) as mock_run:
+        with patch("unimem.commands.bench_cmd.run_script", return_value=0) as mock_run:
             rc = bench_cmd.run(args)
             assert rc != 0
             assert not mock_run.called, "must refuse before ever invoking pilot_metrics.py"
@@ -317,6 +317,6 @@ class TestDoctorResilience:
             assert rc == 0
 
         captured = capsys.readouterr()
-        assert "[commontrace] doctor" in captured.out
+        assert "[unimem] doctor" in captured.out
         assert "lessons in store" in captured.out
         assert "Done." in captured.out

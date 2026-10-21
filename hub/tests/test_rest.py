@@ -58,8 +58,8 @@ async def test_rest_json_reader_rejects_ambiguous_and_non_finite_json(body):
 
 
 async def test_memory_runtime_turn_scopes_and_permission_requirements(session_factory, config):
-    from commontrace.memory_record import MemoryRecord
     from hub import scopes
+    from unimem.memory_record import MemoryRecord
 
     _org, raw_key = await _org_with_key(session_factory)
     async with _client(_app(session_factory, config)) as client:
@@ -94,9 +94,9 @@ async def test_memory_runtime_turn_scopes_and_permission_requirements(session_fa
 
 
 async def test_memory_erasure_rechecks_scope_after_identifier_reuse(session_factory, config, monkeypatch):
-    from commontrace.memory_record import MemoryRecord
     from hub.memory_records import PostgresJournal
     from hub.models import MemoryRecordProjection
+    from unimem.memory_record import MemoryRecord
 
     org, raw_key = await _org_with_key(session_factory)
     journal = PostgresJournal(session_factory, org)
@@ -121,9 +121,9 @@ async def test_memory_erasure_rechecks_scope_after_identifier_reuse(session_fact
 
 
 async def test_memory_erasure_cannot_cascade_from_an_unowned_missing_identifier(session_factory, config):
-    from commontrace.memory_record import MemoryRecord
     from hub.memory_records import PostgresJournal
     from hub.models import MemoryRecordProjection
+    from unimem.memory_record import MemoryRecord
 
     org, raw_key = await _org_with_key(session_factory)
     journal = PostgresJournal(session_factory, org)
@@ -138,10 +138,10 @@ async def test_memory_erasure_cannot_cascade_from_an_unowned_missing_identifier(
 
 
 async def test_record_expiration_reaper_requires_admin_and_stays_tenant_bound(session_factory, config):
-    from commontrace.memory_record import MemoryRecord
     from hub import scopes
     from hub.memory_records import PostgresJournal
     from hub.models import MemoryRecordProjection
+    from unimem.memory_record import MemoryRecord
 
     owner, owner_key = await _org_with_key(session_factory)
     other, _other_key = await _org_with_key(session_factory)
@@ -195,7 +195,7 @@ async def test_oidc_rest_auth_is_role_scoped_without_an_api_key(monkeypatch):
     from hub.auth import AuthenticatedUser
 
     config = HubConfig(
-        database_url="postgresql+asyncpg://user:pass@localhost/commontrace",
+        database_url="postgresql+asyncpg://user:pass@localhost/unimem",
         oidc_issuer="https://login.example.test/",
         oidc_audience="https://hub.example.test/mcp",
         oidc_jwks='{"keys": []}',
@@ -282,7 +282,7 @@ class TestKeyProvisioning:
         async with _client(_app(session_factory, config)) as client:
             provision = await client.post(
                 "/api/v1/keys",
-                json={"email": "agent-ab12cd34@commontrace.auto",
+                json={"email": "agent-ab12cd34@unimem.auto",
                       "display_name": "Claude Code Agent"},
             )
             assert provision.status_code == 201
@@ -311,7 +311,7 @@ class TestKeyProvisioning:
     ):
         async with _client(_app(session_factory, config)) as client:
             response = await client.post(
-                "/api/v1/keys", json={"email": "agent-99ff@commontrace.auto"}
+                "/api/v1/keys", json={"email": "agent-99ff@unimem.auto"}
             )
         async with session_scope(session_factory) as session:
             org = await session.get(Organization, response.json()["org_id"])
@@ -345,7 +345,7 @@ class TestAuthentication:
     async def test_an_unknown_key_is_refused(self, session_factory, config):
         async with _client(_app(session_factory, config)) as client:
             response = await client.post(
-                "/api/v1/traces/search", json={"q": "x"}, headers=_key("ct_not_a_real_key"),
+                "/api/v1/traces/search", json={"q": "x"}, headers=_key("unimem_not_a_real_key"),
             )
         assert response.status_code == 401
 
@@ -363,7 +363,7 @@ class TestAuthentication:
             revoked = await client.post(
                 "/api/v1/traces/search", json={"q": "x"}, headers=_key(raw_key))
             unknown = await client.post(
-                "/api/v1/traces/search", json={"q": "x"}, headers=_key("ct_nope"))
+                "/api/v1/traces/search", json={"q": "x"}, headers=_key("unimem_nope"))
         assert revoked.status_code == unknown.status_code == 401
         assert revoked.json() == unknown.json()
 
@@ -378,9 +378,9 @@ class TestAuthAttemptBudget:
                     "/api/v1/traces/search", json={"q": "anything"}, headers=_key(raw_key))
                 assert response.status_code == 200
             for _ in range(2):
-                await client.post("/api/v1/traces/search", json={"q": "x"}, headers=_key("ct_live_wrong"))
+                await client.post("/api/v1/traces/search", json={"q": "x"}, headers=_key("unimem_live_wrong"))
             refused = await client.post(
-                "/api/v1/traces/search", json={"q": "x"}, headers=_key("ct_live_wrong"))
+                "/api/v1/traces/search", json={"q": "x"}, headers=_key("unimem_live_wrong"))
         assert refused.status_code == 429
 
 
@@ -636,7 +636,7 @@ class TestThePluginsOwnRequestShapes:
         async with _client(_app(session_factory, config)) as client:
             response = await client.post(
                 "/api/v1/keys",
-                json={"email": "agent-ab12cd34@commontrace.auto",
+                json={"email": "agent-ab12cd34@unimem.auto",
                       "display_name": "Claude Code Agent"},
             )
         assert "api_key" in response.json()

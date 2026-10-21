@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from commontrace.parallel import bounded_map
+from unimem.parallel import bounded_map
 
 
 def test_lazy_input_does_not_run_ahead_of_the_submission_budget():

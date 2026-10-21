@@ -287,7 +287,7 @@ test("checkHubUrl refuses what the Python client refuses", () => {
 test("connect() refuses a plaintext remote URL before sending the key anywhere", async () => {
   let fetched = false;
   await assert.rejects(
-    () => HubClient.connect("http://hub.example.com/mcp", "ct_live_secret", {
+    () => HubClient.connect("http://hub.example.com/mcp", "unimem_live_secret", {
       fetch: (async () => { fetched = true; throw new Error("no"); }) as never,
     }),
     HubConfigurationError,

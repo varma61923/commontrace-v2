@@ -5,9 +5,9 @@ import sqlite3
 
 import pytest
 
-from commontrace.conversation import Options, Store, embed, recall, search
-from commontrace.conversation.extract import extract
-from commontrace.conversation.store import TURN_CACHE_SIZE, ConversationError
+from unimem.conversation import Options, Store, embed, recall, search
+from unimem.conversation.extract import extract
+from unimem.conversation.store import TURN_CACHE_SIZE, ConversationError
 
 LEXICAL = dict(embedder=None, rerank=None)
 
@@ -223,7 +223,7 @@ def test_identical_facts_belong_to_separate_owners_and_reversions_are_kept(tmp_p
 
 
 def test_turn_cache_is_also_bounded_by_bytes(tmp_path, monkeypatch):
-    from commontrace.conversation import store as module
+    from unimem.conversation import store as module
 
     monkeypatch.setattr(module, "TURN_CACHE_BYTES", 5000)
     with Store(str(tmp_path), "cache") as store:
@@ -263,7 +263,7 @@ def test_flagged_summaries_are_not_injected(tmp_path):
 
 
 def test_profile_cli_supports_historical_cutoff(tmp_path, capsys):
-    from commontrace.cli import main
+    from unimem.cli import main
 
     with Store(str(tmp_path), "person") as store:
         store.add("one", [{"text": "I live in London."}], session_at="2023-01-01")
@@ -520,7 +520,7 @@ def test_historical_query_pins_historical_belief_and_current_answer_instructions
 
 def test_dense_streaming_matches_cached_quantized_topk_and_embeds_only_eligible(tmp_path, monkeypatch):
     np = pytest.importorskip("numpy")
-    from commontrace.conversation import vector_index
+    from unimem.conversation import vector_index
 
     # Exercise the bounded fallback when neither resident nor disk snapshots
     # fit; generation-safe mmap reuse is covered independently.

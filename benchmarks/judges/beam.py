@@ -325,7 +325,7 @@ def evaluate_rubric(
         if complete_fn is not None:
             raw, _ = complete_fn(prompt)
         else:
-            from commontrace import llm
+            from unimem import llm
 
             cfg = llm.Config(
                 provider="openai-compatible",

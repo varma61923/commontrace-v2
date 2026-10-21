@@ -128,14 +128,14 @@ class TestDeleteTrace:
                 title="t", context_text="c", solution_text="s", tags=[], agent_type="code",
             )
         async with session_scope(session_factory) as session:
-            await crud.delete_trace(session, orgs["a"], trace["id"], actor="api-key:ct_live_abcd")
+            await crud.delete_trace(session, orgs["a"], trace["id"], actor="api-key:unimem_live_abcd")
 
         async with session_scope(session_factory) as session:
             rows = (
                 await session.execute(select(AuditLogEntry).where(AuditLogEntry.action == "delete_trace"))
             ).scalars().all()
         assert len(rows) == 1
-        assert rows[0].actor == "api-key:ct_live_abcd"
+        assert rows[0].actor == "api-key:unimem_live_abcd"
         assert rows[0].org_id == orgs["a"]
         assert rows[0].target_id == trace["id"]
 
@@ -217,7 +217,7 @@ class TestRequestOrgDeletion:
 
     async def test_is_audited(self, session_factory, orgs):
         async with session_scope(session_factory) as session:
-            await crud.request_org_deletion(session, orgs["a"], actor="api-key:ct_live_abcd")
+            await crud.request_org_deletion(session, orgs["a"], actor="api-key:unimem_live_abcd")
         async with session_scope(session_factory) as session:
             rows = (
                 await session.execute(
@@ -332,7 +332,7 @@ class TestConfirmOrgDeletion:
                 title="t", context_text="c", solution_text="s", tags=[], agent_type="code",
             )
             session.add(Vote(trace_id=trace["id"], org_id=orgs["a"], vote_type="up"))
-            session.add(ApiKey(org_id=orgs["a"], key_prefix="ct_live_x", key_hash="h"))
+            session.add(ApiKey(org_id=orgs["a"], key_prefix="unimem_live_x", key_hash="h"))
 
         token = await self._requested_and_ready(session_factory, orgs["a"])
         async with session_scope(session_factory) as session:
@@ -391,7 +391,7 @@ class TestConfirmOrgDeletion:
     async def test_is_audited(self, session_factory, orgs):
         token = await self._requested_and_ready(session_factory, orgs["a"])
         async with session_scope(session_factory) as session:
-            await crud.confirm_org_deletion(session, orgs["a"], token, actor="api-key:ct_live_abcd")
+            await crud.confirm_org_deletion(session, orgs["a"], token, actor="api-key:unimem_live_abcd")
         async with session_scope(session_factory) as session:
             rows = (
                 await session.execute(

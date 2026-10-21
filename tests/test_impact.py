@@ -4,9 +4,9 @@ import json
 
 import pytest
 
-from commontrace import impact
-from commontrace.cli import main
-from commontrace.reliability import Evidence
+from unimem import impact
+from unimem.cli import main
+from unimem.reliability import Evidence
 
 
 def _trace(id, resolved=None, tokens_used=None, baseline=False):
@@ -136,7 +136,7 @@ class TestToDict:
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
-    monkeypatch.delenv("COMMONTRACE_ROOT", raising=False)
+    monkeypatch.delenv("UNIMEM_ROOT", raising=False)
     monkeypatch.chdir(tmp_path)
     return tmp_path
 

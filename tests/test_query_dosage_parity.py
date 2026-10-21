@@ -5,8 +5,8 @@ import os
 
 import pytest
 
-from commontrace import frontmatter, holdout_io, lesson_io, paths, retrieval_io
-from commontrace.commands import query_cmd
+from unimem import frontmatter, holdout_io, lesson_io, paths, retrieval_io
+from unimem.commands import query_cmd
 
 
 def _lesson(root: str, slug: str, description: str, body: str, **fm_extra) -> None:

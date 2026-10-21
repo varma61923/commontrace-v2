@@ -1,6 +1,6 @@
 # Bounded STL robot monitor
 
-`commontrace fleet shield spec` registers a bounded discrete-time Signal
+`unimem fleet shield spec` registers a bounded discrete-time Signal
 Temporal Logic formula against a memory ID. Predicates compare named numeric
 signals. `always`, `eventually`, and bounded `until` use closed intervals in
 seconds over timestamped samples. Robustness is computed from predicate margin;
@@ -24,6 +24,6 @@ currently adopted ISO 10218 edition, before deployment. The monitor complements
 and never replaces ISO 10218 functional safety.
 
 ```sh
-commontrace fleet shield spec '{"spec_id":"clearance","memory_id":"stop_rule","embodiment":"arm-v1","description":"Maintain 0.5m clearance","formula":{"op":"always","from":0,"to":1,"arg":{"op":"predicate","signal":"distance","cmp":">=","value":0.5}}}'
-commontrace fleet shield check '{"spec_id":"clearance","action":{"grasp":"start"},"source_memory_ids":["stop_rule"],"trace":[{"t":0,"distance":0.8},{"t":1,"distance":0.6}]}'
+unimem fleet shield spec '{"spec_id":"clearance","memory_id":"stop_rule","embodiment":"arm-v1","description":"Maintain 0.5m clearance","formula":{"op":"always","from":0,"to":1,"arg":{"op":"predicate","signal":"distance","cmp":">=","value":0.5}}}'
+unimem fleet shield check '{"spec_id":"clearance","action":{"grasp":"start"},"source_memory_ids":["stop_rule"],"trace":[{"t":0,"distance":0.8},{"t":1,"distance":0.6}]}'
 ```

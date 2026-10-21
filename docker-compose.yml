@@ -3,15 +3,15 @@ services:
   db:
     image: postgres:18@sha256:5a5a84b19854a9ffaa54082c166ff4ec27473a361e496e5ea167f298f2da9722
     environment:
-      POSTGRES_USER: commontrace
+      POSTGRES_USER: unimem
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-not-for-production}
-      POSTGRES_DB: commontrace_hub
+      POSTGRES_DB: unimem_hub
       POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:-change-me-not-for-production}
     volumes:
       - hub_pgdata18:/var/lib/postgresql
       - ./hub/postgres-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U commontrace -d commontrace_hub"]
+      test: ["CMD-SHELL", "pg_isready -U unimem -d unimem_hub"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -27,7 +27,7 @@ services:
       - ALL
     command: ["python", "-m", "alembic", "-c", "hub/alembic.ini", "upgrade", "head"]
     environment:
-      HUB_DATABASE_URL: postgresql+asyncpg://commontrace:${POSTGRES_PASSWORD:-change-me-not-for-production}@db:5432/commontrace_hub
+      HUB_DATABASE_URL: postgresql+asyncpg://unimem:${POSTGRES_PASSWORD:-change-me-not-for-production}@db:5432/unimem_hub
     depends_on:
       db:
         condition: service_healthy
@@ -43,7 +43,7 @@ services:
     cap_drop:
       - ALL
     environment:
-      HUB_DATABASE_URL: postgresql+asyncpg://commontrace_app:${POSTGRES_APP_PASSWORD:-change-me-not-for-production}@db:5432/commontrace_hub
+      HUB_DATABASE_URL: postgresql+asyncpg://unimem_app:${POSTGRES_APP_PASSWORD:-change-me-not-for-production}@db:5432/unimem_hub
       HUB_HOST: 0.0.0.0
       HUB_PORT: 8420
       HUB_LOG_LEVEL: INFO
@@ -74,7 +74,7 @@ services:
 
   # Local runtime, opt-in: `docker compose --profile local up`. The gateway serves the
   # console and API on :8787; the MCP server shares its store and bearer token.
-  # Settings (e.g. COMMONTRACE_LLM_PROVIDER) come from an optional .env file;
+  # Settings (e.g. UNIMEM_LLM_PROVIDER) come from an optional .env file;
   # see .env.example.
   gateway:
     profiles: ["local"]
@@ -130,6 +130,15 @@ services:
     depends_on:
       gateway:
         condition: service_healthy
+    healthcheck:
+      # The MCP process serves :8421; the image default probes the gateway on :8787.
+      # A live MCP listener must reject an unauthenticated request at its boundary.
+      test: ["CMD", "python", "-c",
+             "import http.client,sys; c=http.client.HTTPConnection('127.0.0.1',8421,timeout=2); c.request('POST','/mcp',body='{}',headers={'Content-Type':'application/json'}); sys.exit(0 if c.getresponse().status==401 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     restart: unless-stopped
 
 volumes:

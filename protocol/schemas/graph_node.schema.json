@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://commontrace.dev/schemas/graph_node.schema.json",
-  "title": "CommonTrace Graph Node",
-  "description": "A node in the CommonTrace temporal property graph, representing an entity such as a service, tool, error, concept, lesson, scope, user, or file.",
+  "$id": "https://unimem.dev/schemas/graph_node.schema.json",
+  "title": "UniMem Graph Node",
+  "description": "A node in the UniMem temporal property graph, representing an entity such as a service, tool, error, concept, lesson, scope, user, or file.",
   "type": "object",
   "required": [
     "id",

@@ -6,8 +6,8 @@ from typing import Callable
 
 import yaml
 
-from commontrace import dosage, frontmatter
 from tests.e2e.conftest import CLIResult
+from unimem import dosage, frontmatter
 
 
 def test_tier4_code_review_pipeline_simulation(
@@ -123,7 +123,7 @@ def test_tier4_code_review_pipeline_simulation(
         "name": "2026-09-20_db-pool-async-refactor",
         "description": "Async database connection pool implementation with review iterations",
         "agent_type": "code",
-        "task_invocation": f"/commontrace {task_description}",
+        "task_invocation": f"/unimem {task_description}",
         "tags": ["database", "concurrency", "review"],
         "project": "core-backend",
         "verdict": verdict_round_2,

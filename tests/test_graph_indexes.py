@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 from datetime import datetime, timedelta, timezone
 
-from commontrace import graph, lesson_cache
+from unimem import graph, lesson_cache
 
 BASE = datetime(2024, 1, 1, tzinfo=timezone.utc)
 

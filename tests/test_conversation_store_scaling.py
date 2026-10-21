@@ -3,9 +3,9 @@ import sqlite3
 
 import pytest
 
-from commontrace.conversation import profile
-from commontrace.conversation import store as store_module
-from commontrace.conversation.store import Store, fact_hash, write_txn
+from unimem.conversation import profile
+from unimem.conversation import store as store_module
+from unimem.conversation.store import Store, fact_hash, write_txn
 
 
 def test_legacy_backfill_streams_turns_and_bounds_fact_batches(tmp_path, monkeypatch):
@@ -81,7 +81,7 @@ def test_chain_repair_stages_order_and_does_not_write_unchanged_beliefs(tmp_path
             store._reinstate([("ana", "home"), ("ana", "home")])
         assert store.facts(history=True) == before
         assert not store.db.execute("SELECT 1 FROM sqlite_temp_master "
-                                    "WHERE name='commontrace_belief_successors'").fetchone()
+                                    "WHERE name='unimem_belief_successors'").fetchone()
 
 
 def test_failed_chain_repair_rolls_back_and_releases_staging_table(tmp_path):
@@ -95,7 +95,7 @@ def test_failed_chain_repair_rolls_back_and_releases_staging_table(tmp_path):
             store.delete_session("new")
         assert store.facts(history=True) == before
         assert not store.db.execute("SELECT 1 FROM sqlite_temp_master "
-                                    "WHERE name='commontrace_belief_successors'").fetchone()
+                                    "WHERE name='unimem_belief_successors'").fetchone()
         store.db.execute("DROP TRIGGER fail_repair")
         assert store.delete_session("new") == 1
         assert store.facts()[0]["statement"] == "I live in Oslo."

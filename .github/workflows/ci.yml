@@ -34,6 +34,23 @@ jobs:
           HEAD: ${{ github.sha }}
         run: python3 scripts/ci_changes.py "$BASE" "$HEAD" >> "$GITHUB_OUTPUT"
 
+  test-onnx-text:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    name: CPU ONNX text embeddings
+    runs-on: ubuntu-latest
+    env:
+      HF_HUB_OFFLINE: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install the text runtime and local graph test tooling
+        run: python -m pip install -e '.[dev,fastembed]' 'onnx>=1.19,<2'
+      - name: Exercise real tokenization, inference, batching, and offline cache misses
+        run: python -m pytest tests/test_onnx_text.py tests/test_embeddings.py tests/test_default_local_retrieval.py -q
+
   test-core:
     # Core install on the oldest supported interpreter; the dev job covers the newest.
     name: test (core install, py${{ matrix.python-version }})
@@ -50,7 +67,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install commontrace (core, no extras)
+      - name: Install unimem (core, no extras)
         run: python -m pip install -e .
 
       - name: Install test runner
@@ -82,7 +99,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      COMMONTRACE_REQUIRE_BROWSER: "1"
+      UNIMEM_REQUIRE_BROWSER: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -115,13 +132,13 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install commontrace with the dev extra
+      - name: Install unimem with the dev extra
         run: python -m pip install -e ".[dev,code,crdt]" "pytest-cov>=7.0,<8.0"
 
       - name: Run tests with the 80 percent coverage gate
         run: >-
           python -m pytest tests/ e2e_tests/ -q -n auto
-          --cov=commontrace --cov-report=xml --cov-fail-under=80
+          --cov=unimem --cov-report=xml --cov-fail-under=80
 
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
@@ -150,12 +167,12 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install commontrace (core, no extras)
+      - name: Install unimem (core, no extras)
         run: python -m pip install -e .
 
       - name: Local-tier retrieval must not regress back to O(N) re-parsing or re-indexing
         run: |
-          python -m commontrace.reference.measure_local_latency \
+          python -m unimem.reference.measure_local_latency \
             --sizes 100,400,1600,6400 --runs 3 \
             --max-total-ms 500 --max-alpha 1.5
 
@@ -178,10 +195,10 @@ jobs:
 
       - name: Ratchet branch-inclusive coverage on the governed fact index
         run: |
-          COVERAGE_FILE=/tmp/commontrace-fact-coverage python -m pytest \
+          COVERAGE_FILE=/tmp/unimem-fact-coverage python -m pytest \
             tests/test_fact_index*.py tests/test_fact_mutation_interfaces.py \
             tests/test_evidence_context.py tests/test_fact_search_gate.py \
-            --cov=commontrace.fact_index --cov-branch --cov-fail-under=95 \
+            --cov=unimem.fact_index --cov-branch --cov-fail-under=95 \
             --cov-report=term-missing -q
 
   conversation-quality:
@@ -295,11 +312,11 @@ jobs:
         run: npm test
 
       - name: Install pinned native TypeScript framework factories outside the checkout
-        run: npm install --prefix "$RUNNER_TEMP/commontrace-frameworks" --no-audit --no-fund ai@7.0.136 @mastra/core@1.75.0 zod@4.6.5
+        run: npm install --prefix "$RUNNER_TEMP/unimem-frameworks" --no-audit --no-fund ai@7.0.136 @mastra/core@1.75.0 zod@4.6.5
 
       - name: Exercise real Vercel and Mastra tools without model calls
         env:
-          COMMONTRACE_TS_FRAMEWORKS: ${{ runner.temp }}/commontrace-frameworks
+          UNIMEM_TS_FRAMEWORKS: ${{ runner.temp }}/unimem-frameworks
         run: node ../../tests/test_typescript_frameworks.mjs
 
   test-vector-engines:
@@ -315,9 +332,9 @@ jobs:
       pgvector:
         image: pgvector/pgvector:0.8.1-pg16
         env:
-          POSTGRES_USER: commontrace
-          POSTGRES_PASSWORD: commontrace
-          POSTGRES_DB: commontrace_vector_test
+          POSTGRES_USER: unimem
+          POSTGRES_PASSWORD: unimem
+          POSTGRES_DB: unimem_vector_test
         ports:
           - 5432:5432
         options: >-
@@ -326,7 +343,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      COMMONTRACE_TEST_PGVECTOR_DSN: postgresql://commontrace:commontrace@127.0.0.1:5432/commontrace_vector_test
+      UNIMEM_TEST_PGVECTOR_DSN: postgresql://unimem:unimem@127.0.0.1:5432/unimem_vector_test
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Set up Python ${{ matrix.python-version }}
@@ -338,7 +355,7 @@ jobs:
       - name: Provision pgvector as the test database administrator
         run: >-
           docker exec ${{ job.services.pgvector.id }}
-          psql -U commontrace -d commontrace_vector_test -v ON_ERROR_STOP=1
+          psql -U unimem -d unimem_vector_test -v ON_ERROR_STOP=1
           -c 'CREATE EXTENSION IF NOT EXISTS vector;'
       - name: Exercise both engines through real retrieval and concurrent ingestion
         run: >-
@@ -360,9 +377,9 @@ jobs:
       postgres:
         image: postgres:16
         env:
-          POSTGRES_USER: commontrace
-          POSTGRES_PASSWORD: commontrace
-          POSTGRES_DB: commontrace_hub_test
+          POSTGRES_USER: unimem
+          POSTGRES_PASSWORD: unimem
+          POSTGRES_DB: unimem_hub_test
         ports:
           - 5432:5432
         options: >-
@@ -371,7 +388,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      HUB_TEST_DATABASE_URL: postgresql+asyncpg://commontrace:commontrace@localhost:5432/commontrace_hub_test
+      HUB_TEST_DATABASE_URL: postgresql+asyncpg://unimem:unimem@localhost:5432/unimem_hub_test
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -388,26 +405,26 @@ jobs:
 
       - name: Verify migrations apply from scratch
         env:
-          HUB_DATABASE_URL: postgresql+asyncpg://commontrace:commontrace@localhost:5432/commontrace_migrations
+          HUB_DATABASE_URL: postgresql+asyncpg://unimem:unimem@localhost:5432/unimem_migrations
         run: |
-          PGPASSWORD=commontrace createdb -h localhost -U commontrace commontrace_migrations
+          PGPASSWORD=unimem createdb -h localhost -U unimem unimem_migrations
           python -m alembic -c hub/alembic.ini upgrade head
           python -m alembic -c hub/alembic.ini check
 
       - name: Verify an interrupted CONCURRENTLY-index migration can be retried
         env:
-          HUB_DATABASE_URL: postgresql+asyncpg://commontrace:commontrace@localhost:5432/commontrace_migrations_retry
-          PGPASSWORD: commontrace
+          HUB_DATABASE_URL: postgresql+asyncpg://unimem:unimem@localhost:5432/unimem_migrations_retry
+          PGPASSWORD: unimem
         run: |
-          createdb -h localhost -U commontrace commontrace_migrations_retry
+          createdb -h localhost -U unimem unimem_migrations_retry
 
           python -m alembic -c hub/alembic.ini upgrade 40d3f29cbb24
-          psql -h localhost -U commontrace -d commontrace_migrations_retry \
+          psql -h localhost -U unimem -d unimem_migrations_retry \
             -c "ALTER TABLE traces ADD COLUMN agent_id VARCHAR(128) NOT NULL DEFAULT '';"
           python -m alembic -c hub/alembic.ini upgrade head
 
           python -m alembic -c hub/alembic.ini downgrade 3c3adaa53a71
-          psql -h localhost -U commontrace -d commontrace_migrations_retry -c "
+          psql -h localhost -U unimem -d unimem_migrations_retry -c "
             ALTER TABLE traces ADD COLUMN commons_votes BIGINT NOT NULL DEFAULT 0;
             ALTER TABLE traces ADD COLUMN commons_review_after TIMESTAMPTZ;
             ALTER TABLE traces ADD COLUMN commons_retracted_at TIMESTAMPTZ;
@@ -446,10 +463,10 @@ jobs:
       - name: Compile optional ROS 2 asking interface when the native toolchain exists
         run: |
           if command -v colcon >/dev/null 2>&1 && [ -n "${ROS_DISTRO:-}" ]; then
-            colcon --log-base "$RUNNER_TEMP/commontrace-ros-log" build --base-paths ros2 \
-              --build-base "$RUNNER_TEMP/commontrace-ros-build" \
-              --install-base "$RUNNER_TEMP/commontrace-ros-install" --packages-select commontrace_interfaces
-            source "$RUNNER_TEMP/commontrace-ros-install/setup.bash"
+            colcon --log-base "$RUNNER_TEMP/unimem-ros-log" build --base-paths ros2 \
+              --build-base "$RUNNER_TEMP/unimem-ros-build" \
+              --install-base "$RUNNER_TEMP/unimem-ros-install" --packages-select unimem_interfaces
+            source "$RUNNER_TEMP/unimem-ros-install/setup.bash"
             python -m pytest tests/test_human_help.py -q
           else
             echo "ROS 2 interface compilation skipped: colcon and an initialized ROS_DISTRO are required."
@@ -497,7 +514,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install commontrace with every extra, plus the Hub's own dependencies
+      - name: Install unimem with every extra, plus the Hub's own dependencies
         run: |
           python -m pip install -e ".[attention,hub-sync,dev]"
           python -m pip install -r hub/requirements.txt
@@ -514,11 +531,11 @@ jobs:
           PY
 
       - name: Bandit static analysis
-        run: bandit -r commontrace/ hub/ -x "*/tests/*,*/test_*" -ll
+        run: bandit -r unimem/ hub/ -x "*/tests/*,*/test_*" -ll
 
-      - name: pip-audit -- commontrace's own declared dependencies
+      - name: pip-audit -- unimem's own declared dependencies
         run: |
-          python - <<'PY' > /tmp/commontrace-audit-requirements.txt
+          python - <<'PY' > /tmp/unimem-audit-requirements.txt
           import tomllib
           with open("pyproject.toml", "rb") as f:
               project = tomllib.load(f)["project"]
@@ -527,7 +544,7 @@ jobs:
               deps.extend(extra_deps)
           print("\n".join(deps))
           PY
-          pip-audit -r /tmp/commontrace-audit-requirements.txt
+          pip-audit -r /tmp/unimem-audit-requirements.txt
 
       - name: pip-audit -- the Hub server's pinned dependencies
         run: pip-audit -r hub/requirements.txt
@@ -535,51 +552,51 @@ jobs:
       - name: Strict types for memory boundaries and async runtime
         run: |
           mypy --strict --follow-imports=silent --ignore-missing-imports \
-            commontrace/async_workers.py commontrace/mcp_transport.py \
-            commontrace/commons_integrity.py commontrace/frameworks.py \
-            commontrace/conversation/async_store.py commontrace/conversation/validation.py \
-            commontrace/semantic.py commontrace/vector_store.py commontrace/provider_config.py hub/migrate.py \
-            commontrace/distill.py commontrace/distillation_worker.py commontrace/draft_quality.py \
-            commontrace/failure_signals.py commontrace/memory_blocks.py \
-            commontrace/commands/block_cmd.py commontrace/commands/distill_cmd.py \
-            commontrace/conversation/coverage.py commontrace/conversation/context_selection.py \
-            commontrace/conversation/unicode_index.py \
-            commontrace/lesson_admission.py \
-            commontrace/memory_ifc.py commontrace/redteam.py \
-            commontrace/certified_erasure.py \
-            commontrace/retention.py \
-            commontrace/pooled_evidence.py commontrace/pooled_io.py commontrace/nextwave_store.py commontrace/commands/nextwave.py \
-            commontrace/unit_trials.py commontrace/skill_foundry.py commontrace/skill_io.py \
-            commontrace/capabilities.py commontrace/capability_io.py \
-            commontrace/team_isolation.py commontrace/team_io.py \
-            commontrace/optimizer_intake.py commontrace/optimizer_io.py \
-            commontrace/sentinel.py commontrace/sentinel_io.py \
-            commontrace/sycophancy.py commontrace/sycophancy_io.py \
-            commontrace/policy_proof.py commontrace/policy_cedar.py \
-            commontrace/policy_io.py commontrace/policy_relations.py \
-            commontrace/zk_effect.py commontrace/zk_effect_io.py commontrace/attested_keys.py \
-            commontrace/passport.py commontrace/credentials.py commontrace/person_io.py commontrace/purpose.py commontrace/subject_policy.py commontrace/human_help.py \
-            commontrace/rl_export.py commontrace/rl_io.py commontrace/writer_holdout.py commontrace/contagion.py commontrace/otel_memory.py commontrace/change_stream.py commontrace/erasure_verify.py commontrace/tiering.py \
-            commontrace/frontier_protocol.py commontrace/lineage.py commontrace/transparency_log.py commontrace/interference.py commontrace/eprocess.py commontrace/conformal_gate.py commontrace/incident.py commontrace/promotion.py commontrace/safety.py \
-            commontrace/outcomes.py commontrace/recovery.py commontrace/valuation.py commontrace/spatial.py commontrace/household.py commontrace/kv_capsules.py commontrace/uplift.py commontrace/attribution.py commontrace/cleanroom.py commontrace/compile_memory.py commontrace/robotics/__init__.py commontrace/robotics/bridge.py commontrace/robotics/edge.py commontrace/robotics/ingest.py hub/attestation.py \
-            commontrace/world_model_trust.py \
-            commontrace/robotics/signatures.py \
-            commontrace/robotics/working_memory.py \
-            commontrace/mesh_crdt.py commontrace/robotics/vda5050.py commontrace/robotics/site_memory.py \
-            commontrace/safety_case.py commontrace/robotics/shield.py \
-            commontrace/oblivious.py commontrace/packs.py \
-            commontrace/retry.py commontrace/commands/integration_cmd.py \
-            commontrace/fact_evidence.py commontrace/vector_snapshots.py \
-            commontrace/sqlite_vector_snapshots.py commontrace/postgres_vector_snapshots.py \
-            commontrace/evidence_context.py commontrace/explorer.py commontrace/vector_scoring.py \
-            commontrace/fact_index.py commontrace/runtime_cache.py commontrace/sqlite_pool.py commontrace/_jsonl.py \
+            unimem/async_workers.py unimem/mcp_transport.py \
+            unimem/commons_integrity.py unimem/frameworks.py \
+            unimem/conversation/async_store.py unimem/conversation/validation.py \
+            unimem/semantic.py unimem/vector_store.py unimem/provider_config.py hub/migrate.py \
+            unimem/distill.py unimem/distillation_worker.py unimem/draft_quality.py \
+            unimem/failure_signals.py unimem/memory_blocks.py \
+            unimem/commands/block_cmd.py unimem/commands/distill_cmd.py \
+            unimem/conversation/coverage.py unimem/conversation/context_selection.py \
+            unimem/conversation/unicode_index.py \
+            unimem/lesson_admission.py \
+            unimem/memory_ifc.py unimem/redteam.py \
+            unimem/certified_erasure.py \
+            unimem/retention.py \
+            unimem/pooled_evidence.py unimem/pooled_io.py unimem/nextwave_store.py unimem/commands/nextwave.py \
+            unimem/unit_trials.py unimem/skill_foundry.py unimem/skill_io.py \
+            unimem/capabilities.py unimem/capability_io.py \
+            unimem/team_isolation.py unimem/team_io.py \
+            unimem/optimizer_intake.py unimem/optimizer_io.py \
+            unimem/sentinel.py unimem/sentinel_io.py \
+            unimem/sycophancy.py unimem/sycophancy_io.py \
+            unimem/policy_proof.py unimem/policy_cedar.py \
+            unimem/policy_io.py unimem/policy_relations.py \
+            unimem/zk_effect.py unimem/zk_effect_io.py unimem/attested_keys.py \
+            unimem/passport.py unimem/credentials.py unimem/person_io.py unimem/purpose.py unimem/subject_policy.py unimem/human_help.py \
+            unimem/rl_export.py unimem/rl_io.py unimem/writer_holdout.py unimem/contagion.py unimem/otel_memory.py unimem/change_stream.py unimem/erasure_verify.py unimem/tiering.py \
+            unimem/frontier_protocol.py unimem/lineage.py unimem/transparency_log.py unimem/interference.py unimem/eprocess.py unimem/conformal_gate.py unimem/incident.py unimem/promotion.py unimem/safety.py \
+            unimem/outcomes.py unimem/recovery.py unimem/valuation.py unimem/spatial.py unimem/household.py unimem/kv_capsules.py unimem/uplift.py unimem/attribution.py unimem/cleanroom.py unimem/compile_memory.py unimem/robotics/__init__.py unimem/robotics/bridge.py unimem/robotics/edge.py unimem/robotics/ingest.py hub/attestation.py \
+            unimem/world_model_trust.py \
+            unimem/robotics/signatures.py \
+            unimem/robotics/working_memory.py \
+            unimem/mesh_crdt.py unimem/robotics/vda5050.py unimem/robotics/site_memory.py \
+            unimem/safety_case.py unimem/robotics/shield.py \
+            unimem/oblivious.py unimem/packs.py \
+            unimem/retry.py unimem/commands/integration_cmd.py \
+            unimem/fact_evidence.py unimem/vector_snapshots.py \
+            unimem/sqlite_vector_snapshots.py unimem/postgres_vector_snapshots.py \
+            unimem/evidence_context.py unimem/explorer.py unimem/vector_scoring.py \
+            unimem/fact_index.py unimem/runtime_cache.py unimem/sqlite_pool.py unimem/_jsonl.py \
             benchmarks/memory_contracts.py benchmarks/vector_search.py \
             benchmarks/fact_search.py benchmarks/fact_retrieval.py benchmarks/fact_mutation.py \
-            benchmarks/conversation_retrieval.py benchmarks/robot_memory.py commontrace/pack_demos.py
+            benchmarks/conversation_retrieval.py benchmarks/robot_memory.py unimem/pack_demos.py
 
       - name: mypy (known findings, informational only)
         continue-on-error: true
-        run: mypy commontrace/ hub/ --ignore-missing-imports
+        run: mypy unimem/ hub/ --ignore-missing-imports
 
   deploy-assets:
     name: helm and terraform validate
@@ -599,9 +616,9 @@ jobs:
       - name: Lint and render the chart (defaults, and every optional template on)
         run: |
           A="--set image.repository=registry.example/hub --set image.tag=1.0.0 --set existingSecret=hub-secrets"
-          helm lint deploy/helm/commontrace-hub $A
-          helm template t deploy/helm/commontrace-hub $A >/dev/null
-          helm template t deploy/helm/commontrace-hub $A --set metrics.alerts=true --set metrics.serviceMonitor=true \
+          helm lint deploy/helm/unimem-hub $A
+          helm template t deploy/helm/unimem-hub $A >/dev/null
+          helm template t deploy/helm/unimem-hub $A --set metrics.alerts=true --set metrics.serviceMonitor=true \
             --set networkPolicy.enabled=true --set ingress.enabled=true --set ingress.host=h.example \
             --set autoscaling.enabled=true --set postgres.maxConnections=200 >/dev/null
 
@@ -623,24 +640,24 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Build the Hub image
-        run: docker build -t commontrace-hub:ci .
+        run: docker build -t unimem-hub:ci .
 
       - name: Scan the image for known vulnerabilities (Trivy)
         run: |
           TRIVY=aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa
           docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$TRIVY" \
             image --scanners vuln --ignore-unfixed --severity HIGH --exit-code 0 \
-            --no-progress commontrace-hub:ci
+            --no-progress unimem-hub:ci
           docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$TRIVY" \
             image --scanners vuln --ignore-unfixed --severity CRITICAL --exit-code 1 \
-            --no-progress commontrace-hub:ci
+            --no-progress unimem-hub:ci
 
       - name: Container starts and serves /healthz
         run: |
           docker run -d --name hub-ci -p 8420:8420 \
             -e HUB_DATABASE_URL=postgresql+asyncpg://nobody:nobody@127.0.0.1:5432/nodb \
             -e HUB_ALLOW_INSECURE_HTTP=true \
-            commontrace-hub:ci
+            unimem-hub:ci
           for i in $(seq 1 30); do
             if curl --connect-timeout 2 --max-time 5 -fsS http://127.0.0.1:8420/healthz; then echo "healthz OK"; exit 0; fi
             sleep 1
@@ -654,19 +671,19 @@ jobs:
           echo "readyz correctly reports 503 with no database"
 
       - name: Build the local runtime image (CLI, gateway, MCP)
-        run: docker build -f Dockerfile.local -t commontrace-local:ci .
+        run: docker build -f Dockerfile.local -t unimem-local:ci .
 
       - name: Scan the local image for critical vulnerabilities (Trivy)
         run: |
           TRIVY=aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa
           docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$TRIVY" \
             image --scanners vuln --ignore-unfixed --severity CRITICAL --exit-code 1 \
-            --no-progress commontrace-local:ci
+            --no-progress unimem-local:ci
 
       - name: Local gateway starts read-only and reports ready
         run: |
           docker run -d --name local-ci --read-only --tmpfs /tmp --cap-drop ALL \
-            -p 127.0.0.1:8787:8787 commontrace-local:ci
+            -p 127.0.0.1:8787:8787 unimem-local:ci
           for i in $(seq 1 30); do
             if curl --connect-timeout 2 --max-time 5 -fsS http://127.0.0.1:8787/v1/health/ready; then echo " ready OK"; exit 0; fi
             sleep 1
@@ -711,7 +728,7 @@ jobs:
 
       - name: Migrations actually ran and the schema is present
         run: |
-          docker compose exec -T db psql -U commontrace -d commontrace_hub -c '\dt' | tee /tmp/tables.txt
+          docker compose exec -T db psql -U unimem -d unimem_hub -c '\dt' | tee /tmp/tables.txt
           for table in organizations api_keys traces votes trace_relations audit_log; do
             grep -q " $table " /tmp/tables.txt || { echo "missing table: $table"; exit 1; }
           done
@@ -723,8 +740,8 @@ jobs:
           set -euo pipefail
           org_a=$(docker compose run --rm -T hub python -m hub.manage create-org "CI Org A" | awk '/org_id/{print $2}')
           org_b=$(docker compose run --rm -T hub python -m hub.manage create-org "CI Org B" | awk '/org_id/{print $2}')
-          key_a=$(docker compose run --rm -T hub python -m hub.manage issue-key "$org_a" 30 | grep -o 'ct_live_[A-Za-z0-9_-]*')
-          key_b=$(docker compose run --rm -T hub python -m hub.manage issue-key "$org_b" 30 | grep -o 'ct_live_[A-Za-z0-9_-]*')
+          key_a=$(docker compose run --rm -T hub python -m hub.manage issue-key "$org_a" 30 | grep -o 'unimem_live_[A-Za-z0-9_-]*')
+          key_b=$(docker compose run --rm -T hub python -m hub.manage issue-key "$org_b" 30 | grep -o 'unimem_live_[A-Za-z0-9_-]*')
           test -n "$key_a" && test -n "$key_b"
           echo "::add-mask::$key_a"
           echo "::add-mask::$key_b"
@@ -747,7 +764,7 @@ jobs:
           test "$code" = "200" || { echo "GET /signup: expected 200, got $code"; exit 1; }
 
           body=$(curl --connect-timeout 2 --max-time 5 -s -X POST http://127.0.0.1:8420/signup --data-urlencode "org_name=CI Signup Org")
-          raw_key=$(echo "$body" | grep -oE 'ct_live_[A-Za-z0-9_-]+' | head -1)
+          raw_key=$(echo "$body" | grep -oE 'unimem_live_[A-Za-z0-9_-]+' | head -1)
           test -n "$raw_key" || { echo "signup response carried no api key:"; echo "$body"; exit 1; }
           echo "::add-mask::$raw_key"
           echo "self-serve signup issued a key"
@@ -762,7 +779,7 @@ jobs:
           signin_code=$(curl --connect-timeout 2 --max-time 5 -s -o /dev/null -w '%{http_code}' -c "$cookie_jar" \
             http://127.0.0.1:8420/app/signin -X POST --data-urlencode "api_key=$raw_key")
           test "$signin_code" = "303" || { echo "POST /app/signin: expected 303, got $signin_code"; exit 1; }
-          grep -q ct_console "$cookie_jar" || { echo "sign-in set no session cookie"; exit 1; }
+          grep -q unimem_console "$cookie_jar" || { echo "sign-in set no session cookie"; exit 1; }
 
           overview_code=$(curl --connect-timeout 2 --max-time 5 -s -o /dev/null -w '%{http_code}' -b "$cookie_jar" http://127.0.0.1:8420/app)
           test "$overview_code" = "200" || { echo "GET /app with a session: expected 200, got $overview_code"; exit 1; }
@@ -783,10 +800,10 @@ jobs:
 
       - name: The stack survives a restart with its data intact
         run: |
-          before=$(docker compose exec -T db psql -U commontrace -d commontrace_hub -tAc 'SELECT count(*) FROM traces')
+          before=$(docker compose exec -T db psql -U unimem -d unimem_hub -tAc 'SELECT count(*) FROM traces')
           docker compose restart hub
           for i in $(seq 1 30); do curl --connect-timeout 2 --max-time 5 -fsS http://127.0.0.1:8420/readyz >/dev/null && break; sleep 2; done
-          after=$(docker compose exec -T db psql -U commontrace -d commontrace_hub -tAc 'SELECT count(*) FROM traces')
+          after=$(docker compose exec -T db psql -U unimem -d unimem_hub -tAc 'SELECT count(*) FROM traces')
           test "$before" = "$after" || { echo "trace count changed across restart: $before -> $after"; exit 1; }
           test "$after" -gt 0 || { echo "expected traces to exist after the --keep smoke run"; exit 1; }
           echo "$after trace(s) survived the restart"
@@ -795,9 +812,9 @@ jobs:
         env:
           KEY_A: ${{ steps.provision.outputs.key_a }}
         run: |
-          before=$(docker compose exec -T db psql -U commontrace -d commontrace_hub -tAc 'SELECT count(*) FROM traces')
+          before=$(docker compose exec -T db psql -U unimem -d unimem_hub -tAc 'SELECT count(*) FROM traces')
           python -m hub.smoke --url http://127.0.0.1:8420/mcp --api-key "$KEY_A"
-          after=$(docker compose exec -T db psql -U commontrace -d commontrace_hub -tAc 'SELECT count(*) FROM traces')
+          after=$(docker compose exec -T db psql -U unimem -d unimem_hub -tAc 'SELECT count(*) FROM traces')
           test "$before" = "$after" || {
             echo "hub.smoke left $((after - before)) trace(s) behind; it must clean up unless --keep is passed"
             exit 1
@@ -814,7 +831,7 @@ jobs:
           for line in lines:
               json.loads(line)          # every one must parse
           body = open("/tmp/hub.log").read()
-          assert "ct_live_" not in body, "an API key was written to the logs"
+          assert "unimem_live_" not in body, "an API key was written to the logs"
           assert "change-me-not-for-production" not in body, "the database password was logged"
           print(f"{len(lines)} structured log line(s), no credentials present")
           PY
@@ -852,14 +869,14 @@ jobs:
       neo4j:
         image: neo4j:5-community@sha256:c7d25c0eeebfe125718d58b72ed5d663c85d0479047733845eb2237c67ce8069
         env:
-          NEO4J_AUTH: neo4j/commontrace-native-test
+          NEO4J_AUTH: neo4j/unimem-native-test
           NEO4J_server_memory_heap_initial__size: 256m
           NEO4J_server_memory_heap_max__size: 256m
           NEO4J_server_memory_pagecache_size: 128m
         ports:
           - 7687:7687
         options: >-
-          --health-cmd "cypher-shell -u neo4j -p commontrace-native-test 'RETURN 1'"
+          --health-cmd "cypher-shell -u neo4j -p unimem-native-test 'RETURN 1'"
           --health-interval 10s --health-timeout 10s --health-retries 12
       falkor:
         image: falkordb/falkordb@sha256:107455e862a824e45e8e9f5a7fbfdf5e00a08b14e13eae2577c72fd9e3f59ba6
@@ -868,8 +885,8 @@ jobs:
         options: >-
           --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 12
     env:
-      COMMONTRACE_TEST_GRAPH_BACKENDS: "1"
-      COMMONTRACE_TEST_LANCE: "1"
+      UNIMEM_TEST_GRAPH_BACKENDS: "1"
+      UNIMEM_TEST_LANCE: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97

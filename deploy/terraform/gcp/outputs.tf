@@ -8,5 +8,5 @@ output "private_ip" {
 
 output "hub_database_url_hint" {
   description = "The shape of HUB_DATABASE_URL; use the least-privileged hub role, not the owner."
-  value       = "postgresql+asyncpg://<hub_app_role>:<password>@${google_sql_database_instance.this.private_ip_address}:5432/commontrace_hub?ssl=require"
+  value       = "postgresql+asyncpg://<hub_app_role>:<password>@${google_sql_database_instance.this.private_ip_address}:5432/unimem_hub?ssl=require"
 }

@@ -30,7 +30,7 @@ import random
 import statistics
 import sys
 
-from commontrace import allocation, experiment
+from unimem import allocation, experiment
 
 HORIZON = 2000
 CHECK_EVERY = 50

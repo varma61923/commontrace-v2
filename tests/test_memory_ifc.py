@@ -5,8 +5,8 @@ import json
 
 import pytest
 
-from commontrace import frontier_protocol as fp
-from commontrace import lineage, memory_authority, memory_ifc, redteam
+from unimem import frontier_protocol as fp
+from unimem import lineage, memory_authority, memory_ifc, redteam
 
 
 def test_laundering_labels_and_confidentiality_join(tmp_path):
@@ -58,7 +58,7 @@ def test_seeded_shadow_report_and_cli(tmp_path):
 
 
 def test_ifc_gateway_and_mcp_surfaces(tmp_path):
-    from commontrace.mcp_server import build_server
+    from unimem.mcp_server import build_server
     pytest.importorskip("mcp")
     from tests.test_mcp_server import _write_lesson, call
 

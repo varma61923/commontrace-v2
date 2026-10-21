@@ -3,9 +3,9 @@ import json
 
 import pytest
 
-from commontrace.cli import main
-from commontrace.conversation import ConversationError, Options, Store, recall
-from commontrace.conversation.search import budget_for
+from unimem.cli import main
+from unimem.conversation import ConversationError, Options, Store, recall
+from unimem.conversation.search import budget_for
 
 
 @pytest.mark.parametrize("question,reason,factor", [

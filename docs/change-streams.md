@@ -9,9 +9,9 @@ conflict queue supplies typed contradiction events. Queues and scans have explic
 size bounds; exceeding them requires maintenance rather than silent omission.
 
 ```sh
-commontrace stream subscribe '{"identity":"trainer","context":["team:assembly"],"namespace":"facts","ack_seconds":3600}' --dest ./store
-commontrace stream tail '{"identity":"trainer","context":["team:assembly"]}' --dest ./store
-commontrace stream acks '{}' --dest ./store
+unimem stream subscribe '{"identity":"trainer","context":["team:assembly"],"namespace":"facts","ack_seconds":3600}' --dest ./store
+unimem stream tail '{"identity":"trainer","context":["team:assembly"]}' --dest ./store
+unimem stream acks '{}' --dest ./store
 ```
 
 Subscriptions pin the authenticated principal, scopes, immutable filters and ACK
@@ -40,7 +40,7 @@ input cursor until renewal, so an interrupted reader can retry. An in-process
 SDK without a request connection still returns diffs and reports notifications
 unavailable. There are at most 32 active notification leases per server.
 
-Kafka/Redpanda uses `commontrace[kafka]`. Construct a producer with
+Kafka/Redpanda uses `unimem[kafka]`. Construct a producer with
 `change_stream.kafka_producer(config)` and call
 `change_stream.forward_kafka(root, identity, producer, topic, context=labels)`.
 Broker authentication, encryption, residency and topic authorization are operator
@@ -57,7 +57,7 @@ obligation, including when the consumer is offline. `stream acks` lists pending
 obligations. Submit the subscriber's receipt commitment after deleting its copy:
 
 ```sh
-commontrace stream acks '{"identity":"trainer","context":["team:assembly"],"sequence_number":42,"receipt_digest":"<64 hexadecimal characters>"}' --dest ./store
+unimem stream acks '{"identity":"trainer","context":["team:assembly"],"sequence_number":42,"receipt_digest":"<64 hexadecimal characters>"}' --dest ./store
 ```
 
 Overdue consumers are cut off from new data until they acknowledge deletion.
@@ -71,7 +71,7 @@ retraining controls. The ledger does not claim model unlearning.
 First perform canonical erasure. Then supply original content fingerprints:
 
 ```sh
-commontrace erasure verify '{"identities":["<erased-id>"],"strings":["<original sensitive content>"],"vacuum":true}' --dest ./store
+unimem erasure verify '{"identities":["<erased-id>"],"strings":["<original sensitive content>"],"vacuum":true}' --dest ./store
 ```
 
 `certified_erasure.verify_bytes` exposes the same operation without changing

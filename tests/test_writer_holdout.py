@@ -8,10 +8,10 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from commontrace import aipw, allocation, eprocess, hierarchical, holdout_io, incident, memory_authority, safety
-from commontrace import frontier_protocol as fp
-from commontrace import nextwave_store as store
-from commontrace import writer_holdout as writers
+from unimem import aipw, allocation, eprocess, hierarchical, holdout_io, incident, memory_authority, safety
+from unimem import frontier_protocol as fp
+from unimem import nextwave_store as store
+from unimem import writer_holdout as writers
 
 
 @pytest.fixture
@@ -50,7 +50,7 @@ def test_nested_writer_mask_has_no_fake_memory_control_rows(tmp_path, clock):
         occasion = str(i)
         with writers.reader(root, occasion) as parent:
             inner = holdout_io.assign_and_log(root, [fact.id, hazard.id], occasion_id=occasion, rate=.5, salt="writers")
-            from commontrace import search_recipes
+            from unimem import search_recipes
             visible = search_recipes.admit(root, [fact.id, hazard.id])
             assert hazard.id in visible and hazard.id not in inner
             if not parent["writers"]["reviewers"]:
@@ -135,7 +135,7 @@ def test_mast_rules_validate_taxonomy_and_incident(tmp_path, clock):
 def test_cli_mask_delivers_nested_arm_and_route_prior(tmp_path, clock, capsys):
     import json
 
-    from commontrace import cli
+    from unimem import cli
 
     root = str(tmp_path)
     with memory_authority.writer("reviewer", "agent"):
@@ -158,7 +158,7 @@ def test_mcp_writer_estimate_matches_canonical_report(tmp_path, clock):
     import json
 
     pytest.importorskip("mcp")
-    from commontrace import mcp_server
+    from unimem import mcp_server
 
     root = str(tmp_path)
     holdout_io.configure(root, rate=.5, salt="mcp-writers")

@@ -16,7 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from commontrace import (
+from unimem import (
     code_graph,
     hierarchical,
     jobs,
@@ -30,13 +30,13 @@ from commontrace import (
     watch,
     wiki,
 )
-from commontrace.client import MemoryClient
-from commontrace.connectors import knowledge_streams
-from commontrace.exceptions import CapabilityError, ConfigurationError, DomainError, InfrastructureError
-from commontrace.gateway import Gateway
-from commontrace.ingest import pipeline as pl
-from commontrace.overload import Overloaded, OverloadPolicy
-from commontrace.vector_store import VectorRecord
+from unimem.client import MemoryClient
+from unimem.connectors import knowledge_streams
+from unimem.exceptions import CapabilityError, ConfigurationError, DomainError, InfrastructureError
+from unimem.gateway import Gateway
+from unimem.ingest import pipeline as pl
+from unimem.overload import Overloaded, OverloadPolicy
+from unimem.vector_store import VectorRecord
 
 
 def test_watch_failure_retries_and_does_not_seal_new_generation(tmp_path, monkeypatch):
@@ -83,7 +83,7 @@ def _documents(tmp_path):
 
 def test_document_crash_preserves_completed_source_and_retries_remaining(tmp_path, monkeypatch):
     source, root = _documents(tmp_path)
-    import commontrace.connectors.base as base
+    import unimem.connectors.base as base
     original = base.record_chunks
     calls = []
     def interrupted(*args, **kwargs):
@@ -103,7 +103,7 @@ def test_document_crash_preserves_completed_source_and_retries_remaining(tmp_pat
 
 
 def test_failed_conversation_document_is_not_sealed(tmp_path, monkeypatch):
-    from commontrace.conversation import ConversationError, Store
+    from unimem.conversation import ConversationError, Store
     source, root = _documents(tmp_path)
     original = Store.add
     def fail_one(self, session, *args, **kwargs):
@@ -136,7 +136,7 @@ def test_structured_errors_map_to_gateway_without_secret_details(tmp_path, error
 
 
 def test_private_rotating_logs_keep_context_and_bounded_backups(tmp_path):
-    logger = logging.getLogger("commontrace")
+    logger = logging.getLogger("unimem")
     handlers, level, propagate = list(logger.handlers), logger.level, logger.propagate
     path = tmp_path/"service.log"
     try:
@@ -256,7 +256,7 @@ def test_all_vendor_migrations_are_reviewable_scoped_and_replayable(tmp_path, ve
     assert all(f.scopes == ["user:alice"] and f.origin["authority"] == "external" for f in facts)
     assert MemoryClient(root, context={"user": "bob"}).search("Office") == []
     for path in (tmp_path/"memory"/"lessons").glob("*.md"):
-        from commontrace import frontmatter
+        from unimem import frontmatter
         assert frontmatter.read(str(path))[0]["status"] == "review"
 
 
@@ -290,7 +290,7 @@ def test_temporal_intent_resolves_explicit_dates_and_preserves_ambiguity():
 
 
 def test_profile_cache_keeps_scope_expiry_and_causal_calls_fresh(tmp_path):
-    from commontrace import holdout_io
+    from unimem import holdout_io
     root = str(tmp_path)
     holdout_io.configure(root, rate=0, salt="profile-test")
     memory = MemoryClient(root, context={"user": "alice"})
@@ -300,7 +300,7 @@ def test_profile_cache_keeps_scope_expiry_and_causal_calls_fresh(tmp_path):
     assert memory.profile("office", occasion_id="second")["occasion_id"] == "second"
     assert profile_activity.recent(root, ["user:bob"]) == []
     hierarchical.retire_source(root, "not-a-source", keep=set())
-    from commontrace import memory_authority
+    from unimem import memory_authority
     memory_authority.record_forgetting(root, fact.id, forgotten=True)
     result = memory.profile("office", occasion_id="third")
     assert not result["static"] and not result["dynamic"]
@@ -430,14 +430,14 @@ def test_wiki_rejects_future_sources_and_cross_owner_page_collision(tmp_path):
     with pytest.raises(PermissionError):
         wiki.register(root, 'company/office', 'Where?', [bob.id], context=['user:bob'])
     assert 'Tokyo' in knowledge_pages.get_page(root, 'company/office').content
-    from commontrace import memory_authority
+    from unimem import memory_authority
     memory_authority.record_forgetting(root, alice.id, forgotten=True)
     assert knowledge_pages.get_page(root, 'company/office') is None
     assert not knowledge_pages.list_pages(root)
 
 
 def test_code_graph_retires_removed_symbols_but_retains_history(tmp_path):
-    from commontrace import graph
+    from unimem import graph
     root = str(tmp_path/'store')
     source = tmp_path/'example.py'
     source.write_text('def old_api():\n    return 1\n')
@@ -517,15 +517,15 @@ def test_github_stale_signed_delivery_cannot_rollback_current_memory(tmp_path, m
 def test_registered_keyless_local_provider_can_load_environment_configuration(monkeypatch):
     name = 'local-config-test'
     providers.register_llm(name, lambda config, prompt: ('local answer', {'input_tokens': 0, 'output_tokens': 0}))
-    monkeypatch.setenv('COMMONTRACE_LLM_PROVIDER', name)
-    monkeypatch.delenv('COMMONTRACE_LLM_API_KEY', raising=False)
-    monkeypatch.delenv('COMMONTRACE_LLM_API_KEY_FILE', raising=False)
+    monkeypatch.setenv('UNIMEM_LLM_PROVIDER', name)
+    monkeypatch.delenv('UNIMEM_LLM_API_KEY', raising=False)
+    monkeypatch.delenv('UNIMEM_LLM_API_KEY_FILE', raising=False)
     assert llm.load_config().provider == name
     assert llm.complete('question')[0] == 'local answer'
 
 
 def test_wiki_history_remains_bound_to_each_revisions_own_sources(tmp_path):
-    from commontrace import memory_authority
+    from unimem import memory_authority
     root = str(tmp_path)
     alice = hierarchical.add_fact(root, 'Office is Tokyo', scopes=['user:alice'])[0]
     first = wiki.register(root, 'company/office', 'Where?', [alice.id], context=['user:alice'])
@@ -542,7 +542,7 @@ def test_wiki_history_remains_bound_to_each_revisions_own_sources(tmp_path):
 
 
 def test_code_graph_reverting_content_creates_a_fresh_active_generation(tmp_path):
-    from commontrace import graph
+    from unimem import graph
     root = str(tmp_path/'store')
     source = tmp_path/'example.py'
     for symbol in ['old_api', 'new_api', 'old_api']:
@@ -554,7 +554,7 @@ def test_code_graph_reverting_content_creates_a_fresh_active_generation(tmp_path
 
 
 def test_actual_gateway_authentication_binds_registered_principal_to_logs(tmp_path, monkeypatch):
-    from commontrace import agent_registry
+    from unimem import agent_registry
     root = str(tmp_path)
     registered = agent_registry.signup(root, 'alice', labels=['user:alice'])
     gateway = Gateway(root, token='owner')
@@ -572,7 +572,7 @@ def test_actual_gateway_authentication_binds_registered_principal_to_logs(tmp_pa
 
 
 def test_local_agent_profile_activity_retains_agent_authority(tmp_path):
-    from commontrace import _jsonl, memory_authority
+    from unimem import _jsonl, memory_authority
     root = str(tmp_path)
     memory = MemoryClient(root, agent_id='alice')
     memory.profile('Office search', occasion_id='activity-authority')

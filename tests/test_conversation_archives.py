@@ -4,9 +4,9 @@ import json
 
 import pytest
 
-from commontrace.conversation import Store
-from commontrace.conversation.extract import extract
-from commontrace.conversation.store import ConversationError, write_txn
+from unimem.conversation import Store
+from unimem.conversation.extract import extract
+from unimem.conversation.store import ConversationError, write_txn
 
 
 def seed(store):
@@ -124,7 +124,7 @@ def test_nested_transaction_failure_rolls_back_only_its_savepoint_when_caught(tm
 def test_streaming_import_rolls_back_on_invalid_later_json_line(tmp_path, monkeypatch, capsys):
     import io
 
-    from commontrace.cli import main
+    from unimem.cli import main
 
     root = str(tmp_path)
     first = json.dumps({"session": "valid", "messages": [{"text": "Will roll back."}]})
@@ -135,7 +135,7 @@ def test_streaming_import_rolls_back_on_invalid_later_json_line(tmp_path, monkey
 
 
 def test_file_export_is_atomic_on_a_later_session_failure(tmp_path, monkeypatch, capsys):
-    from commontrace.cli import main
+    from unimem.cli import main
 
     root = str(tmp_path)
     target = tmp_path / "archive.jsonl"
@@ -150,4 +150,4 @@ def test_file_export_is_atomic_on_a_later_session_failure(tmp_path, monkeypatch,
     monkeypatch.setattr(Store, "export", fail)
     assert main(["conversation", "export", "original", "--out", str(target), "--dest", root]) == 2
     assert target.read_text(encoding="utf-8") == "previous complete backup\n"
-    assert not list(tmp_path.glob(".commontrace-export-*"))
+    assert not list(tmp_path.glob(".unimem-export-*"))

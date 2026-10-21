@@ -2,24 +2,24 @@ import os
 
 import pytest
 
-from commontrace.configuration import apply, load
+from unimem.configuration import apply, load
 
 
 def test_profiles_environment_precedence_and_validation(tmp_path, monkeypatch):
-    (tmp_path / "commontrace.yaml").write_text(
+    (tmp_path / "unimem.yaml").write_text(
         "profile: local\nprofiles:\n  local:\n    embedding: bge-small\n    redact_pii: true\n    telemetry: false\n"
     )
     config = load(str(tmp_path))
-    monkeypatch.setenv("COMMONTRACE_FACT_EMBEDDER", "arctic-m")
+    monkeypatch.setenv("UNIMEM_FACT_EMBEDDER", "arctic-m")
     with apply(config):
         import os
 
-        from commontrace.configuration import getenv
+        from unimem.configuration import getenv
 
-        assert os.environ["COMMONTRACE_FACT_EMBEDDER"] == "arctic-m"
-        assert getenv("COMMONTRACE_REDACT_PII") == "1"
-        assert "COMMONTRACE_REDACT_PII" not in os.environ
-    (tmp_path / "commontrace.yaml").write_text("profile: unknown\n")
+        assert os.environ["UNIMEM_FACT_EMBEDDER"] == "arctic-m"
+        assert getenv("UNIMEM_REDACT_PII") == "1"
+        assert "UNIMEM_REDACT_PII" not in os.environ
+    (tmp_path / "unimem.yaml").write_text("profile: unknown\n")
     with pytest.raises(ValueError):
         load(str(tmp_path))
 
@@ -27,40 +27,40 @@ def test_profiles_environment_precedence_and_validation(tmp_path, monkeypatch):
 def test_configuration_is_isolated_across_concurrent_requests(tmp_path, monkeypatch):
     import asyncio
 
-    from commontrace.configuration import getenv
+    from unimem.configuration import getenv
 
-    monkeypatch.delenv("COMMONTRACE_FACT_EMBEDDER", raising=False)
+    monkeypatch.delenv("UNIMEM_FACT_EMBEDDER", raising=False)
     for name in ("arctic-m", "bge-small"):
         root = tmp_path / name
         root.mkdir()
-        (root / "commontrace.yaml").write_text("profiles:\n  local:\n    embedding: " + name + "\n")
+        (root / "unimem.yaml").write_text("profiles:\n  local:\n    embedding: " + name + "\n")
 
     async def request(name):
         with apply(load(str(tmp_path / name))):
             await asyncio.sleep(0)
-            return getenv("COMMONTRACE_FACT_EMBEDDER")
+            return getenv("UNIMEM_FACT_EMBEDDER")
 
     async def requests():
         return await asyncio.gather(request("arctic-m"), request("bge-small"))
 
     assert asyncio.run(requests()) == ["arctic-m", "bge-small"]
-    assert getenv("COMMONTRACE_FACT_EMBEDDER") is None
+    assert getenv("UNIMEM_FACT_EMBEDDER") is None
 
 
 def test_advanced_settings_and_secret_references_share_the_yaml(tmp_path, monkeypatch):
-    from commontrace.configuration import getenv
-    from commontrace.secrets_provider import env_secret
+    from unimem.configuration import getenv
+    from unimem.secrets_provider import env_secret
 
     monkeypatch.setenv("OWNER_MODEL_KEY", "private-test-key")
-    (tmp_path / "commontrace.yaml").write_text(
+    (tmp_path / "unimem.yaml").write_text(
         "settings:\n  llm:\n    max_tokens: 240\n  server:\n    max_title_chars: 180\n"
-        "secrets:\n  COMMONTRACE_LLM_API_KEY: env:OWNER_MODEL_KEY\n"
+        "secrets:\n  UNIMEM_LLM_API_KEY: env:OWNER_MODEL_KEY\n"
     )
     with apply(load(str(tmp_path))):
-        assert getenv("COMMONTRACE_LLM_MAX_TOKENS") == "240"
+        assert getenv("UNIMEM_LLM_MAX_TOKENS") == "240"
         assert getenv("HUB_MAX_TITLE_CHARS") == "180"
-        assert env_secret("COMMONTRACE_LLM_API_KEY") == "private-test-key"
-    (tmp_path / "commontrace.yaml").write_text("settings:\n  llm:\n    invented_option: true\n")
+        assert env_secret("UNIMEM_LLM_API_KEY") == "private-test-key"
+    (tmp_path / "unimem.yaml").write_text("settings:\n  llm:\n    invented_option: true\n")
     with pytest.raises(ValueError, match="setting"):
         load(str(tmp_path))
 
@@ -71,41 +71,41 @@ def test_profile_scoped_secret_references_preserve_environment_compatibility(tmp
     jsonschema = pytest.importorskip("jsonschema")
     import yaml
 
-    from commontrace.configuration import SETTING_PATHS, apply, getenv, load, migrate_environment
-    from commontrace.secrets_provider import env_secret
+    from unimem.configuration import SETTING_PATHS, apply, getenv, load, migrate_environment
+    from unimem.secrets_provider import env_secret
 
     for name in SETTING_PATHS:
         for suffix in ("", "_FILE", "_AWS_SECRET_ID", "_AWS_SECRET_FIELD", "_AWS_REGION"):
             monkeypatch.delenv(name + suffix, raising=False)
-    monkeypatch.delenv("COMMONTRACE_CONFIG", raising=False)
+    monkeypatch.delenv("UNIMEM_CONFIG", raising=False)
     (tmp_path / "shared-key").write_text("shared-profile-key")
     (tmp_path / "local-key").write_text("local-profile-key")
     (tmp_path / "team-key").write_text("team-profile-key")
     source = (
         "profile: team\n"
-        "secrets:\n  COMMONTRACE_LLM_API_KEY: file:shared-key\n"
+        "secrets:\n  UNIMEM_LLM_API_KEY: file:shared-key\n"
         "profiles:\n"
         "  local:\n"
         "    settings:\n      runtime:\n        query_cache: true\n"
-        "    secrets:\n      COMMONTRACE_LLM_API_KEY: file:local-key\n"
+        "    secrets:\n      UNIMEM_LLM_API_KEY: file:local-key\n"
         "  team:\n"
         "    settings:\n      runtime:\n        query_cache: false\n"
-        "    secrets:\n      COMMONTRACE_LLM_API_KEY: file:team-key\n"
+        "    secrets:\n      UNIMEM_LLM_API_KEY: file:team-key\n"
     )
-    config_path = tmp_path / "commontrace.yaml"
+    config_path = tmp_path / "unimem.yaml"
     config_path.write_text(source)
 
-    schema_path = os.path.join(os.path.dirname(__file__), "..", "commontrace", "configuration.schema.json")
+    schema_path = os.path.join(os.path.dirname(__file__), "..", "unimem", "configuration.schema.json")
     with open(schema_path, encoding="utf-8") as stream:
         schema = json.load(stream)
     jsonschema.Draft202012Validator(schema).validate(yaml.safe_load(source))
 
-    monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "legacy-env-key")
+    monkeypatch.setenv("UNIMEM_LLM_API_KEY", "legacy-env-key")
     preview = migrate_environment(str(tmp_path))
-    assert "COMMONTRACE_LLM_API_KEY" in preview["retained_names"]
-    assert "COMMONTRACE_LLM_API_KEY" not in preview["migrated_names"]
+    assert "UNIMEM_LLM_API_KEY" in preview["retained_names"]
+    assert "UNIMEM_LLM_API_KEY" not in preview["migrated_names"]
     assert "legacy-env-key" not in config_path.read_text() + json.dumps(preview)
-    monkeypatch.delenv("COMMONTRACE_LLM_API_KEY")
+    monkeypatch.delenv("UNIMEM_LLM_API_KEY")
 
     for profile, expected_key, expected_cache in (
         ("local", "local-profile-key", "1"),
@@ -113,22 +113,22 @@ def test_profile_scoped_secret_references_preserve_environment_compatibility(tmp
         ("server", "shared-profile-key", None),
     ):
         with apply(load(str(tmp_path), profile=profile)):
-            assert env_secret("COMMONTRACE_LLM_API_KEY") == expected_key
-            assert getenv("COMMONTRACE_LLM_API_KEY") == expected_key
+            assert env_secret("UNIMEM_LLM_API_KEY") == expected_key
+            assert getenv("UNIMEM_LLM_API_KEY") == expected_key
             if expected_cache is None:
-                assert getenv("COMMONTRACE_QUERY_CACHE") is None
+                assert getenv("UNIMEM_QUERY_CACHE") is None
             else:
-                assert getenv("COMMONTRACE_QUERY_CACHE") == expected_cache
+                assert getenv("UNIMEM_QUERY_CACHE") == expected_cache
 
-    monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "explicit-env-key")
+    monkeypatch.setenv("UNIMEM_LLM_API_KEY", "explicit-env-key")
     with apply(load(str(tmp_path), profile="local")):
-        assert env_secret("COMMONTRACE_LLM_API_KEY") == "explicit-env-key"
-        assert getenv("COMMONTRACE_LLM_API_KEY") == "explicit-env-key"
+        assert env_secret("UNIMEM_LLM_API_KEY") == "explicit-env-key"
+        assert getenv("UNIMEM_LLM_API_KEY") == "explicit-env-key"
 
 
 def test_profile_secret_references_reject_plaintext_values(tmp_path):
-    (tmp_path / "commontrace.yaml").write_text(
-        "profiles:\n  team:\n    secrets:\n      COMMONTRACE_LLM_API_KEY: plaintext-secret\n"
+    (tmp_path / "unimem.yaml").write_text(
+        "profiles:\n  team:\n    secrets:\n      UNIMEM_LLM_API_KEY: plaintext-secret\n"
     )
     with pytest.raises(ValueError, match="secrets"):
         load(str(tmp_path), profile="team")
@@ -136,24 +136,24 @@ def test_profile_secret_references_reject_plaintext_values(tmp_path):
 
 @pytest.mark.parametrize("value", [".nan", ".inf", "-.inf"])
 def test_nonfinite_configuration_rejected(tmp_path, value):
-    (tmp_path / "commontrace.yaml").write_text("settings:\n  runtime:\n    warm_idle: " + value + "\n")
+    (tmp_path / "unimem.yaml").write_text("settings:\n  runtime:\n    warm_idle: " + value + "\n")
     with pytest.raises(ValueError, match="finite"):
         load(str(tmp_path))
 
 
 def test_store_local_configuration_and_relative_rotating_secret(tmp_path, monkeypatch):
-    from commontrace.configuration import configured, getenv
-    from commontrace.secrets_provider import env_secret
+    from unimem.configuration import configured, getenv
+    from unimem.secrets_provider import env_secret
 
-    monkeypatch.delenv("COMMONTRACE_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("UNIMEM_LLM_API_KEY", raising=False)
     (tmp_path / "key").write_text("first")
-    (tmp_path / "commontrace.yaml").write_text(
-        "settings:\n  llm:\n    max_tokens: 240\nsecrets:\n  COMMONTRACE_LLM_API_KEY: file:key\n"
+    (tmp_path / "unimem.yaml").write_text(
+        "settings:\n  llm:\n    max_tokens: 240\nsecrets:\n  UNIMEM_LLM_API_KEY: file:key\n"
     )
 
     @configured
     def operation(root):
-        return getenv("COMMONTRACE_LLM_MAX_TOKENS"), env_secret("COMMONTRACE_LLM_API_KEY")
+        return getenv("UNIMEM_LLM_MAX_TOKENS"), env_secret("UNIMEM_LLM_API_KEY")
 
     assert operation(str(tmp_path)) == ("240", "first")
     (tmp_path / "key").write_text("rotated")
@@ -161,7 +161,7 @@ def test_store_local_configuration_and_relative_rotating_secret(tmp_path, monkey
 
 
 def test_plaintext_credentials_are_not_settings(tmp_path):
-    (tmp_path / "commontrace.yaml").write_text("settings:\n  llm:\n    api_key: plaintext\n")
+    (tmp_path / "unimem.yaml").write_text("settings:\n  llm:\n    api_key: plaintext\n")
     with pytest.raises(ValueError, match="credentials"):
         load(str(tmp_path))
 
@@ -169,35 +169,35 @@ def test_plaintext_credentials_are_not_settings(tmp_path):
 def test_environment_migration_keeps_credentials_out_of_yaml_and_report(tmp_path, monkeypatch):
     import json
 
-    from commontrace.configuration import SETTING_PATHS, migrate_environment
+    from unimem.configuration import SETTING_PATHS, migrate_environment
 
     for name in SETTING_PATHS:
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("COMMONTRACE_LLM_MAX_TOKENS", "320")
-    monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "private-never-copy-this")
+    monkeypatch.setenv("UNIMEM_LLM_MAX_TOKENS", "320")
+    monkeypatch.setenv("UNIMEM_LLM_API_KEY", "private-never-copy-this")
     preview = migrate_environment(str(tmp_path))
     assert not preview["written"]
-    assert not (tmp_path / "commontrace.yaml").exists()
+    assert not (tmp_path / "unimem.yaml").exists()
     result = migrate_environment(str(tmp_path), write=True)
-    source = (tmp_path / "commontrace.yaml").read_text()
+    source = (tmp_path / "unimem.yaml").read_text()
     assert "private-never-copy-this" not in source + json.dumps(result)
-    assert load(str(tmp_path))["secrets"]["COMMONTRACE_LLM_API_KEY"] == "env:COMMONTRACE_LLM_API_KEY"
+    assert load(str(tmp_path))["secrets"]["UNIMEM_LLM_API_KEY"] == "env:UNIMEM_LLM_API_KEY"
     assert load(str(tmp_path))["settings"]["llm.max_tokens"] == "320"
 
 
 def test_nested_store_without_yaml_does_not_inherit_another_stores_routes(tmp_path, monkeypatch):
-    from commontrace.configuration import configured, getenv
+    from unimem.configuration import configured, getenv
 
-    monkeypatch.delenv("COMMONTRACE_LLM_MODEL", raising=False)
+    monkeypatch.delenv("UNIMEM_LLM_MODEL", raising=False)
     outer = tmp_path / "outer"
     inner = tmp_path / "inner"
     outer.mkdir()
     inner.mkdir()
-    (outer / "commontrace.yaml").write_text("profiles:\n  local:\n    llm_model: private-model\n")
+    (outer / "unimem.yaml").write_text("profiles:\n  local:\n    llm_model: private-model\n")
 
     @configured
     def operation(root):
-        return getenv("COMMONTRACE_LLM_MODEL")
+        return getenv("UNIMEM_LLM_MODEL")
 
     with apply(load(str(outer))):
         assert operation(str(outer)) == "private-model"
@@ -209,11 +209,11 @@ def test_gateway_worker_retains_explicit_startup_profile_without_mutating_enviro
     import json
     from concurrent.futures import ThreadPoolExecutor
 
-    from commontrace.configuration import getenv
-    from commontrace.gateway import Gateway
+    from unimem.configuration import getenv
+    from unimem.gateway import Gateway
 
-    monkeypatch.delenv("COMMONTRACE_LLM_MODEL", raising=False)
-    (tmp_path / "commontrace.yaml").write_text(
+    monkeypatch.delenv("UNIMEM_LLM_MODEL", raising=False)
+    (tmp_path / "unimem.yaml").write_text(
         "profiles:\n  local:\n    llm_model: local-model\n  team:\n    llm_model: team-model\n"
     )
     with apply(load(str(tmp_path), profile="team")):
@@ -221,7 +221,7 @@ def test_gateway_worker_retains_explicit_startup_profile_without_mutating_enviro
     gateway._route(
         "GET",
         "/configuration-probe",
-        lambda _body, _query: {"model": getenv("COMMONTRACE_LLM_MODEL")},
+        lambda _body, _query: {"model": getenv("UNIMEM_LLM_MODEL")},
         summary="configuration probe",
         auth=False,
     )
@@ -233,19 +233,19 @@ def test_gateway_worker_retains_explicit_startup_profile_without_mutating_enviro
 
 @pytest.mark.parametrize("override", [False, True])
 def test_oauth_resolves_yaml_once_and_preserves_explicit_environment_precedence(tmp_path, monkeypatch, override):
-    from commontrace import oauth
-    from commontrace.configuration import SETTING_PATHS
+    from unimem import oauth
+    from unimem.configuration import SETTING_PATHS
 
     for name in SETTING_PATHS:
         monkeypatch.delenv(name, raising=False)
-    (tmp_path / "commontrace.yaml").write_text(
+    (tmp_path / "unimem.yaml").write_text(
         "settings:\n  runtime:\n    oauth_issuer: https://yaml.example/\n"
         "    oauth_audience: memory-api\n    oauth_jwks_url: https://yaml.example/keys\n"
         "    oauth_algorithms: EdDSA,RS256\n    oauth_leeway: 17\n"
     )
     if override:
-        monkeypatch.setenv("COMMONTRACE_OAUTH_ISSUER", "https://override.example/")
-        monkeypatch.setenv("COMMONTRACE_OAUTH_LEEWAY", "23")
+        monkeypatch.setenv("UNIMEM_OAUTH_ISSUER", "https://override.example/")
+        monkeypatch.setenv("UNIMEM_OAUTH_LEEWAY", "23")
     with apply(load(str(tmp_path))):
         resolved = oauth.load_config(str(tmp_path))
     assert resolved.issuer == ("https://override.example/" if override else "https://yaml.example/")
@@ -253,17 +253,17 @@ def test_oauth_resolves_yaml_once_and_preserves_explicit_environment_precedence(
     assert resolved.jwks_url == "https://yaml.example/keys"
     assert resolved.algorithms == ("EdDSA", "RS256")
     assert resolved.leeway == (23 if override else 17)
-    assert "COMMONTRACE_OAUTH_AUDIENCE" not in os.environ
+    assert "UNIMEM_OAUTH_AUDIENCE" not in os.environ
 
 
 def test_invalid_yaml_oauth_still_fails_at_the_existing_validation_boundary(tmp_path, monkeypatch):
-    from commontrace import oauth
-    from commontrace.configuration import SETTING_PATHS
-    from commontrace.exceptions import ConfigurationError
+    from unimem import oauth
+    from unimem.configuration import SETTING_PATHS
+    from unimem.exceptions import ConfigurationError
 
     for name in SETTING_PATHS:
         monkeypatch.delenv(name, raising=False)
-    (tmp_path / "commontrace.yaml").write_text(
+    (tmp_path / "unimem.yaml").write_text(
         "settings:\n  runtime:\n    oauth_issuer: https://issuer.example/\n"
         "    oauth_audience: memory-api\n    oauth_jwks_url: https://issuer.example/keys\n"
         "    oauth_leeway: malformed\n"
@@ -276,7 +276,7 @@ def test_invalid_yaml_oauth_still_fails_at_the_existing_validation_boundary(tmp_
 def test_hub_kms_resolves_routing_and_rotating_secret_from_yaml(tmp_path, monkeypatch, override):
     import base64
 
-    from commontrace.configuration import SETTING_PATHS
+    from unimem.configuration import SETTING_PATHS
 
     pytest.importorskip("hub.config")
     pytest.importorskip("cryptography")
@@ -288,7 +288,7 @@ def test_hub_kms_resolves_routing_and_rotating_secret_from_yaml(tmp_path, monkey
             monkeypatch.delenv(name + suffix, raising=False)
     (tmp_path / "database").write_text("postgresql+asyncpg://u:p@localhost/test")
     (tmp_path / "wrapped").write_text("first-wrapped-value")
-    (tmp_path / "commontrace.yaml").write_text(
+    (tmp_path / "unimem.yaml").write_text(
         "profile: server\nsettings:\n  server:\n    kms_key_id: yaml-key-id\n"
         "    kms_region: eu-west-1\nsecrets:\n  HUB_DATABASE_URL: file:database\n"
         "  HUB_ENCRYPTION_KEY_KMS_WRAPPED: file:wrapped\n"
@@ -317,54 +317,54 @@ def test_hub_kms_resolves_routing_and_rotating_secret_from_yaml(tmp_path, monkey
 def test_migration_keeps_file_over_plaintext_precedence_after_environment_removal(tmp_path, monkeypatch):
     import json
 
-    from commontrace.configuration import SETTING_PATHS, migrate_environment
-    from commontrace.secrets_provider import env_secret
+    from unimem.configuration import SETTING_PATHS, migrate_environment
+    from unimem.secrets_provider import env_secret
 
     for name in SETTING_PATHS:
         monkeypatch.delenv(name, raising=False)
     key = tmp_path / "key"
     key.write_text("mounted-secret")
-    monkeypatch.setenv("COMMONTRACE_APPROVAL_KEY", "stale-plaintext-never-serialize")
-    monkeypatch.setenv("COMMONTRACE_APPROVAL_KEY_FILE", str(key))
+    monkeypatch.setenv("UNIMEM_APPROVAL_KEY", "stale-plaintext-never-serialize")
+    monkeypatch.setenv("UNIMEM_APPROVAL_KEY_FILE", str(key))
     result = migrate_environment(str(tmp_path), write=True)
-    source = (tmp_path / "commontrace.yaml").read_text()
+    source = (tmp_path / "unimem.yaml").read_text()
     assert "stale-plaintext-never-serialize" not in source + json.dumps(result)
-    monkeypatch.delenv("COMMONTRACE_APPROVAL_KEY")
-    monkeypatch.delenv("COMMONTRACE_APPROVAL_KEY_FILE")
+    monkeypatch.delenv("UNIMEM_APPROVAL_KEY")
+    monkeypatch.delenv("UNIMEM_APPROVAL_KEY_FILE")
     with apply(load(str(tmp_path))):
-        assert env_secret("COMMONTRACE_APPROVAL_KEY") == "mounted-secret"
+        assert env_secret("UNIMEM_APPROVAL_KEY") == "mounted-secret"
         key.write_text("rotated-secret")
-        assert env_secret("COMMONTRACE_APPROVAL_KEY") == "rotated-secret"
+        assert env_secret("UNIMEM_APPROVAL_KEY") == "rotated-secret"
 
 
 def test_migration_uses_configured_file_and_preserves_existing_yaml(tmp_path, monkeypatch):
-    from commontrace.configuration import SETTING_PATHS, migrate_environment
+    from unimem.configuration import SETTING_PATHS, migrate_environment
 
     for name in SETTING_PATHS:
         monkeypatch.delenv(name, raising=False)
     target = tmp_path / "custom.yaml"
     target.write_text("settings:\n  llm:\n    max_tokens: 71\n")
-    monkeypatch.setenv("COMMONTRACE_CONFIG", str(target))
-    monkeypatch.setenv("COMMONTRACE_LLM_MAX_TOKENS", "240")
-    monkeypatch.setenv("COMMONTRACE_LLM_MODEL", "selected-model")
+    monkeypatch.setenv("UNIMEM_CONFIG", str(target))
+    monkeypatch.setenv("UNIMEM_LLM_MAX_TOKENS", "240")
+    monkeypatch.setenv("UNIMEM_LLM_MODEL", "selected-model")
     result = migrate_environment(str(tmp_path), write=True)
     assert result["configuration"] == str(target)
-    assert not (tmp_path / "commontrace.yaml").exists()
-    monkeypatch.delenv("COMMONTRACE_LLM_MAX_TOKENS")
-    monkeypatch.delenv("COMMONTRACE_LLM_MODEL")
+    assert not (tmp_path / "unimem.yaml").exists()
+    monkeypatch.delenv("UNIMEM_LLM_MAX_TOKENS")
+    monkeypatch.delenv("UNIMEM_LLM_MODEL")
     with apply(load(str(tmp_path))):
-        from commontrace.configuration import getenv
+        from unimem.configuration import getenv
 
-        assert getenv("COMMONTRACE_LLM_MAX_TOKENS") == "71"
-        assert getenv("COMMONTRACE_LLM_MODEL") == "selected-model"
+        assert getenv("UNIMEM_LLM_MAX_TOKENS") == "71"
+        assert getenv("UNIMEM_LLM_MODEL") == "selected-model"
 
 
 def test_migration_rejects_oversized_input_before_replacing_it(tmp_path, monkeypatch):
-    from commontrace.configuration import SETTING_PATHS, migrate_environment
+    from unimem.configuration import SETTING_PATHS, migrate_environment
 
     for name in SETTING_PATHS:
         monkeypatch.delenv(name, raising=False)
-    target = tmp_path / "commontrace.yaml"
+    target = tmp_path / "unimem.yaml"
     source = "#" + "x" * 65536 + "\nsettings:\n  llm:\n    max_tokens: 71\n"
     target.write_text(source)
     with pytest.raises(ValueError, match="64 KiB"):
@@ -373,24 +373,24 @@ def test_migration_rejects_oversized_input_before_replacing_it(tmp_path, monkeyp
 
 
 def test_migration_does_not_override_explicit_selected_profile_options(tmp_path, monkeypatch):
-    from commontrace.configuration import SETTING_PATHS, getenv, migrate_environment
+    from unimem.configuration import SETTING_PATHS, getenv, migrate_environment
 
     for name in SETTING_PATHS:
         monkeypatch.delenv(name, raising=False)
-    (tmp_path / "commontrace.yaml").write_text(
+    (tmp_path / "unimem.yaml").write_text(
         "profile: team\nprofiles:\n  team:\n    embedding: arctic-m\n"
         "    llm_model: explicit-profile-model\n    settings:\n      llm:\n        max_tokens: 71\n"
     )
-    monkeypatch.setenv("COMMONTRACE_FACT_EMBEDDER", "bge-small")
-    monkeypatch.setenv("COMMONTRACE_LLM_MODEL", "ambient-model")
-    monkeypatch.setenv("COMMONTRACE_LLM_MAX_TOKENS", "240")
+    monkeypatch.setenv("UNIMEM_FACT_EMBEDDER", "bge-small")
+    monkeypatch.setenv("UNIMEM_LLM_MODEL", "ambient-model")
+    monkeypatch.setenv("UNIMEM_LLM_MAX_TOKENS", "240")
     migrate_environment(str(tmp_path), write=True)
-    for name in ("COMMONTRACE_FACT_EMBEDDER", "COMMONTRACE_LLM_MODEL", "COMMONTRACE_LLM_MAX_TOKENS"):
+    for name in ("UNIMEM_FACT_EMBEDDER", "UNIMEM_LLM_MODEL", "UNIMEM_LLM_MAX_TOKENS"):
         monkeypatch.delenv(name)
     with apply(load(str(tmp_path))):
-        assert getenv("COMMONTRACE_FACT_EMBEDDER") == "arctic-m"
-        assert getenv("COMMONTRACE_LLM_MODEL") == "explicit-profile-model"
-        assert getenv("COMMONTRACE_LLM_MAX_TOKENS") == "71"
+        assert getenv("UNIMEM_FACT_EMBEDDER") == "arctic-m"
+        assert getenv("UNIMEM_LLM_MODEL") == "explicit-profile-model"
+        assert getenv("UNIMEM_LLM_MAX_TOKENS") == "71"
 
 
 def test_auth_and_hub_config_consumers_do_not_read_a_second_environment_source():
@@ -398,7 +398,7 @@ def test_auth_and_hub_config_consumers_do_not_read_a_second_environment_source()
     import ast
     from pathlib import Path
 
-    from commontrace import oauth
+    from unimem import oauth
 
     pytest.importorskip("hub.config")
     from hub import config
@@ -417,40 +417,40 @@ def test_auth_and_hub_config_consumers_do_not_read_a_second_environment_source()
 
 
 def test_empty_mounted_file_selector_migrates_the_runtime_plaintext_reference(tmp_path, monkeypatch):
-    from commontrace.configuration import SETTING_PATHS, migrate_environment
-    from commontrace.secrets_provider import env_secret
+    from unimem.configuration import SETTING_PATHS, migrate_environment
+    from unimem.secrets_provider import env_secret
 
     for name in SETTING_PATHS:
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("COMMONTRACE_APPROVAL_KEY", "runtime-key")
-    monkeypatch.setenv("COMMONTRACE_APPROVAL_KEY_FILE", "")
+    monkeypatch.setenv("UNIMEM_APPROVAL_KEY", "runtime-key")
+    monkeypatch.setenv("UNIMEM_APPROVAL_KEY_FILE", "")
     result = migrate_environment(str(tmp_path), write=True)
-    assert result["migrated_names"] == ["COMMONTRACE_APPROVAL_KEY"]
+    assert result["migrated_names"] == ["UNIMEM_APPROVAL_KEY"]
     with apply(load(str(tmp_path))):
-        assert env_secret("COMMONTRACE_APPROVAL_KEY") == "runtime-key"
-    assert "runtime-key" not in (tmp_path / "commontrace.yaml").read_text()
+        assert env_secret("UNIMEM_APPROVAL_KEY") == "runtime-key"
+    assert "runtime-key" not in (tmp_path / "unimem.yaml").read_text()
 
 
 def test_migration_preserves_explicit_secret_references_and_reports_only_retained_names(tmp_path, monkeypatch):
-    from commontrace.configuration import SETTING_PATHS, migrate_environment
-    from commontrace.secrets_provider import env_secret
+    from unimem.configuration import SETTING_PATHS, migrate_environment
+    from unimem.secrets_provider import env_secret
 
     for name in SETTING_PATHS:
         monkeypatch.delenv(name, raising=False)
     (tmp_path / "key").write_text("yaml-selected-key")
-    (tmp_path / "commontrace.yaml").write_text("secrets:\n  COMMONTRACE_APPROVAL_KEY: file:key\n")
-    monkeypatch.setenv("COMMONTRACE_APPROVAL_KEY", "ambient-key")
+    (tmp_path / "unimem.yaml").write_text("secrets:\n  UNIMEM_APPROVAL_KEY: file:key\n")
+    monkeypatch.setenv("UNIMEM_APPROVAL_KEY", "ambient-key")
     result = migrate_environment(str(tmp_path), write=True)
-    assert result["retained_names"] == ["COMMONTRACE_APPROVAL_KEY"]
+    assert result["retained_names"] == ["UNIMEM_APPROVAL_KEY"]
     assert result["migrated_names"] == []
-    monkeypatch.delenv("COMMONTRACE_APPROVAL_KEY")
+    monkeypatch.delenv("UNIMEM_APPROVAL_KEY")
     with apply(load(str(tmp_path))):
-        assert env_secret("COMMONTRACE_APPROVAL_KEY") == "yaml-selected-key"
+        assert env_secret("UNIMEM_APPROVAL_KEY") == "yaml-selected-key"
 
 
 def test_configured_migration_destination_cannot_escape_store_boundary(tmp_path, monkeypatch):
-    from commontrace.configuration import SETTING_PATHS, migrate_environment
-    from commontrace.paths import PathTraversalError
+    from unimem.configuration import SETTING_PATHS, migrate_environment
+    from unimem.paths import PathTraversalError
 
     for name in SETTING_PATHS:
         monkeypatch.delenv(name, raising=False)
@@ -459,8 +459,8 @@ def test_configured_migration_destination_cannot_escape_store_boundary(tmp_path,
     outside = tmp_path / "outside.yaml"
     source = "settings:\n  llm:\n    max_tokens: 71\n"
     outside.write_text(source)
-    monkeypatch.setenv("COMMONTRACE_CONFIG", str(outside))
-    monkeypatch.setenv("COMMONTRACE_LLM_MODEL", "ambient-model")
+    monkeypatch.setenv("UNIMEM_CONFIG", str(outside))
+    monkeypatch.setenv("UNIMEM_LLM_MODEL", "ambient-model")
     assert migrate_environment(str(root))["configuration"] == str(outside)
     with pytest.raises(PathTraversalError):
         migrate_environment(str(root), write=True)
@@ -469,11 +469,11 @@ def test_configured_migration_destination_cannot_escape_store_boundary(tmp_path,
 
 @pytest.mark.parametrize("migrate", [False, True])
 def test_configuration_input_bound_counts_utf8_bytes(tmp_path, monkeypatch, migrate):
-    from commontrace.configuration import SETTING_PATHS, migrate_environment
+    from unimem.configuration import SETTING_PATHS, migrate_environment
 
     for name in SETTING_PATHS:
         monkeypatch.delenv(name, raising=False)
-    target = tmp_path / "commontrace.yaml"
+    target = tmp_path / "unimem.yaml"
     source = "#" + "é" * 32768 + "\n"
     assert len(source) < 65536 < len(source.encode("utf-8"))
     target.write_text(source)
@@ -486,17 +486,17 @@ def test_gateway_oauth_reads_its_own_yaml_without_an_active_configuration(tmp_pa
     import json
     from concurrent.futures import ThreadPoolExecutor
 
-    from commontrace.configuration import SETTING_PATHS
-    from commontrace.gateway import Gateway
+    from unimem.configuration import SETTING_PATHS
+    from unimem.gateway import Gateway
 
-    monkeypatch.delenv("COMMONTRACE_CONFIG", raising=False)
+    monkeypatch.delenv("UNIMEM_CONFIG", raising=False)
     for name in SETTING_PATHS:
         monkeypatch.delenv(name, raising=False)
     gateways = []
     for tenant in ("one", "two"):
         root = tmp_path / tenant
         root.mkdir()
-        (root / "commontrace.yaml").write_text(
+        (root / "unimem.yaml").write_text(
             "settings:\n  runtime:\n    oauth_issuer: https://" + tenant + ".issuer.example/\n"
             "    oauth_audience: https://" + tenant + ".memory.example/mcp\n"
             "    oauth_jwks_url: https://" + tenant + ".issuer.example/keys\n"
@@ -518,46 +518,46 @@ def test_gateway_oauth_reads_its_own_yaml_without_an_active_configuration(tmp_pa
 
 
 def test_migration_captures_file_only_credentials_without_a_plaintext_variable(tmp_path, monkeypatch):
-    from commontrace.configuration import SETTING_PATHS, migrate_environment
-    from commontrace.secrets_provider import env_secret
+    from unimem.configuration import SETTING_PATHS, migrate_environment
+    from unimem.secrets_provider import env_secret
 
     for name in SETTING_PATHS:
         monkeypatch.delenv(name, raising=False)
     key = tmp_path / "llm-key"
     key.write_text("mounted-provider-key")
-    monkeypatch.setenv("COMMONTRACE_LLM_API_KEY_FILE", str(key))
+    monkeypatch.setenv("UNIMEM_LLM_API_KEY_FILE", str(key))
     result = migrate_environment(str(tmp_path), write=True)
-    assert result["migrated_names"] == ["COMMONTRACE_LLM_API_KEY_FILE"]
-    monkeypatch.delenv("COMMONTRACE_LLM_API_KEY_FILE")
+    assert result["migrated_names"] == ["UNIMEM_LLM_API_KEY_FILE"]
+    monkeypatch.delenv("UNIMEM_LLM_API_KEY_FILE")
     with apply(load(str(tmp_path))):
-        assert env_secret("COMMONTRACE_LLM_API_KEY") == "mounted-provider-key"
-    assert "mounted-provider-key" not in (tmp_path / "commontrace.yaml").read_text()
+        assert env_secret("UNIMEM_LLM_API_KEY") == "mounted-provider-key"
+    assert "mounted-provider-key" not in (tmp_path / "unimem.yaml").read_text()
 
 
 @pytest.mark.parametrize("custom", [False, True])
 def test_cli_binds_selected_configuration_and_relative_secret_to_explicit_destination(tmp_path, monkeypatch, custom):
     from types import SimpleNamespace
 
-    from commontrace import cli
-    from commontrace.configuration import SETTING_PATHS, current
-    from commontrace.secrets_provider import env_secret
+    from unimem import cli
+    from unimem.configuration import SETTING_PATHS, current
+    from unimem.secrets_provider import env_secret
 
-    monkeypatch.delenv("COMMONTRACE_CONFIG", raising=False)
+    monkeypatch.delenv("UNIMEM_CONFIG", raising=False)
     for name in SETTING_PATHS:
         monkeypatch.delenv(name, raising=False)
     root = tmp_path / "explicit-destination"
     root.mkdir()
     ambient = tmp_path / "ambient-destination"
     ambient.mkdir()
-    monkeypatch.setenv("COMMONTRACE_ROOT", str(ambient))
+    monkeypatch.setenv("UNIMEM_ROOT", str(ambient))
     (root / "key").write_text("destination-provider-key")
-    filename = root / ("selected.yaml" if custom else "commontrace.yaml")
-    filename.write_text("secrets:\n  COMMONTRACE_LLM_API_KEY: file:key\n")
+    filename = root / ("selected.yaml" if custom else "unimem.yaml")
+    filename.write_text("secrets:\n  UNIMEM_LLM_API_KEY: file:key\n")
     if custom:
-        monkeypatch.setenv("COMMONTRACE_CONFIG", str(filename))
+        monkeypatch.setenv("UNIMEM_CONFIG", str(filename))
 
     def operation(_args):
-        return current()["root"], env_secret("COMMONTRACE_LLM_API_KEY")
+        return current()["root"], env_secret("UNIMEM_LLM_API_KEY")
 
     args = SimpleNamespace(dest=str(root), command="doctor", func=operation)
     assert cli._configured_call(args) == (str(root), "destination-provider-key")

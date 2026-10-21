@@ -1,6 +1,6 @@
 import json
 
-from commontrace import fact_store, hierarchical, search_recipes
+from unimem import fact_store, hierarchical, search_recipes
 
 
 def test_union_adds_dense_only_candidates_and_filters_scopes(tmp_path, monkeypatch):

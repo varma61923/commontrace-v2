@@ -4,17 +4,17 @@ import json
 
 import pytest
 
-from commontrace import evidence, harm, holdout_io, integrity, retrieval_io, semantic_arm
-from commontrace.commands import query_cmd
 from tests.test_hybrid_retrieval import _args
 from tests.test_mcp_server import _write_lesson, call, cli
+from unimem import evidence, harm, holdout_io, integrity, retrieval_io, semantic_arm
+from unimem.commands import query_cmd
 
 TASK = "password reset email suppression"
 SEMANTIC = ["refund-threshold", "suppression-list", "unsubscribe-sync"]
 
-pytest.importorskip("mcp", reason="`commontrace serve` needs the MCP SDK: pip install 'commontrace[serve]'")
+pytest.importorskip("mcp", reason="`unimem serve` needs the MCP SDK: pip install 'unimem[serve]'")
 
-from commontrace import mcp_server  # noqa: E402
+from unimem import mcp_server  # noqa: E402
 
 
 @pytest.fixture
@@ -86,7 +86,7 @@ def test_both_surfaces_make_the_same_eligibility_decision(store, monkeypatch):
 
 
 def test_the_receipt_records_the_fused_label(store, monkeypatch):
-    from commontrace import receipts
+    from unimem import receipts
 
     _stub_both(monkeypatch)
     call(mcp_server.build_server(store), "retrieve", task=TASK, occasion_id="rcpt-1")
@@ -124,7 +124,7 @@ def test_exclude_shown_applies_to_the_semantic_arm_too(store, monkeypatch):
 
 def test_a_withdrawn_lesson_is_kept_out_of_the_semantic_arm_too(store, monkeypatch):
     _stub_both(monkeypatch)
-    from commontrace import evidence
+    from unimem import evidence
 
     monkeypatch.setattr(evidence, "withdrawn", lambda root, policy: {
         "unsubscribe-sync": {"verdict": "HURTS", "effect": -0.3},

@@ -40,7 +40,7 @@ class _Scoped:
 
     def __enter__(self):
         self._org = auth.current_org_id.set(self._org_id)
-        self._actor = auth.current_actor.set("ct_live_test")
+        self._actor = auth.current_actor.set("unimem_live_test")
         self._scopes = auth.current_scopes.set(self._granted)
         return self
 
@@ -90,20 +90,20 @@ class TestTheScopeVocabulary:
 class TestEveryToolDeclaresAScope:
     async def test_no_tool_is_registered_without_a_scope_decision(self, mcp):
         registered = {tool.name for tool in await mcp.list_tools()}
-        declared = set(mcp.commontrace_tool_scopes)
+        declared = set(mcp.unimem_tool_scopes)
         assert registered == declared, (
             "every registered tool must declare a scope; missing: "
             f"{sorted(registered - declared)}"
         )
 
     async def test_every_declared_scope_is_a_real_scope(self, mcp):
-        assert set(mcp.commontrace_tool_scopes.values()) <= set(scopes.ALL_SCOPES)
+        assert set(mcp.unimem_tool_scopes.values()) <= set(scopes.ALL_SCOPES)
 
     async def test_no_mcp_tool_is_scim_scoped(self, mcp):
-        assert scopes.SCOPE_SCIM not in set(mcp.commontrace_tool_scopes.values())
+        assert scopes.SCOPE_SCIM not in set(mcp.unimem_tool_scopes.values())
 
     async def test_the_destructive_tools_are_admin_scoped(self, mcp):
-        declared = mcp.commontrace_tool_scopes
+        declared = mcp.unimem_tool_scopes
         for tool in (
             "delete_trace",
             "request_account_deletion",
@@ -113,7 +113,7 @@ class TestEveryToolDeclaresAScope:
             assert declared[tool] == scopes.SCOPE_ADMIN, tool
 
     async def test_the_corpus_mutating_tools_are_write_scoped(self, mcp):
-        declared = mcp.commontrace_tool_scopes
+        declared = mcp.unimem_tool_scopes
         for tool in (
             "contribute_trace", "amend_trace", "vote_trace",
             "holdout_assign", "record_occasion_outcome",

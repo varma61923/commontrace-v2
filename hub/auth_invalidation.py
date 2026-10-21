@@ -6,7 +6,7 @@ import logging
 
 from hub import auth
 
-logger = logging.getLogger("commontrace.hub.auth_invalidation")
+logger = logging.getLogger("unimem.hub.auth_invalidation")
 
 _MIN_BACKOFF = 0.5
 _MAX_BACKOFF = 30.0
