@@ -2321,7 +2321,8 @@ async def webhook_deliver(limit: str = "100", session_factory=None) -> bool:
             cipher=_config_cipher(),
         )
     print(f"attempted {result.attempted}: {result.delivered} delivered, "
-          f"{result.retrying} will retry, {result.gave_up} gave up.")
+          f"{result.retrying} will retry, {result.gave_up} gave up, "
+          f"{result.deferred} deferred behind a failing endpoint.")
     return True
 
 

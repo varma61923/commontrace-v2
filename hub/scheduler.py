@@ -35,8 +35,8 @@ async def _deliver_webhooks_once(session_factory, *, signing_key: str, cipher, b
         )
         if result.attempted:
             logger.info(
-                "webhook scheduler: attempted=%d delivered=%d retrying=%d gave_up=%d",
-                result.attempted, result.delivered, result.retrying, result.gave_up,
+                "webhook scheduler: attempted=%d delivered=%d retrying=%d gave_up=%d deferred=%d",
+                result.attempted, result.delivered, result.retrying, result.gave_up, result.deferred,
             )
 
 

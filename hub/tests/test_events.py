@@ -576,6 +576,64 @@ class TestDelivery:
         assert second_result.attempted == 0
         assert second.calls == []
 
+    async def test_a_hanging_receiver_does_not_hold_up_another_tenants_deliveries(
+        self, session_factory, endpoint
+    ):
+        import asyncio
+
+        healthy_url = "https://healthy.invalid/hooks"
+        async with session_scope(session_factory) as session:
+            other = Organization(name="other-tenant")
+            session.add(other)
+            await session.flush()
+            await events.add_endpoint(session, other.id, healthy_url, signing_key=KEY)
+        await self._queue(session_factory, endpoint["org"], n=3)
+        async with session_scope(session_factory) as session:
+            await events.emit(session, other.id, "trace.created", {"trace_id": "o1"}, now=NOW)
+
+        healthy_delivered = asyncio.Event()
+        hung_calls = []
+
+        async def transport(url, body, headers):
+            if url == healthy_url:
+                healthy_delivered.set()
+                return
+            hung_calls.append(url)
+            # The healthy tenant must be served while this receiver hangs; a
+            # sequential sweep would never reach it and time out here instead.
+            await asyncio.wait_for(healthy_delivered.wait(), timeout=5)
+            raise TimeoutError("receiver hung")
+
+        async with session_scope(session_factory) as session:
+            result = await events.deliver_pending(session, transport, signing_key=KEY, now=NOW)
+        assert healthy_delivered.is_set()
+        assert len(hung_calls) == 1
+        assert (result.attempted, result.delivered, result.retrying, result.deferred) == (2, 1, 1, 2)
+
+    async def test_a_failing_endpoints_queue_waits_for_one_retry_in_order(
+        self, session_factory, endpoint
+    ):
+        async with session_scope(session_factory) as session:
+            for i in range(3):
+                await events.emit(session, endpoint["org"], "trace.created", {"trace_id": f"t{i}"},
+                                  now=NOW - timedelta(seconds=3 - i))
+        failing = Recorder(fail_times=1)
+        async with session_scope(session_factory) as session:
+            result = await events.deliver_pending(session, failing, signing_key=KEY, now=NOW)
+        assert len(failing.calls) == 1 and result.deferred == 2
+        async with session_scope(session_factory) as session:
+            rows = (await session.execute(
+                select(WebhookDelivery).order_by(WebhookDelivery.created_at))).scalars().all()
+        assert [r.attempts for r in rows] == [1, 0, 0]
+        assert len({r.next_attempt_at for r in rows}) == 1 and rows[0].next_attempt_at > NOW
+
+        later = rows[0].next_attempt_at
+        healthy = Recorder()
+        async with session_scope(session_factory) as session:
+            result = await events.deliver_pending(session, healthy, signing_key=KEY, now=later)
+        assert result.delivered == 3
+        assert [json.loads(body)["data"]["trace_id"] for _u, body, _h in healthy.calls] == ["t0", "t1", "t2"]
+
     async def test_pending_count_tracks_the_queue(self, session_factory, endpoint):
         await self._queue(session_factory, endpoint["org"], n=3)
         async with session_scope(session_factory) as session:
