@@ -20,6 +20,12 @@ RUN pip install --prefix=/install ".[serve,security]"
 
 FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f AS runtime
 
+# Apply fixes newer than the pinned base image (PCRE2 and OpenSSL).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends --only-upgrade \
+        libpcre2-8-0 libssl3t64 openssl openssl-provider-legacy \
+    && rm -rf /var/lib/apt/lists/*
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     UNIMEM_ROOT=/data
