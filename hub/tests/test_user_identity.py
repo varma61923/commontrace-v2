@@ -172,6 +172,29 @@ class TestVerifyUserToken:
             row = await session.get(User, user_id)
             assert row.last_login_at is not None
 
+    async def test_repeat_logins_do_not_rewrite_the_user_row_every_request(
+        self, session_factory, org, signing_key, provider
+    ):
+        from datetime import datetime, timedelta, timezone
+
+        key, _ = signing_key
+        user_id = await _linked_user(session_factory, org)
+        token = _token(key)
+        async with session_scope(session_factory) as session:
+            await auth.verify_user_token(session, token, provider)
+        async with session_scope(session_factory) as session:
+            first = (await session.get(User, user_id)).last_login_at
+        async with session_scope(session_factory) as session:
+            await auth.verify_user_token(session, token, provider)
+        async with session_scope(session_factory) as session:
+            assert (await session.get(User, user_id)).last_login_at == first
+            stale = datetime.now(timezone.utc) - auth._LAST_USED_AT_UPDATE_INTERVAL - timedelta(seconds=1)
+            (await session.get(User, user_id)).last_login_at = stale
+        async with session_scope(session_factory) as session:
+            await auth.verify_user_token(session, token, provider)
+        async with session_scope(session_factory) as session:
+            assert (await session.get(User, user_id)).last_login_at > stale
+
     async def test_an_unverifiable_token_authenticates_no_one(
         self, session_factory, org, provider
     ):

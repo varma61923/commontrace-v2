@@ -439,7 +439,9 @@ async def verify_user_token(
     if not await _region_ok(session, row.org_id):
         return None
 
-    row.last_login_at = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc)
+    if row.last_login_at is None or (now - row.last_login_at) >= _LAST_USED_AT_UPDATE_INTERVAL:
+        row.last_login_at = now
     return AuthenticatedUser(id=row.id, org_id=row.org_id, role=row.role, email=row.email)
 
 
