@@ -46,6 +46,22 @@ To run a local gateway and console against a project (the default port is 8787):
 unimem up --dest /path/to/agent-project
 ```
 
+Optional CPU semantic retrieval is installed with `pip install -e '.[fastembed]'`.
+The existing `fastembed:BAAI/bge-small-en-v1.5` and
+`fastembed:BAAI/bge-base-en-v1.5` tags use pinned quantized ONNX text models
+directly, without image decoder dependencies. `FASTEMBED_CACHE_PATH` selects the
+model cache. The shipped default reads cached weights only and keeps lexical
+retrieval available on a cache miss. To populate a cache explicitly before
+starting a server:
+
+```bash
+FASTEMBED_CACHE_PATH=/path/to/model-cache python - <<'PY'
+from unimem import embeddings
+model = embeddings.provider("fastembed:BAAI/bge-small-en-v1.5")
+model.embed(["Prepare the local retrieval model."], query=False)
+PY
+```
+
 To run an offline end-to-end check that needs no model and no server:
 
 ```bash

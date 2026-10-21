@@ -34,6 +34,23 @@ jobs:
           HEAD: ${{ github.sha }}
         run: python3 scripts/ci_changes.py "$BASE" "$HEAD" >> "$GITHUB_OUTPUT"
 
+  test-onnx-text:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    name: CPU ONNX text embeddings
+    runs-on: ubuntu-latest
+    env:
+      HF_HUB_OFFLINE: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install the text runtime and local graph test tooling
+        run: python -m pip install -e '.[dev,fastembed]' 'onnx>=1.19,<2'
+      - name: Exercise real tokenization, inference, batching, and offline cache misses
+        run: python -m pytest tests/test_onnx_text.py tests/test_embeddings.py tests/test_default_local_retrieval.py -q
+
   test-core:
     # Core install on the oldest supported interpreter; the dev job covers the newest.
     name: test (core install, py${{ matrix.python-version }})

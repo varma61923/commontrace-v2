@@ -289,8 +289,6 @@ def test_model_binding_includes_nested_pooling_configuration(tmp_path, monkeypat
 
 
 def test_fastembed_model_binding_is_cache_only_and_tracks_artifacts(tmp_path, monkeypatch):
-    import sys
-    import types
 
     from benchmarks.artifacts import model_artifact
 
@@ -304,15 +302,15 @@ def test_fastembed_model_binding_is_cache_only_and_tracks_artifacts(tmp_path, mo
             assert model_name == "BAAI/bge-small-en-v1.5"
             assert local_files_only is True
             self.embedding_size = 384
-            self.model = types.SimpleNamespace(_model_dir=str(model_directory))
+            self.artifact_directory = model_directory
 
         def query_embed(self, texts, **kwargs):
             return iter([[1.0] + [0.0] * 383 for _ in texts])
 
         passage_embed = query_embed
 
-    monkeypatch.setitem(sys.modules, "fastembed", types.SimpleNamespace(TextEmbedding=FakeTextEmbedding))
-    monkeypatch.setattr("importlib.metadata.version", lambda package: "0.8.0")
+    monkeypatch.setattr("unimem.onnx_text.TextEmbedding", FakeTextEmbedding)
+    monkeypatch.setattr("importlib.metadata.version", lambda package: "2.0.0")
     tag = "fastembed:BAAI/bge-small-en-v1.5"
 
     first = model_artifact(tag)

@@ -65,8 +65,8 @@ def available_for(tag: str) -> bool:
     if spec.hosted or spec.provider in embeddings.known()["custom"]:
         return importlib.util.find_spec("numpy") is not None
     if spec.provider == "fastembed":
-        return (importlib.util.find_spec("numpy") is not None
-                and importlib.util.find_spec("fastembed") is not None)
+        return all(importlib.util.find_spec(name) is not None
+                   for name in ("numpy", "onnxruntime", "tokenizers", "huggingface_hub"))
     return available()
 
 

@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 import math
-import sys
-from types import SimpleNamespace
 
 import pytest
 
@@ -149,7 +147,7 @@ def test_fastembed_uses_bounded_cpu_batches_and_query_document_apis(monkeypatch,
             calls.append(("passage", list(texts), batch_size, parallel))
             return iter([[3.0, 4.0] for _ in texts])
 
-    monkeypatch.setitem(sys.modules, "fastembed", SimpleNamespace(TextEmbedding=FakeTextEmbedding))
+    monkeypatch.setattr("unimem.onnx_text.TextEmbedding", FakeTextEmbedding)
     monkeypatch.setenv("FASTEMBED_CACHE_PATH", str(tmp_path))
     provider = embeddings.provider("fastembed:BAAI/bge-small-en-v1.5", local_files_only=True)
 
@@ -177,13 +175,23 @@ def test_fastembed_cache_miss_is_cache_only_and_does_not_touch_network(monkeypat
                 raise AssertionError("a cache miss must not retry through the download path")
             raise FileNotFoundError("model missing from cache")
 
-    monkeypatch.setitem(sys.modules, "fastembed", SimpleNamespace(TextEmbedding=CacheOnlyMiss))
+    monkeypatch.setattr("unimem.onnx_text.TextEmbedding", CacheOnlyMiss)
     monkeypatch.setenv("UNIMEM_OFFLINE", "1")
     provider = embeddings.provider("fastembed:BAAI/bge-small-en-v1.5")
 
     with pytest.raises(embeddings.EmbeddingError, match="not available in the local cache"):
         provider.embed(["question"], query=True)
     assert modes == [True]
+
+
+def test_missing_native_runtime_names_the_installable_extra(monkeypatch):
+    def missing(**_kwargs):
+        raise ImportError("onnxruntime is not installed")
+
+    monkeypatch.setattr("unimem.onnx_text.TextEmbedding", missing)
+    provider = embeddings.provider("fastembed:BAAI/bge-small-en-v1.5", local_files_only=True)
+    with pytest.raises(embeddings.EmbeddingError, match=r"pip install 'unimem\[fastembed\]'"):
+        provider.embed(["question"], query=True)
 
 
 def test_fastembed_projection_identity_binds_model_revision_version_and_dimension(
@@ -197,7 +205,7 @@ def test_fastembed_projection_identity_binds_model_revision_version_and_dimensio
         def __init__(self, *, model_name, **kwargs):
             dimension = dimensions[model_name]
             self.embedding_size = dimension
-            self.model = SimpleNamespace(_model_dir=str(model_dir))
+            self.artifact_directory = model_dir
 
             def query_embed(texts, **_kwargs):
                 return iter([[1.0] + [0.0] * (dimension - 1) for _ in texts])
@@ -205,8 +213,8 @@ def test_fastembed_projection_identity_binds_model_revision_version_and_dimensio
             self.query_embed = query_embed
             self.passage_embed = query_embed
 
-    monkeypatch.setitem(sys.modules, "fastembed", SimpleNamespace(TextEmbedding=FakeTextEmbedding))
-    monkeypatch.setattr("importlib.metadata.version", lambda package: "0.8.0")
+    monkeypatch.setattr("unimem.onnx_text.TextEmbedding", FakeTextEmbedding)
+    monkeypatch.setattr("importlib.metadata.version", lambda package: "2.0.0")
 
     small = embeddings.provider("fastembed:BAAI/bge-small-en-v1.5")
     base = embeddings.provider("fastembed:BAAI/bge-base-en-v1.5")
@@ -217,17 +225,20 @@ def test_fastembed_projection_identity_binds_model_revision_version_and_dimensio
     assert small_identity != base_identity
     assert "BAAI/bge-small-en-v1.5" in small_identity
     assert "BAAI/bge-base-en-v1.5" in base_identity
-    assert "v0.8.0-sha256-" in small_identity
+    assert "unimem-onnx-text-v1-" in small_identity and "v2.0.0-sha256-" in small_identity
 
 
-def test_fastembed_conversation_availability_needs_numpy_and_fastembed(monkeypatch):
+def test_fastembed_conversation_availability_needs_all_cpu_dependencies(monkeypatch):
     from unimem.conversation import embed
 
-    found = {"numpy": object(), "fastembed": object()}
+    dependencies = ("numpy", "onnxruntime", "tokenizers", "huggingface_hub")
+    found = dict.fromkeys(dependencies, object())
     monkeypatch.setattr(embed.importlib.util, "find_spec", lambda name: found.get(name))
     assert embed.available_for("fastembed:BAAI/bge-small-en-v1.5")
-    found["fastembed"] = None
-    assert not embed.available_for("fastembed:BAAI/bge-small-en-v1.5")
+    for dependency in dependencies:
+        found[dependency] = None
+        assert not embed.available_for("fastembed:BAAI/bge-small-en-v1.5")
+        found[dependency] = object()
 
 
 def test_custom_providers_register_once():

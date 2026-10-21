@@ -235,7 +235,7 @@ class _FastEmbed:
             from unimem import offline
 
             try:
-                from fastembed import TextEmbedding
+                from unimem.onnx_text import TextEmbedding
             except ImportError as exc:
                 raise EmbeddingError(
                     "FastEmbed embeddings need the optional dependency: "
@@ -243,14 +243,19 @@ class _FastEmbed:
                 ) from exc
             cache_only = self.local_files_only or offline.enabled()
             try:
-                # FastEmbed 0.8.0 forwards local_files_only to its model manager,
-                # which prevents both Hub and GCS downloads on the server path.
+                # The text adapter resolves only pinned ONNX snapshots and
+                # never retries a cache-only load through a download path.
                 self._model = TextEmbedding(
                     model_name=self.spec.model,
                     cache_dir=self._cache_dir,
                     threads=2,
                     local_files_only=cache_only,
                 )
+            except ImportError as exc:
+                raise EmbeddingError(
+                    "FastEmbed embeddings need the optional dependency: "
+                    "pip install 'unimem[fastembed]'"
+                ) from exc
             except Exception as exc:  # noqa: BLE001 - optional backend errors vary
                 if cache_only:
                     raise EmbeddingError(
@@ -287,7 +292,7 @@ class _FastEmbed:
         from pathlib import Path
 
         model = self._load()
-        model_dir = getattr(getattr(model, "model", None), "_model_dir", None)
+        model_dir = getattr(model, "artifact_directory", None)
         if not isinstance(model_dir, (str, Path)):
             raise EmbeddingError("FastEmbed model has no verifiable artifact directory")
         path = Path(model_dir)
@@ -328,7 +333,7 @@ class _FastEmbed:
         probe = self.embed(["UniMem local projection identity probe."], query=True)
         if len(probe) != 1 or len(probe[0]) != dimension:
             raise EmbeddingError("FastEmbed model output does not match its registered dimension")
-        return f"fastembed-{self.spec.model}-v{version('fastembed')}-{revision}", dimension
+        return f"unimem-onnx-text-v1-{self.spec.model}-v{version('unimem')}-{revision}", dimension
 
 
 class _Hosted:

@@ -33,7 +33,7 @@ def test_conversation_cache_miss_keeps_lexical_recall_and_never_downloads(tmp_pa
                 raise AssertionError("the default model must not download on a cache miss")
             raise FileNotFoundError("model weights are absent")
 
-    monkeypatch.setitem(sys.modules, "fastembed", SimpleNamespace(TextEmbedding=CacheMiss))
+    monkeypatch.setattr("unimem.onnx_text.TextEmbedding", CacheMiss)
     with Store(str(tmp_path), "project") as store:
         store.add("session", [{"speaker": "user", "text": "The release codename is Kestrel."}])
         result = recall(store, "What is the release codename?", options=Options(

@@ -200,7 +200,7 @@ def measure(*, fixture_path: str, model="bge-small", repetitions=5) -> dict:
         path: hashlib.sha256(open(os.path.join(os.path.dirname(__file__), "..", path), "rb").read()).hexdigest()
         for path in implementation_paths
     }
-    provider_package = "fastembed" if str(model).startswith("fastembed:") else "sentence-transformers"
+    provider_package = "unimem" if str(model).startswith("fastembed:") else "sentence-transformers"
     try:
         provider_version = importlib.metadata.version(provider_package)
     except importlib.metadata.PackageNotFoundError:

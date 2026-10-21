@@ -91,7 +91,8 @@ def _tag_model(tag: str):
         # If the extra is absent, retrieval can stay lexical without trying to
         # import a backend or reach a model host.
         try:
-            available = all(importlib.util.find_spec(name) is not None for name in ("numpy", "fastembed"))
+            available = all(importlib.util.find_spec(name) is not None
+                            for name in ("numpy", "onnxruntime", "tokenizers", "huggingface_hub"))
         except (ImportError, ValueError):
             available = False
         if not available:
