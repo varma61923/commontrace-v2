@@ -340,7 +340,7 @@ UniMem is pre-1.0 software under active development.
 | Go, Rust and JVM SDKs, JetBrains plugin | Thin clients |
 | Federation noise, exploration-policy estimates, replay assurance | Experimental, and labelled as such in their output |
 
-Benchmark harnesses for LoCoMo, LongMemEval and BEAM are included, but the datasets are not; bring your own copy. LoCoMo is licensed CC BY-NC 4.0, so never bundle it into a commercial distribution.
+Benchmark harnesses for LoCoMo, LongMemEval and BEAM (100K to 10M) are included, but the datasets are not: `python scripts/fetch_memory_benchmarks.py --dest data/benchmarks` downloads each one from its publisher at a pinned revision and verifies its SHA-256. Methodology, commands and measured results are in [docs/memory-benchmarks.md](docs/memory-benchmarks.md). LoCoMo is licensed CC BY-NC 4.0, so never bundle it into a commercial distribution.
 
 ## Development
 

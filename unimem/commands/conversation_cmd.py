@@ -68,7 +68,8 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
                    help="up to 4: the model may ask for follow-up searches before answering")
     q.add_argument("--grounded", action="store_true",
                    help="require bounded JSON answers with citations to delivered evidence; invalid replies abstain")
-    q.add_argument("--budget", type=_budget_arg, default=None, help="tokens, or 'auto' (see recall)")
+    q.add_argument("--budget", type=_budget_arg, default=None,
+                   help="tokens, or 'auto' (see recall); default: adaptive from 6000 up to 16000 tokens")
     q.add_argument("--max-budget", type=int, default=None)
     q.add_argument("--now", default=None)
     q.add_argument("--context-strategy", choices=("legacy", "coverage-v1", "coverage-v2"), default="legacy")
@@ -306,10 +307,12 @@ def run_index(args) -> int:
 def run_answer(args) -> int:
     from unimem import llm
     from unimem.conversation import ConversationError
-    from unimem.conversation.answer import answer
+    from unimem.conversation.answer import ANSWER_BUDGET, ANSWER_MAX_BUDGET, answer
 
     try:
         opts = _options(args)
+        if args.budget is None and getattr(args, "max_budget", None) is None:
+            opts.budget, opts.adaptive_budget, opts.max_budget = ANSWER_BUDGET, True, ANSWER_MAX_BUDGET
         with _store(args, create=False) as store:
             out = answer(store, args.question, now=args.now, options=opts, rounds=args.rounds,
                          grounded=getattr(args, "grounded", False))

@@ -126,6 +126,7 @@
     "UNIMEM_DEFAULT_RERANK": "runtime.default_rerank",
     "UNIMEM_EMBED_API_KEY": "runtime.embed_api_key",
     "UNIMEM_EMBED_BASE_URL": "runtime.embed_base_url",
+    "UNIMEM_EMBED_THREADS": "runtime.embed_threads",
     "UNIMEM_FACT_CONFLICTS": "runtime.fact_conflicts",
     "UNIMEM_FACT_CONFLICT_JUDGE": "runtime.fact_conflict_judge",
     "UNIMEM_FACT_DEDUP": "runtime.fact_dedup",
@@ -418,6 +419,14 @@
               ]
             },
             "embed_base_url": {
+              "type": [
+                "string",
+                "boolean",
+                "integer",
+                "number"
+              ]
+            },
+            "embed_threads": {
               "type": [
                 "string",
                 "boolean",

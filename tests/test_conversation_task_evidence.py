@@ -117,6 +117,21 @@ def test_grounded_answer_sees_only_delivered_evidence(tmp_path):
         assert all(row["text"] in out["context"] for row in evidence)
 
 
+def test_answer_defaults_to_an_adaptive_answer_budget(tmp_path):
+    from unimem.conversation.answer import ANSWER_BUDGET, ANSWER_MAX_BUDGET, answer_options
+
+    with Store(str(tmp_path), "user") as store:
+        store.add("s1", [{"role": "user", "text": "I walked the dog on Monday and Tuesday."}], session_at="2024-01-01")
+        prompts = []
+        out = answer(store, "How many times did I walk the dog?",
+                     complete=lambda prompt: (prompts.append(prompt) or "2", {}))
+    assert out["explain"]["budget"] == {"requested": ANSWER_BUDGET, "effective": ANSWER_MAX_BUDGET,
+                                        "reason": "counting"}
+    assert "This asks for a count or total" in prompts[0] and "walked the dog" in prompts[0]
+    opts = answer_options(embedder="none")
+    assert (opts.budget, opts.adaptive_budget, opts.max_budget, opts.embedder) == (6000, True, 16_000, "none")
+
+
 def test_old_relevant_instruction_survives_recent_rule_cap(tmp_path):
     with Store(str(tmp_path), "user") as store:
         store.add("old", [{"role": "user", "text":

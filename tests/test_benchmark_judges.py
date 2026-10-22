@@ -438,6 +438,34 @@ class TestBEAMJudge:
         ordinals = "1st: Planning, 2nd: Building, 3rd: Testing"
         assert beam_mod._extract_ordered_items(ordinals) == ["Planning", "Building", "Testing"]
 
+    def test_beam_event_ordering_aligns_paraphrases_with_the_upstream_llm_prompt(self):
+        judge = BEAMJudge()
+        q_order = {
+            "type": "event_ordering",
+            "rubric": ["Set up the database schema", "Added user login", "Deployed to production"],
+            "question": "In what order did I work on these?",
+        }
+        same = {("Set up the database schema", "Designed the tables"),
+                ("Added user login", "Built authentication"),
+                ("Deployed to production", "Shipped it live")}
+        prompts = []
+
+        def complete(prompt):
+            prompts.append(prompt)
+            first = prompt.split("First snippet: ")[1].split("\n")[0].strip()
+            second = prompt.split("Second snippet: ")[1].strip()
+            return ("YES" if (first, second) in same else "NO", {})
+
+        res = judge.grade(q_order, "1. Built authentication\n2. Designed the tables\n3. Shipped it live",
+                          complete_fn=complete)
+        assert "You are a binary classifier." in prompts[0]
+        assert res["details"]["alignment"] == "llm"
+        assert res["details"]["f1"] == 1.0
+        # One adjacent swap of three: tau_b = 1/3, so the reported tau_norm is 2/3.
+        assert round(res["details"]["tau_norm"], 4) == round(2 / 3, 4)
+        assert round(res["score"], 4) == round(2 / 3, 4)
+        assert round(res["details"]["final_score"], 4) == round(2 / 3, 4)
+
     def test_beam_inline_event_ordering_grade(self):
         judge = BEAMJudge()
         q_order = {

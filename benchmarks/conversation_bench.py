@@ -576,12 +576,34 @@ BEAM_MARK = re.compile(r"\s*->->\s*[\d, ]+\s*$")
 def _ids(value) -> set[str]:
     if value is None:
         return set()
+    if isinstance(value, str) and value.strip().startswith("["):
+        import ast
+
+        try:
+            value = ast.literal_eval(value.strip())  # BEAM-10M stores the id list as text: "[13779]"
+        except (ValueError, SyntaxError):
+            return set()
     if isinstance(value, dict):
         return set().union(*(_ids(v) for v in value.values())) if value else set()
     if isinstance(value, (list, tuple)) or hasattr(value, "tolist"):
         return {str(int(v)) for v in (value.tolist() if hasattr(value, "tolist") else value)
                 if str(v).strip().lstrip("-").isdigit()}
     return {str(int(value))} if str(value).strip().isdigit() else set()
+
+
+def _beam_sessions(chat) -> list:
+    """BEAM chats as (name, messages) sessions. 100K-1M splits list sessions directly; the
+    10M split nests them as plans -> batches -> turns, each turn a list of messages."""
+    first = chat[0] if len(chat) else None
+    if not isinstance(first, dict):
+        return [(f"session {n + 1}", list(session)) for n, session in enumerate(chat)]
+    sessions = []
+    for plan in chat:
+        for name in sorted((k for k, v in plan.items() if v is not None), key=lambda k: int(k.split("-")[-1])):
+            for batch in plan[name]:
+                messages = [m for turn in batch["turns"] for m in turn]
+                sessions.append((f"{name} batch {batch['batch_number']}", messages))
+    return sessions
 
 
 def beam_cases(path: str, limit: int = 0):
@@ -595,7 +617,7 @@ def beam_cases(path: str, limit: int = 0):
     frame = pd.read_parquet(path)
     for _, row in frame.iterrows():
         sessions, last = [], None
-        for n, session in enumerate(row["chat"]):
+        for label, session in _beam_sessions(row["chat"]):
             anchor = next((m["time_anchor"] for m in session if m.get("time_anchor") not in (None, "None")), None)
             when = None
             if anchor:
@@ -606,7 +628,7 @@ def beam_cases(path: str, limit: int = 0):
             last = when or last
             messages = [{"id": str(m["id"]), "role": m["role"], "speaker": m["role"],
                          "text": BEAM_MARK.sub("", str(m["content"] or ""))} for m in session]
-            sessions.append((f"session {n + 1}", when or last, messages))
+            sessions.append((label, when or last, messages))
         probing = ast.literal_eval(row["probing_questions"]) if isinstance(row["probing_questions"], str) \
             else row["probing_questions"]
         questions = []
@@ -641,7 +663,8 @@ def answer_in(context: str, answer: str) -> bool | None:
     return f" {answer} " in f" {_norm(context)} "
 
 
-from unimem.conversation.answer import ANSWER as ANSWER_PROMPT  # noqa: E402  the product's own prompt
+from unimem.conversation.answer import ABSTAIN_NOTE, GUIDANCE, answer_prompt  # noqa: E402  the product's own prompt
+from unimem.conversation.answer import ANSWER as ANSWER_PROMPT  # noqa: E402
 
 JUDGE_PROMPT = """Grade an answer against a gold answer. Be generous: the answer is CORRECT if it
 contains the same information as the gold answer, even if phrased differently or longer.
@@ -753,16 +776,9 @@ def grade_answer(
             cache.put(model, prompt, resp, usage, cost, binding=binding)
         return resp, usage, latency, cost
 
-    # Step 1: Generate answer
-    ctx_to_use = context
-    if explain and explain.get("abstain") and ctx_to_use:
-        ctx_to_use = ctx_to_use + "\n\n[Note: No mentions of this subject were found in memory. If asking for a specific detail that was never recorded, state that you do not have this information.]"
-
-    ans_prompt = ANSWER_PROMPT.format(
-        context=ctx_to_use,
-        question=question["question"],
-        now=now or "now",
-    )
+    # Step 1: Generate answer with the product's own reader prompt
+    ans_prompt = answer_prompt(context, question["question"], now or "now",
+                               abstain=bool(explain and explain.get("abstain") and context))
     ans_text, ans_usage, ans_lat, ans_cost = call_cached(ans_prompt, ans_model, "answer")
 
     # Step 2: Judge answer
@@ -1005,7 +1021,7 @@ def run(args) -> dict:
         profile_facts=args.profile_facts,
         rerank_blend=args.rerank_blend,
         adaptive_budget=bool(getattr(args, "adaptive_budget", False)),
-        max_budget=max(budgets[0], 12_000),
+        max_budget=max(budgets[0], getattr(args, "max_budget", None) or 12_000),
     )
     if getattr(opts, "adaptive_budget", False) and (strict_budget or getattr(args, "memory_adapter", "unimem") != "unimem"):
         raise ValueError("--adaptive-budget sizes UniMem's own context; it cannot honour a strict cap "
@@ -1039,7 +1055,8 @@ def run(args) -> dict:
     if args.answer:
         cfg_a, cfg_j = _get_llm_config(ans_model), _get_llm_config(j_model)
         provenance["evaluation"].update({
-            "reader_prompt_sha256": question_digest({"prompt": ANSWER_PROMPT}),
+            "reader_prompt_sha256": question_digest({"prompt": ANSWER_PROMPT, "guidance": GUIDANCE,
+                                                     "abstain_note": ABSTAIN_NOTE}),
             "judge_source_sha256": product_digest_for_judges(repository),
             "completion_source_sha256": dataset_digest(os.path.join(repository, "unimem", "llm.py")),
             "reader": evaluation_config_binding(cfg_a),
@@ -1480,11 +1497,12 @@ def summarize(rows, args, budget, ingest_s, recall_s, full_tokens, mode="memory"
 
         eo_rows = [r for r in rows if r.get("beam_ability") == "event_ordering" or r.get("type") == "event_ordering"]
         if eo_rows:
-            tau_bs = [r.get("beam_details", {}).get("tau_b") for r in eo_rows if isinstance(r.get("beam_details"), dict)]
-            f1s = [r.get("beam_details", {}).get("f1") for r in eo_rows if isinstance(r.get("beam_details"), dict)]
+            details = [r["beam_details"] for r in eo_rows if isinstance(r.get("beam_details"), dict)]
             summary["beam_event_ordering"] = {
-                "tau_b": _mean(tau_bs),
-                "f1": _mean(f1s),
+                "tau_b": _mean(d.get("tau_b") for d in details),
+                "tau_norm": _mean(d.get("tau_norm") for d in details),
+                "f1": _mean(d.get("f1") for d in details),
+                "final_score": _mean(d.get("final_score") for d in details),
                 "score": _mean(r.get("score") for r in eo_rows),
             }
         abs_rows = [r for r in rows if r.get("beam_ability") == "abstention" or r.get("type") == "abstention"]
@@ -1528,6 +1546,8 @@ def main(argv=None) -> int:
     p.add_argument("--adaptive-budget", action="store_true",
                    help="treat each --budget as a floor sized by question shape (Options.adaptive_budget); "
                         "the reported tokens are what was actually delivered")
+    p.add_argument("--max-budget", type=int, default=None,
+                   help="largest context --adaptive-budget may size a question to (default 12000)")
     p.add_argument("--limit", type=int, default=0)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--question-exclusions", help="JSON list of question IDs excluded before stratified sampling")

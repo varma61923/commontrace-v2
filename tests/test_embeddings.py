@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import os
 
 import pytest
 
@@ -163,6 +164,37 @@ def test_fastembed_uses_bounded_cpu_batches_and_query_document_apis(monkeypatch,
     assert [(call[0], len(call[1]), call[2], call[3]) for call in calls[1:]] == [
         ("query", 64, 64, None), ("query", 1, 64, None), ("passage", 1, 64, None),
     ]
+
+
+def test_fastembed_batches_similar_lengths_and_returns_input_order(monkeypatch, tmp_path):
+    batches, threads = [], []
+
+    class LengthEcho:
+        def __init__(self, **kwargs):
+            threads.append(kwargs["threads"])
+
+        def passage_embed(self, texts, *, batch_size, parallel):
+            batches.append([len(t) for t in texts])
+            return iter([[float(len(t)), 1.0] for t in texts])
+
+    monkeypatch.setattr("unimem.embeddings._OnnxText", LengthEcho)
+    monkeypatch.setenv("FASTEMBED_CACHE_PATH", str(tmp_path))
+    monkeypatch.setenv("UNIMEM_EMBED_THREADS", "4")
+    texts = ["x" * (1 + (i * 37) % 300) for i in range(130)]
+    vectors = embeddings.provider("fastembed:BAAI/bge-small-en-v1.5", local_files_only=True).embed(texts, query=False)
+    assert [round(v[0] / v[1]) for v in vectors] == [len(t) for t in texts]
+    assert [len(b) for b in batches] == [64, 64, 2]
+    assert all(max(a) <= min(b) for a, b in zip(batches, batches[1:]))
+    assert threads == [min(4, os.cpu_count() or 1)]
+
+
+@pytest.mark.parametrize("raw", ["0", "65", "two", "-1"])
+def test_embed_threads_must_be_a_bounded_integer(monkeypatch, raw):
+    monkeypatch.setenv("UNIMEM_EMBED_THREADS", raw)
+    with pytest.raises(embeddings.EmbeddingError, match="UNIMEM_EMBED_THREADS"):
+        embeddings.onnx_threads()
+    monkeypatch.delenv("UNIMEM_EMBED_THREADS")
+    assert embeddings.onnx_threads() == embeddings.ONNX_DEFAULT_THREADS
 
 
 def test_fastembed_cache_miss_is_cache_only_and_does_not_touch_network(monkeypatch):
