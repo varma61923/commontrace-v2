@@ -37,6 +37,16 @@ def test_10m_plans_flatten_in_plan_then_batch_order():
     assert [m["id"] for _, messages in sessions for m in messages] == [0, 1, 2]
 
 
+def test_restarted_message_ids_become_unique_and_ambiguous_citations_are_dropped(tmp_path):
+    chat = [[_message(0, "first session", "March-01-2024"), _message(1, "unique")],
+            [_message(0, "id restarted in a later session", "April-01-2024")]]
+    path = tmp_path / "beam1m.parquet"
+    pd.DataFrame([{"conversation_id": 5, "chat": chat, "probing_questions": repr(_questions([0, 1]))}]).to_parquet(path)
+    [(_space, sessions, _now, questions)] = list(beam_cases(str(path)))
+    assert [m["id"] for _, _, messages in sessions for m in messages] == ["0@1", "1", "0@2"]
+    assert {q["type"]: q["evidence"] for q in questions}["information_extraction"] == {"1"}
+
+
 def test_10m_rows_load_with_dates_evidence_and_rubrics(tmp_path):
     chat = [{"plan-1": [{"batch_number": 1, "time_anchor": None,
                          "turns": [[_message(0, "Postgres listens on 5432 ->-> 1,1", "July-01-2024")]]}]}]

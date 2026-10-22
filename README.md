@@ -50,7 +50,9 @@ Optional CPU semantic retrieval is installed with `pip install -e '.[fastembed]'
 The existing `fastembed:BAAI/bge-small-en-v1.5` and
 `fastembed:BAAI/bge-base-en-v1.5` tags use pinned quantized ONNX text models
 directly, without image decoder dependencies. `FASTEMBED_CACHE_PATH` selects the
-model cache. The shipped default reads cached weights only and keeps lexical
+model cache. Inference uses two CPU threads per model so concurrent tenants share a
+server fairly; a bulk-ingestion host can raise it with `UNIMEM_EMBED_THREADS` (up to
+the CPUs present). The shipped default reads cached weights only and keeps lexical
 retrieval available on a cache miss. To populate a cache explicitly before
 starting a server:
 

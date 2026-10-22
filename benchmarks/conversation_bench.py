@@ -629,6 +629,18 @@ def beam_cases(path: str, limit: int = 0):
             messages = [{"id": str(m["id"]), "role": m["role"], "speaker": m["role"],
                          "text": BEAM_MARK.sub("", str(m["content"] or ""))} for m in session]
             sessions.append((label, when or last, messages))
+        # Four BEAM-1M conversations restart message ids in a later session. Those
+        # turns get session-qualified ids, and a citation of a repeated id is
+        # ambiguous, so it is dropped from the evidence rather than guessed.
+        seen = defaultdict(int)
+        for _label, _when, messages in sessions:
+            for message in messages:
+                seen[message["id"]] += 1
+        repeated = {identity for identity, count in seen.items() if count > 1}
+        for n, (_label, _when, messages) in enumerate(sessions):
+            for message in messages:
+                if message["id"] in repeated:
+                    message["id"] = f"{message['id']}@{n + 1}"
         probing = ast.literal_eval(row["probing_questions"]) if isinstance(row["probing_questions"], str) \
             else row["probing_questions"]
         questions = []
@@ -641,7 +653,7 @@ def beam_cases(path: str, limit: int = 0):
                     "question": q["question"],
                     "answer": str(answer),
                     "type": category,
-                    "evidence": _ids(q.get("source_chat_ids")),
+                    "evidence": _ids(q.get("source_chat_ids")) - repeated,
                     "sessions": set(),
                     "rubric": q.get("rubric") or [],
                     "raw": q,
