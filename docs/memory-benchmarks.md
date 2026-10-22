@@ -95,6 +95,28 @@ three times slower to embed) and Personalized PageRank graph walk at weight 0.3
 (0.9178). The adaptive budget delivers 0.931 at 4,567 tokens where a fixed 4,000
 delivers 0.917 at 3,879.
 
+### Answer accuracy: Gemma 4 31B as reader and judge
+
+Paired on the same questions (stratified across categories and conversations, seed 0);
+the interval is a paired bootstrap 95% CI of the difference.
+
+**LoCoMo** (100 questions; Mem0/EverOS binary judge)
+
+| Category | n | Baseline | Improved | Δ (95% CI) | Tokens |
+|---|---:|---:|---:|---:|---:|
+| single-hop | 26 | 76.9 | 96.2 | +19.2 (+7.7, +34.6) | 1447 → 6222 |
+| multi-hop | 26 | 76.9 | 92.3 | +15.4 (+3.8, +30.8) | 1445 → 9028 |
+| temporal | 25 | 76.0 | 84.0 | +8.0 (+0.0, +20.0) | 1451 → 5831 |
+| open-domain | 23 | 39.1 | 73.9 | +34.8 (+13.0, +56.5) | 1445 → 6587 |
+| **Overall** | 100 | 68.0 | **87.0** | +19.0 (+11.0, +27.0) | 1447 → 6937 |
+
+On the baseline's full 200-question sample it scored 68.5%; 44 of its 63 misses were
+"I don't have that information", 24 of them on open-domain questions that ask for an
+inference ("Would Caroline pursue writing as a career?"). The remaining improved-arm
+misses are mostly loose date arithmetic against the gold ("the weekend of 22 August"
+for a "last weekend" said on 29 August) and commonsense inferences the reader still
+declines.
+
 ### Served by a deployed gateway
 
 [`benchmarks/deployed_recall.py`](../benchmarks/deployed_recall.py) runs a separate
