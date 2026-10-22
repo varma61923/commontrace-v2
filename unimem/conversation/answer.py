@@ -64,10 +64,10 @@ def _grounded_reply(raw: str, evidence: list[dict]) -> dict:
     return {"answer": data["answer"].strip(), "citations": list(dict.fromkeys(data["citations"])),
             "abstain": data["abstain"], "citation_validation": "source-membership-only"}
 
-ANSWER = """You answer from your memory of past conversations with the user.
-Use only the memories below. Session headers say when each session took place; dates in
-[brackets] resolve relative time words. Read all of them first: an answer is often spread
-across several sessions.
+ANSWER = """You answer with your memory of past conversations with the user.
+Facts about people, events and details from those conversations come only from the memories
+below. Session headers say when each session took place; dates in [brackets] resolve relative
+time words. Read all of them first: an answer is often spread across several sessions.
 
 How to answer:
 - Follow every standing instruction the user gave (format, length, style, things to avoid),
@@ -77,10 +77,12 @@ How to answer:
   before only if asked.
 - If two memories contradict each other and neither is clearly the later correction, say
   that the memories conflict, quote both briefly, and ask which is right instead of picking one.
-- If the memories never mention the person, thing or event asked about, say you don't have
-  that information; never invent a detail that was not stated. When the question asks what is
-  likely, what someone would do or what something suggests, reason from what the memories do
-  say and give your best inference with the reason.
+- If the question asks about a person, thing or event from past conversations and the memories
+  never mention it, say you don't have that information; never invent a detail that was not
+  stated. When the question asks what is likely, what someone would do or what something
+  suggests, reason from what the memories do say and give your best inference with the reason.
+- If the question asks for general knowledge, advice or help rather than a past detail, answer
+  it fully from your own knowledge, shaped by the user's standing instructions and preferences.
 - A relative time ("yesterday", "last week", "next month") is relative to the date of the
   session it was said in; answer with the resulting date or period.
 {guidance}Keep a factual answer short; give lists, summaries and comparisons in full.
@@ -102,6 +104,9 @@ GUIDANCE = {
                "(names, numbers, decisions), not only the latest part.",
     "suggestion": "- This asks for suggestions: make them concrete and build each on what the user said they "
                   "like, use, own or did before, naming those details.",
+    "task": "- This asks you to do something: do it in full (the code, plan, steps or explanation asked for), "
+            "applying every standing instruction and stated preference; the memories supply the facts about "
+            "the user and their work.",
 }
 ABSTAIN_NOTE = ("\n\n[Note: no memory above names the subject of this question. If they really never cover it, "
                 "say you do not have that information; if the question asks for an inference, reason from what "
@@ -110,6 +115,12 @@ ABSTAIN_NOTE = ("\n\n[Note: no memory above names the subject of this question. 
 _SUGGESTION = re.compile(r"\b(?:recommend\w*|suggest\w*|ideas?|tips?|advice|what should i|"
                          r"any (?:good )?(?:options|ideas|tips|suggestions)|"
                          r"can you (?:help me )?(?:find|pick|choose|plan))\b", re.I)
+_TASK = re.compile(r"^\s*(?:(?:can|could|would|will) you (?:please )?|please )?"
+                   r"(?:show me|write|create|draft|implement|build|set up|outline|walk me through|"
+                   r"give me (?:a|an|the|some)|explain how|"
+                   r"help me (?:write|build|set|create|plan|implement|fix|design|structure|improve|optimi[sz]e))\b"
+                   r"|^\s*how (?:do|can|should|would) i (?:implement|build|write|set up|add|create|fix|configure|"
+                   r"structure|test|deploy|optimi[sz]e|improve|handle|integrate|secure)\b", re.I)
 _TIME = re.compile(r"\b(?:when|what (?:date|day|month|year|time)|how long|how many (?:days|weeks|months|years|hours)|"
                    r"how (?:old|recently)|before or after|first|earliest|latest)\b", re.I)
 
@@ -130,6 +141,8 @@ def question_shapes(question: str) -> list[str]:
         shapes.append("summary")
     if _SUGGESTION.search(q):
         shapes.append("suggestion")
+    if _TASK.search(q):
+        shapes.append("task")
     return shapes
 
 

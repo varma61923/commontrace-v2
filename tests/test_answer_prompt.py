@@ -13,6 +13,8 @@ from unimem.conversation.answer import ABSTAIN_NOTE, GUIDANCE, answer_prompt, qu
     ("In what order did I bring up the budget tracker features?", ["ordering"]),
     ("Can you summarize my progress on the app?", ["summary"]),
     ("Can you recommend a good hotel for my trip?", ["suggestion"]),
+    ("Could you show me how to implement a login feature?", ["task"]),
+    ("How do I implement JWT authentication?", ["task"]),
     ("What is Melanie's favorite color?", []),
     ("Would Caroline likely pursue writing as a career?", []),
 ])
