@@ -389,7 +389,9 @@ OPERATIONS: dict[tuple[str, str], Operation] = {
             "lexical_weight": number(minimum=0, maximum=1, default=0.5),
             "second_pass": boolean("retrieve uncovered query facets when context budget remains"),
             "summaries": boolean("include source-bound session summaries; default true"),
-            "adaptive_budget": boolean("treat budget as a floor sized by the question's shape")},
+            "adaptive_budget": boolean("treat budget as a floor sized by the question's shape"),
+            "max_budget": integer("with adaptive_budget, the largest context it may grow to; "
+                                  "default the larger of budget and 12000", minimum=50, maximum=32000)},
             ("space", "question")),
         obj({"question": string(), "context": string(), "tokens": integer(), "turns": array(integer()),
              "window": nullable(array(string(), "start date, end date, and parsed window label",

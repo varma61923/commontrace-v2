@@ -77,3 +77,8 @@ def test_conversation_recall_accepts_an_adaptive_budget(tmp_path, monkeypatch):
     status, fixed = post({"space": "ana", "question": "What paintings has Ana made?", "budget": 400})
     assert status == 200 and "budget" not in fixed["explain"]
     assert post({"space": "ana", "question": "x", "adaptive_budget": "yes"})[0] == 400
+    status, capped = post({"space": "ana", "question": "What paintings has Ana made?", "budget": 400,
+                           "adaptive_budget": True, "max_budget": 600})
+    assert status == 200 and capped["explain"]["budget"] == {"requested": 400, "effective": 600, "reason": "list"}
+    for bad in (300, 40_000, True, "800"):
+        assert post({"space": "ana", "question": "x", "budget": 400, "max_budget": bad})[0] == 400

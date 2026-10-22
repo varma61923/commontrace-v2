@@ -8,6 +8,7 @@ against a provider billing outside the declared contract or configured prices.
 from __future__ import annotations
 
 import json
+import math
 import urllib.error
 import urllib.request
 from functools import lru_cache
@@ -166,8 +167,9 @@ def _gemini_complete(prompt: str, config: llm.Config, guard: CostGuard, *, outpu
         opener = urllib.request.build_opener(_NoRedirect())
         for attempt in range(attempts):
             if window is not None:
-                # ~4 characters per token; corrected below from the reported usage.
-                entry = window.acquire(len(prompt) // 4 + 16)
+                # Gemma averages ~3.8 characters per token on English chat; reserve a
+                # little more and correct it from the reported usage below.
+                entry = window.acquire(math.ceil(len(prompt) / 3.5) + 16)
             request = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers, method="POST")
             try:
                 with opener.open(request, timeout=llm.GEMINI_TIMEOUT_SECONDS) as response:  # nosec B310
@@ -175,6 +177,8 @@ def _gemini_complete(prompt: str, config: llm.Config, guard: CostGuard, *, outpu
                 break
             except urllib.error.HTTPError as exc:
                 status = exc.code
+                if entry is not None:
+                    window.settle(entry, 0)  # a refused request consumed no quota
                 try:
                     hint = _retry_delay(exc.read(65536))
                 finally:

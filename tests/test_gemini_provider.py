@@ -159,6 +159,16 @@ def test_bounded_call_reserves_and_settles_input_tokens(monkeypatch):
     assert [entry[1] for entry in window._entries] == [12.0]
 
 
+def test_refused_attempts_release_their_input_token_reservation(monkeypatch):
+    opener, guard, cfg = _bounded(monkeypatch, [429, 503, _reply()])
+    clock = _Clock()
+    window = bench_requests.InputTokenWindow(16_000, clock=clock, sleep=clock.sleep)
+    monkeypatch.setattr(bench_requests, "input_token_window", lambda: window)
+    bench_requests._gemini_complete("q" * 3500, cfg, guard, output_limit=4096, temperature=0.0, sleep=lambda _s: None)
+    assert opener.calls == 3
+    assert [entry[1] for entry in window._entries] == [0.0, 0.0, 12.0]
+
+
 def test_gemma_is_priced_as_free_of_charge():
     from benchmarks.cache import get_price
 

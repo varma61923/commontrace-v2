@@ -590,6 +590,8 @@ class Gateway:
             "context_strategy": "optional legacy, coverage-v1 or coverage-v2 context packing (default legacy)",
             "adaptive_budget": "optional boolean: treat budget as a floor sized by the question's shape "
                                "(summaries, orderings, counts, lists); explain.budget reports the decision",
+            "max_budget": "optional integer: with adaptive_budget, the largest context it may grow to "
+                          "(budget to 32000; default the larger of budget and 12000)",
         }, summary="The turns that answer a question, as a dated context within a token budget.")
         self._route("GET", "/v1/conversation/sessions", self._conversation_sessions,
                     summary="A space's sessions with turn counts, time range and summary state "
@@ -1754,6 +1756,9 @@ class Gateway:
             raise _bad("adaptive_budget must be true or false")
         if not isinstance(budget, int) or isinstance(budget, bool) or not 50 <= budget <= 32_000:
             raise _bad("budget must be an integer number of tokens from 50 to 32000")
+        max_budget = req.get("max_budget", max(budget, 12_000))
+        if not isinstance(max_budget, int) or isinstance(max_budget, bool) or not budget <= max_budget <= 32_000:
+            raise _bad("max_budget must be an integer number of tokens from budget to 32000")
         question = _text(req.get("question"), "question", limit=4000)
         lists = {}
         for key in ("sessions", "speakers"):
@@ -1814,7 +1819,7 @@ class Gateway:
                 advanced[key] = value
         opts = Options(budget=budget, since=dates["since"], until=dates["until"],
                        context_strategy=strategy, adaptive_budget=adaptive,
-                       max_budget=max(budget, 12_000), **lists, **advanced)
+                       max_budget=max_budget, **lists, **advanced)
         try:
             space = self._scoped_space(_ident(req.get("space"), "space"))
             pool = self._conversation_pool or READ_POOL
