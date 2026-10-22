@@ -126,6 +126,8 @@ _REDACTION_PATTERNS: list[tuple[str, str]] = [
     ("openai_admin_key", _ascii_token_pattern(r"sk-admin-[A-Za-z0-9_-]{40,}")),
     ("openai_key", _ascii_token_pattern(r"sk-[A-Za-z0-9_-]{20,}")),
     ("google_api_key", _ascii_token_pattern(r"AIza[0-9A-Za-z_-]{35}")),
+    # Google AI Studio / Gemini API keys issued in the newer "AQ." format.
+    ("google_api_key", _ascii_token_pattern(r"AQ\.[0-9A-Za-z_-]{40,}")),
     ("google_oauth_token", _ascii_token_pattern(r"ya29\.[0-9A-Za-z_-]{20,}")),
     ("xai_key", _ascii_token_pattern(r"xai-[A-Za-z0-9]{40,}")),
     ("groq_key", _ascii_token_pattern(r"gsk_[A-Za-z0-9]{20,}")),

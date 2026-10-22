@@ -1,5 +1,10 @@
-# BEAM compatibility profile; semantic alignment and official aggregation differ from upstream.
+# BEAM judge. With a model available, event ordering follows upstream exactly: each
+# response line is aligned to a reference event by the upstream binary LLM
+# equivalence prompt, and the reported ability score is the normalised Kendall tau-b
+# (report_results.py aggregates event_ordering by `tau_norm`). Without a model the
+# alignment falls back to normalised string containment.
 # Source: https://github.com/mohammadtavakoli78/BEAM/blob/b2da22eac88bb0874c64665f13457eb99835774a/src/evaluation/compute_metrics.py
+# Source: https://github.com/mohammadtavakoli78/BEAM/blob/b2da22eac88bb0874c64665f13457eb99835774a/src/evaluation/report_results.py
 # Source: https://github.com/mohammadtavakoli78/BEAM/blob/b2da22eac88bb0874c64665f13457eb99835774a/src/prompts.py
 # Commit: b2da22eac88bb0874c64665f13457eb99835774a (arXiv 2510.27246)
 from __future__ import annotations
@@ -220,14 +225,45 @@ def _norm(s: str) -> str:
     return " ".join(re.findall(r"[a-z0-9]+", s.lower()))
 
 
+# Upstream llm_equivalence system and user messages, byte for byte, joined into one prompt.
+_EQUIVALENCE_SYSTEM = ("\n            You are a binary classifier.\n"
+                       "            If the TWO snippets describe the SAME event/fact, reply **YES**\n"
+                       "            Otherwise reply **NO**. No extra words.\n"
+                       "            DO NOT provide any exaplanation.\n        ")
+_EQUIVALENCE_USER = "First snippet: {first} \n\n                       Second snippet: {second}\n                    "
+EQUIVALENCE_PROMPT = _EQUIVALENCE_SYSTEM + "\n\n" + _EQUIVALENCE_USER
+
+
+def llm_alignment(reference_list: list[str], system_list: list[str],
+                  equivalent: Callable[[str, str], bool]) -> dict[int, int]:
+    """Upstream align_with_llm: each system item takes the first unused equivalent reference."""
+    used: set[int] = set()
+    alignment: dict[int, int] = {}
+    for i, system in enumerate(system_list):
+        for index, reference in enumerate(reference_list):
+            if index not in used and equivalent(reference, system):
+                alignment[i] = index
+                used.add(index)
+                break
+    return alignment
+
+
+def llm_equivalence(complete_fn: Callable[[str], tuple[str, dict]]) -> Callable[[str, str], bool]:
+    def equivalent(first: str, second: str) -> bool:
+        raw, _ = complete_fn(EQUIVALENCE_PROMPT.format(first=first, second=second))
+        return "yes" in (raw or "").lower()
+    return equivalent
+
+
 def event_ordering_score(
     reference_list: list[str],
     system_list: list[str],
     alignment: dict[int, int] | None = None,
 ) -> dict[str, Any]:
-    """Computes BEAM event_ordering metric combining pure-python Kendall's tau-b and F1.
+    """BEAM event_ordering: Kendall tau-b over aligned events, with event F1.
 
-    Final score = tau_b_normalized * event_f1.
+    `final_score` is tau_norm * F1 as compute_metrics returns it; `score` is
+    tau_norm, the value upstream's report aggregates for this ability.
     """
     if not reference_list:
         return {"precision": 0.0, "recall": 0.0, "f1": 0.0, "tau_b": 0.0, "tau_norm": 0.0, "final_score": 0.0, "score": 0.0}
@@ -291,7 +327,7 @@ def event_ordering_score(
         "tau_b": tau_b,
         "tau_norm": tau_b_norm,
         "final_score": final_score,
-        "score": final_score,
+        "score": tau_b_norm,
     }
 
 
@@ -424,7 +460,11 @@ def evaluate_ability(
     if ability_clean == "event_ordering":
         items = [rubric] if isinstance(rubric, str) else list(rubric)
         sys_items = _extract_ordered_items(response)
-        return event_ordering_score(reference_list=items, system_list=sys_items)
+        alignment = (llm_alignment(items, sys_items, llm_equivalence(complete_fn))
+                     if complete_fn is not None else None)
+        result = event_ordering_score(reference_list=items, system_list=sys_items, alignment=alignment)
+        result["alignment"] = "llm" if complete_fn is not None else "string"
+        return result
     elif ability_clean == "abstention":
         return evaluate_abstention(rubric=rubric, response=response, question=question, complete_fn=complete_fn, model=model)
     else:

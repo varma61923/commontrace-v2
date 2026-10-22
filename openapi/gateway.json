@@ -4656,6 +4656,12 @@
                     "minimum": 0,
                     "type": "number"
                   },
+                  "max_budget": {
+                    "description": "with adaptive_budget, the largest context it may grow to; default the larger of budget and 12000",
+                    "maximum": 32000,
+                    "minimum": 50,
+                    "type": "integer"
+                  },
                   "now": {
                     "description": "date the question is asked",
                     "maxLength": 128,

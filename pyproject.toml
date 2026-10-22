@@ -20,7 +20,7 @@ dependencies = [
 zk = ["cryptography>=50.0,<51.0"]
 attest = ["cryptography>=50.0.2,<51", "PyJWT>=2.10.1,<3"]
 providers = ["pydantic>=2.12,<3.0"]
-code = ["tree-sitter>=0.25,<0.27", "tree-sitter-typescript>=0.23,<0.24"]
+code = ["tree-sitter>=0.25,<0.27", "tree-sitter-typescript>=0.23.2,<0.24"]
 ontology = [
     "jsonschema>=4.23,<5.0",
 ]
@@ -33,14 +33,14 @@ extraction = [
 ]
 attention = [
     "numpy>=1.24,<3.0",
-    "sentence-transformers>=6.0,<7.0",
+    "sentence-transformers>=6.1.0,<7.0",
     "transformers>=5.5.0,<7.0",
 ]
 fastembed = [
     # Direct text-only ONNX inference; no image decoders or image dependency caps.
     "numpy>=1.24,<3.0",
     "tokenizers>=0.22,<1.0",
-    "huggingface-hub>=0.36.2,<2.0",
+    "huggingface-hub>=2.2.0,<3.0",
     "onnxruntime==1.23.2; python_version < '3.14'",
     "onnxruntime==1.30.0; python_version >= '3.14'",
 ]
@@ -56,7 +56,7 @@ serve = [
     "mcp>=2.0,<3.0",
 ]
 otel = [
-    "opentelemetry-sdk>=1.20,<2.0",
+    "opentelemetry-sdk>=1.45.1,<2.0",
 ]
 graph = ["neo4j>=6.0,<7.0", "falkordb>=1.2,<2.0"]
 compile = []  # Pluggable open-weight trainers; core ships CPU governance reference only.
@@ -85,10 +85,10 @@ dev = [
     "openapi-spec-validator>=0.7,<0.8",
     "pytest>=9.0.3,<10.0",
     "ruff>=0.4,<1.0",
-    "pytest-asyncio>=1.0,<2.0",
+    "pytest-asyncio>=1.4.0,<2.0",
     "pytest-xdist>=3.6,<4.0",
     "mcp>=2.0,<3.0",
-    "opentelemetry-sdk>=1.20,<2.0",
+    "opentelemetry-sdk>=1.45.1,<2.0",
 ]
 
 [project.urls]

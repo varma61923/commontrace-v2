@@ -26,6 +26,9 @@ DEFAULT_PRICES: dict[str, dict[str, float]] = {
     "claude-sonnet-5": {"input_per_mtok": 3.00, "output_per_mtok": 15.00},
     "claude-3-5-sonnet": {"input_per_mtok": 3.00, "output_per_mtok": 15.00},
     "claude-3-5-haiku": {"input_per_mtok": 0.80, "output_per_mtok": 4.00},
+    # Gemma 4 on the Gemini Developer API is free of charge and has no paid tier
+    # (https://ai.google.dev/gemini-api/docs/pricing, checked 2026-10-22).
+    "gemma-4": {"input_per_mtok": 0.0, "output_per_mtok": 0.0},
 }
 
 

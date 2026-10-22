@@ -8,6 +8,7 @@ against a provider billing outside the declared contract or configured prices.
 from __future__ import annotations
 
 import json
+import math
 import urllib.error
 import urllib.request
 from functools import lru_cache
@@ -78,6 +79,59 @@ class _Refused(llm.LLMUnavailable):
     """The provider answered with an HTTP error: it produced no completion and bills nothing."""
 
 
+class InputTokenWindow:
+    """A process-wide sliding one-minute allowance of provider input tokens.
+
+    Free-tier quotas are counted in input tokens per minute (16,000 for Gemma 4 on
+    the Gemini Developer API). Concurrent graders that each discover the quota
+    through a 429 retry in lockstep; reserving the estimate first spaces them out.
+    A request larger than the whole allowance still runs once the window is empty.
+    """
+
+    def __init__(self, per_minute: int, *, window_s: float = 60.0, clock=None, sleep=None):
+        import threading
+        import time
+
+        if not isinstance(per_minute, int) or isinstance(per_minute, bool) or per_minute <= 0:
+            raise ValueError("input tokens per minute must be a positive integer")
+        self.per_minute, self.window_s = per_minute, window_s
+        self._clock, self._sleep = clock or time.monotonic, sleep or time.sleep
+        self._lock = threading.Lock()
+        self._entries: list[list[float]] = []
+
+    def acquire(self, tokens: int) -> list[float]:
+        while True:
+            with self._lock:
+                now = self._clock()
+                self._entries = [e for e in self._entries if e[0] > now - self.window_s]
+                used = sum(e[1] for e in self._entries)
+                if not self._entries or used + tokens <= self.per_minute:
+                    entry = [now, float(tokens)]
+                    self._entries.append(entry)
+                    return entry
+                wait = self._entries[0][0] + self.window_s - now
+            self._sleep(max(0.05, wait))
+
+    def settle(self, entry: list[float], tokens: int) -> None:
+        """Replace an estimate with the provider-reported count."""
+        with self._lock:
+            entry[1] = float(tokens)
+
+
+_WINDOWS: dict[int, InputTokenWindow] = {}
+
+
+def input_token_window() -> InputTokenWindow | None:
+    import os
+
+    raw = os.environ.get("UNIMEM_BENCH_INPUT_TPM", "").strip()
+    if not raw:
+        return None
+    if not raw.isdigit() or int(raw) <= 0:
+        raise ValueError("UNIMEM_BENCH_INPUT_TPM must be a positive integer")
+    return _WINDOWS.setdefault(int(raw), InputTokenWindow(int(raw)))
+
+
 def _retry_delay(body: bytes) -> float | None:
     """Seconds from a google.rpc.RetryInfo detail (e.g. "22.9s"), if the error carries one."""
     try:
@@ -107,9 +161,15 @@ def _gemini_complete(prompt: str, config: llm.Config, guard: CostGuard, *, outpu
         raise ValueError("benchmark endpoint must use HTTP(S)")
     input_upper = len(prompt.encode("utf-8")) + 1024
     reservation = guard.reserve_call(config.model, input_upper, output_limit)
+    window = input_token_window()
+    entry = None
     try:
         opener = urllib.request.build_opener(_NoRedirect())
         for attempt in range(attempts):
+            if window is not None:
+                # Gemma averages ~3.8 characters per token on English chat; reserve a
+                # little more and correct it from the reported usage below.
+                entry = window.acquire(math.ceil(len(prompt) / 3.5) + 16)
             request = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers, method="POST")
             try:
                 with opener.open(request, timeout=llm.GEMINI_TIMEOUT_SECONDS) as response:  # nosec B310
@@ -117,6 +177,8 @@ def _gemini_complete(prompt: str, config: llm.Config, guard: CostGuard, *, outpu
                 break
             except urllib.error.HTTPError as exc:
                 status = exc.code
+                if entry is not None:
+                    window.settle(entry, 0)  # a refused request consumed no quota
                 try:
                     hint = _retry_delay(exc.read(65536))
                 finally:
@@ -131,6 +193,8 @@ def _gemini_complete(prompt: str, config: llm.Config, guard: CostGuard, *, outpu
         input_tokens, output_tokens = usage["input_tokens"], usage["output_tokens"]
         if any(not isinstance(v, int) or isinstance(v, bool) or v < 0 for v in (input_tokens, output_tokens)):
             raise ValueError("provider must return text and complete integer usage")
+        if entry is not None:
+            window.settle(entry, input_tokens)
         if input_tokens > input_upper or output_tokens > output_limit:
             raise ValueError("provider usage exceeds the declared request bounds")
         rates = get_price(config.model, guard.prices, require_known=True)

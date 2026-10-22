@@ -58,6 +58,22 @@ def test_standing_instructions_are_pinned_for_unrelated_questions(store):
     assert source, "the instruction's own turn counts as recalled"
 
 
+def test_a_paraphrased_instruction_is_chosen_by_its_retrieval_rank(tmp_path):
+    from unimem.conversation.search import _instruction_lines
+
+    with Store(str(tmp_path), "beam") as s:
+        rules = [f"Always mention widget number {i} when I ask about widgets." for i in range(8)]
+        _chat(s, "s1", "2024-01-01", [("user", rule) for rule in rules] + [
+            ("user", "Always include latency statistics when I ask about query performance.")])
+        question = "How can I make my widgets load faster?"
+        plain = _instruction_lines(s, 2, question)
+        assert all("latency" not in line for line, _turn in plain)
+        latency_turn = next(t.id for t in s.turns(range(1, 20)).values() if "latency" in t.text)
+        ranked = _instruction_lines(s, 2, question, ranks={latency_turn: 0})
+        assert any("latency statistics" in line for line, _turn in ranked)
+        assert _instruction_lines(s, 2, question, ranks={latency_turn: 199}) == plain
+
+
 def test_instructions_are_not_pinned_between_two_people(tmp_path):
     with Store(str(tmp_path), "friends") as s:
         s.add("s1", [{"speaker": "Ana", "text": "Always make time for family, that's my rule."},

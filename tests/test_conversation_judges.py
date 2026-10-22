@@ -73,30 +73,9 @@ class TestGradeAnswerWithCache:
             q = {"question": "What is my hobby?", "answer": "Rock climbing", "type": "single-hop"}
 
             # Populate cache manually for answer and judge
-            ans_prompt = (
-                "You answer from your memory of past conversations with the user.\n"
-                "Use only the memories below. Session headers say when each session took place; dates in\n"
-                "[brackets] resolve relative time words.\n\n"
-                "How to answer:\n"
-                "- Follow every standing instruction the user gave (format, length, style, things to avoid),\n"
-                "  and shape suggestions to the preferences they stated, even when the question does not\n"
-                "  mention them.\n"
-                "- If something changed over time, the most recent statement is current; say what it was\n"
-                "  before only if asked.\n"
-                "- If two memories contradict each other and neither is clearly the later correction, say\n"
-                "  that the memories conflict, quote both briefly, and ask which is right instead of picking one.\n"
-                "- If the memories do not contain the answer, say you don't have that information; never guess\n"
-                "  a detail that was not stated.\n"
-                "- For \"when\", \"how long\" and \"how many days/weeks\" questions, compute from the dates shown.\n"
-                "- For order or sequence questions, list the items in the order they happened or were raised,\n"
-                "  with their dates.\n"
-                "- For summaries, cover the whole span in chronological order, not only the latest part.\n"
-                "Answer concisely.\n\n"
-                "Memories:\n"
-                "User loves rock climbing\n\n"
-                "Question (asked now): What is my hobby?\n"
-                "Answer:"
-            )
+            from unimem.conversation.answer import answer_prompt
+
+            ans_prompt = answer_prompt("User loves rock climbing", "What is my hobby?", "now")
             cache.put(
                 "claude-sonnet-5",
                 ans_prompt,

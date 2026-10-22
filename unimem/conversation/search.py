@@ -283,6 +283,10 @@ _REFERS_BACK = re.compile(r"\b(?:remind me|you (?:said|mentioned|told|suggested|
                           r"provided|shared)|(?:our|the) (?:previous|earlier|last) (?:chat|conversation|discussion))\b",
                           re.I)
 SUMMARY_EXCERPT = 40  # the passage per turn a summary question reads
+# An instruction whose source turn ranks first for the question counts as this many
+# shared condition terms, fading to nothing at INSTRUCTION_RANK_DEPTH.
+INSTRUCTION_RANK_WEIGHT = 8.0
+INSTRUCTION_RANK_DEPTH = 200
 ORDERING_TURNS = 2000  # user turns an ordering question may list
 ORDERING_EXCERPT = 24  # the shortest passage per turn when they do not all fit
 _COUNTING = re.compile(r"\bhow many (?:different |distinct |unique |separate )?(?!(?:days|weeks|months|years|hours|"
@@ -1251,10 +1255,16 @@ _RULE_FRAME = _stems("please show give tell explain include provide respond answ
 
 def _instruction_lines(store: Store, limit: int, question: str = "", *,
                        facts: list[dict] | None = None,
-                       emissions: dict[tuple[str, int], _EmittedText] | None = None) -> list[tuple[str, int]]:
+                       emissions: dict[tuple[str, int], _EmittedText] | None = None,
+                       ranks: Mapping[int, int] | None = None) -> list[tuple[str, int]]:
     """Standing instructions the user gave the assistant: they apply to every answer, so
     they are shown whatever the question, the ones touching its subject and the rules
-    about how to answer (format, length, tone, units, code) first."""
+    about how to answer (format, length, tone, units, code) first.
+
+    `ranks` are the question's retrieval positions by turn. A long history holds
+    hundreds of instructions, and the one whose condition the question meets in other
+    words ("when I ask about query latency" for "how can I speed this up?") shares no
+    word stem with it; its source turn's retrieval rank still finds it."""
     if limit <= 0:
         return []
     # instructions are addressed to an assistant: a chat between two people has none
@@ -1275,6 +1285,9 @@ def _instruction_lines(store: Store, limit: int, question: str = "", *,
         condition = _RULE_CONTEXT.search(f["statement"])
         if condition:
             overlap += 4 * len(asked & _stems(condition.group(1)))
+        rank = ranks.get(f["turn"]) if ranks else None
+        if rank is not None:
+            overlap += INSTRUCTION_RANK_WEIGHT * (1 - rank / INSTRUCTION_RANK_DEPTH)
         picked.append((overlap, f))
     picked.sort(key=lambda x: -x[0])  # most relevant first; newest first among equals
     out = []
@@ -1382,7 +1395,8 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
              and _normalize_text(f["statement"]) != _normalize_text(question)]
     profile_emissions: dict[tuple[str, int], _EmittedText] = {}
     instruction_lines = _instruction_lines(store, opts.instructions, question, facts=facts,
-                                           emissions=profile_emissions)
+                                           emissions=profile_emissions,
+                                           ranks={tid: i for i, tid in enumerate(ranked[:INSTRUCTION_RANK_DEPTH])})
     instruction_block = ("[Standing instructions from the user]\n" + "\n".join(t for t, _ in instruction_lines)
                          + "\n\n") if instruction_lines else ""
     while instruction_lines and tokens(instruction_block) > budget // 6:

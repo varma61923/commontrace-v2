@@ -37,6 +37,15 @@ class TestSecretsHighConfidence:
         findings = mg.scan_text("sk-ant-" + "a" * 25)
         assert any(f.label == "Anthropic API key" for f in findings)
 
+    def test_google_aq_format_api_key_is_found_and_blocking(self):
+        [f] = [x for x in mg.scan_text("GEMINI_API_KEY=AQ." + "Ab8R" + "x9_-" * 11) if x.label == "Google API key"]
+        assert f.blocking
+        assert not mg.scan_text("The AQ. prefix and AQ.short are not keys.")
+
+    def test_hugging_face_token_is_found(self):
+        findings = mg.scan_text("HF_TOKEN=hf_" + "Ab3" * 12)
+        assert any(f.label == "Hugging Face token" for f in findings)
+
     def test_pem_private_key_block_is_found(self):
         findings = mg.scan_text("-----BEGIN RSA PRIVATE KEY-----\nMIIB...")
         assert any(f.label == "PEM private key block" for f in findings)

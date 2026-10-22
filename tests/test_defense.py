@@ -30,6 +30,13 @@ def test_apply_redaction_ai_keys():
         assert "..." in hit["preview"]
 
 
+def test_apply_redaction_google_aq_format_key():
+    key = "AQ." + "Ab8R" + "x9_-" * 11
+    result = apply_redaction(f"export GEMINI_API_KEY={key}")
+    assert result.content == "export GEMINI_API_KEY=[REDACTED:google_api_key]"
+    assert apply_redaction("Keys use the AQ. prefix; AQ.short is not one.").matched_types == []
+
+
 def test_apply_redaction_cloud_and_tokens():
     slack_tok = "-".join(["xoxb", "1234567890", "123456789012", "abcdefghijklmnopqrstuvwx"])
     gh_tok = "ghp_" + ("a" * 36)

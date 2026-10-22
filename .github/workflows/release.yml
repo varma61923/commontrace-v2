@@ -47,7 +47,7 @@ jobs:
           /tmp/wheel-env/bin/unimem --version
           /tmp/wheel-env/bin/unimem init --dest /tmp/smoke-store
           /tmp/wheel-env/bin/unimem --offline doctor --dest /tmp/smoke-store
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: python-dist
           path: dist/
@@ -60,7 +60,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v4
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v4
         with:
           distribution: temurin
           java-version: "17"
@@ -88,7 +88,7 @@ jobs:
           python scripts/smoke_generated_sdk.py build/release-sdk/typescript
           cd build/release-sdk/typescript
           npm pack
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: typescript-dist
           path: build/release-sdk/typescript/*.tgz

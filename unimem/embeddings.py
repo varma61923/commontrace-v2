@@ -233,19 +233,37 @@ _ONNX_MODEL_FILES = ("model_optimized.onnx", "config.json", "tokenizer.json",
                "tokenizer_config.json", "special_tokens_map.json")
 
 
+ONNX_DEFAULT_THREADS = 2
+ONNX_MAX_THREADS = 64
+
+
+def onnx_threads() -> int:
+    """CPU threads for local ONNX text inference.
+
+    Serving keeps two per model so concurrent tenants cannot starve each other.
+    Bulk ingestion hosts may raise it with UNIMEM_EMBED_THREADS (at most the CPUs present).
+    """
+    raw = _configuration_getenv("UNIMEM_EMBED_THREADS", "").strip()
+    if not raw:
+        return ONNX_DEFAULT_THREADS
+    if not raw.isdigit() or not 1 <= int(raw) <= ONNX_MAX_THREADS:
+        raise EmbeddingError(f"UNIMEM_EMBED_THREADS must be an integer from 1 to {ONNX_MAX_THREADS}")
+    return min(int(raw), max(1, os.cpu_count() or 1))
+
+
 class _OnnxText:
     """BGE v1.5 CLS embeddings with bounded CPU inference and cache-only loading."""
 
     def __init__(self, *, model_name: str, cache_dir: str | None = None,
-                 threads: int = 2, local_files_only: bool = False):
+                 threads: int = ONNX_DEFAULT_THREADS, local_files_only: bool = False):
         import onnxruntime as ort
         from huggingface_hub import snapshot_download
         from tokenizers import AddedToken, Tokenizer
 
         if model_name not in _ONNX_MODELS:
             raise ValueError(f"unsupported CPU ONNX text model: {model_name}")
-        if type(threads) is not int or not 1 <= threads <= 2:
-            raise ValueError("CPU ONNX text inference requires one or two threads")
+        if type(threads) is not int or not 1 <= threads <= ONNX_MAX_THREADS:
+            raise ValueError(f"CPU ONNX text inference requires 1 to {ONNX_MAX_THREADS} threads")
         repository, revision, self.embedding_size = _ONNX_MODELS[model_name]
         self.artifact_directory = Path(snapshot_download(
             repo_id=repository, revision=revision,
@@ -336,7 +354,7 @@ class _FastEmbed:
                 self._model = _OnnxText(
                     model_name=self.spec.model,
                     cache_dir=self._cache_dir,
-                    threads=2,
+                    threads=onnx_threads(),
                     local_files_only=cache_only,
                 )
             except ImportError as exc:
@@ -357,16 +375,22 @@ class _FastEmbed:
             return []
         model = self._load()
         method = model.query_embed if query else model.passage_embed
-        out: list[list[float]] = []
+        clipped = _clip(texts)
+        # Batch texts of similar length together: each batch pads to its longest
+        # text, so mixing a 500-token turn with short ones multiplied the work.
+        order = sorted(range(len(clipped)), key=lambda i: len(clipped[i]))
+        out: list[list[float] | None] = [None] * len(clipped)
         # Keep inference batches and ONNX thread use bounded in the caller.
-        for start in range(0, len(texts), BATCH["fastembed"]):
-            batch = _clip(texts[start:start + BATCH["fastembed"]])
+        for start in range(0, len(order), BATCH["fastembed"]):
+            indices = order[start:start + BATCH["fastembed"]]
+            batch = [clipped[i] for i in indices]
             rows = list(method(batch, batch_size=BATCH["fastembed"], parallel=None))
             if len(rows) != len(batch):
                 raise EmbeddingError(
                     f"fastembed returned {len(rows)} vectors for {len(batch)} texts"
                 )
-            out.extend(_normalize(row) for row in rows)
+            for i, row in zip(indices, rows):
+                out[i] = _normalize(row)
         dimensions = {len(row) for row in out}
         if len(dimensions) > 1:
             raise EmbeddingError("fastembed returned vectors of different dimensions")

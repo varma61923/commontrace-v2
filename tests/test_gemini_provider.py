@@ -111,6 +111,70 @@ def test_quota_errors_wait_the_suggested_delay():
     assert bench_requests._retry_delay(b'{"error": {}}') is None
 
 
+class _Clock:
+    def __init__(self):
+        self.now, self.slept = 0.0, []
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.slept.append(seconds)
+        self.now += seconds
+
+
+def test_input_token_window_spaces_requests_within_the_per_minute_quota():
+    clock = _Clock()
+    window = bench_requests.InputTokenWindow(16_000, clock=clock, sleep=clock.sleep)
+    first = window.acquire(10_000)
+    window.acquire(6_000)
+    assert clock.slept == []
+    clock.now = 5.0
+    window.acquire(4_000)  # waits for the first reservation to leave the window
+    assert clock.now == pytest.approx(60.0)
+    window.settle(first, 1)
+    # A single request above the allowance still runs once the window is empty.
+    clock.now = 500.0
+    window.acquire(40_000)
+    with pytest.raises(ValueError):
+        bench_requests.InputTokenWindow(0)
+
+
+def test_input_token_window_is_configured_from_the_environment(monkeypatch, tmp_path):
+    monkeypatch.delenv("UNIMEM_BENCH_INPUT_TPM", raising=False)
+    assert bench_requests.input_token_window() is None
+    monkeypatch.setenv("UNIMEM_BENCH_INPUT_TPM", "16000")
+    assert bench_requests.input_token_window() is bench_requests.input_token_window()
+    monkeypatch.setenv("UNIMEM_BENCH_INPUT_TPM", "-5")
+    with pytest.raises(ValueError):
+        bench_requests.input_token_window()
+
+
+def test_bounded_call_reserves_and_settles_input_tokens(monkeypatch):
+    opener, guard, cfg = _bounded(monkeypatch, [_reply()])
+    clock = _Clock()
+    window = bench_requests.InputTokenWindow(16_000, clock=clock, sleep=clock.sleep)
+    monkeypatch.setattr(bench_requests, "input_token_window", lambda: window)
+    bench_requests._gemini_complete("q" * 400, cfg, guard, output_limit=4096, temperature=0.0, sleep=lambda _s: None)
+    assert [entry[1] for entry in window._entries] == [12.0]
+
+
+def test_refused_attempts_release_their_input_token_reservation(monkeypatch):
+    opener, guard, cfg = _bounded(monkeypatch, [429, 503, _reply()])
+    clock = _Clock()
+    window = bench_requests.InputTokenWindow(16_000, clock=clock, sleep=clock.sleep)
+    monkeypatch.setattr(bench_requests, "input_token_window", lambda: window)
+    bench_requests._gemini_complete("q" * 3500, cfg, guard, output_limit=4096, temperature=0.0, sleep=lambda _s: None)
+    assert opener.calls == 3
+    assert [entry[1] for entry in window._entries] == [0.0, 0.0, 12.0]
+
+
+def test_gemma_is_priced_as_free_of_charge():
+    from benchmarks.cache import get_price
+
+    assert get_price("gemma-4-31b-it", {}, require_known=True) == (0.0, 0.0)
+
+
 def test_a_lost_connection_on_a_zero_priced_model_cannot_overspend_and_does_not_stop_the_run(monkeypatch):
     opener, _guard, cfg = _bounded(monkeypatch, [])
     guard = CostGuard(prices={"gemma-4-31b-it": {"input_per_mtok": 0, "output_per_mtok": 0}})

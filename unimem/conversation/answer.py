@@ -7,6 +7,7 @@ only one follow-up finds is not drowned by the rest."""
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import replace
 
 from unimem.conversation import timeparse
@@ -15,6 +16,17 @@ from unimem.conversation.store import Store
 
 MAX_ROUNDS = 4
 MAX_FOLLOW_UPS = 3
+# Answering spends a model call anyway, so it reads more than a bare recall: a focused
+# question gets ANSWER_BUDGET tokens, and summaries, orderings, counts and lists grow
+# up to ANSWER_MAX_BUDGET (Options.adaptive_budget). See docs/memory-benchmarks.md.
+ANSWER_BUDGET = 6000
+ANSWER_MAX_BUDGET = 16_000
+
+
+def answer_options(**overrides) -> Options:
+    """The recall options `answer` uses when the caller gives none."""
+    return Options(**{"budget": ANSWER_BUDGET, "adaptive_budget": True, "max_budget": ANSWER_MAX_BUDGET,
+                      **overrides})
 
 GROUNDED = """\nReturn JSON only, with exactly these fields:
 {{"answer": "concise response", "citations": ["T123"], "abstain": false}}.
@@ -52,9 +64,10 @@ def _grounded_reply(raw: str, evidence: list[dict]) -> dict:
     return {"answer": data["answer"].strip(), "citations": list(dict.fromkeys(data["citations"])),
             "abstain": data["abstain"], "citation_validation": "source-membership-only"}
 
-ANSWER = """You answer from your memory of past conversations with the user.
-Use only the memories below. Session headers say when each session took place; dates in
-[brackets] resolve relative time words.
+ANSWER = """You answer with your memory of past conversations with the user.
+Facts about people, events and details from those conversations come only from the memories
+below. Session headers say when each session took place; dates in [brackets] resolve relative
+time words. Read all of them first: an answer is often spread across several sessions.
 
 How to answer:
 - Follow every standing instruction the user gave (format, length, style, things to avoid),
@@ -64,19 +77,80 @@ How to answer:
   before only if asked.
 - If two memories contradict each other and neither is clearly the later correction, say
   that the memories conflict, quote both briefly, and ask which is right instead of picking one.
-- If the memories do not contain the answer, say you don't have that information; never guess
-  a detail that was not stated.
-- For "when", "how long" and "how many days/weeks" questions, compute from the dates shown.
-- For order or sequence questions, list the items in the order they happened or were raised,
-  with their dates.
-- For summaries, cover the whole span in chronological order, not only the latest part.
-Answer concisely.
+- If the question asks about a person, thing or event from past conversations and the memories
+  never mention it, say you don't have that information; never invent a detail that was not
+  stated. When the question asks what is likely, what someone would do or what something
+  suggests, reason from what the memories do say and give your best inference with the reason.
+- If the question asks for general knowledge, advice or help rather than a past detail, answer
+  it fully from your own knowledge, shaped by the user's standing instructions and preferences.
+- A relative time ("yesterday", "last week", "next month") is relative to the date of the
+  session it was said in; answer with the resulting date or period.
+{guidance}Keep a factual answer short; give lists, summaries and comparisons in full.
 
 Memories:
 {context}
 
 Question (asked {now}): {question}
 Answer:"""
+
+# Extra direction for a question's shape, chosen from the question text alone.
+GUIDANCE = {
+    "counting": "- This asks for a count or total: first list each distinct item with the date of the "
+                "session it comes from (an item mentioned in several sessions counts once), then give the number.",
+    "time": "- This asks about time: find the dated events involved and compute the date or interval from "
+            "the session dates, stating the dates you used.",
+    "ordering": "- This asks for an order: answer with a numbered list, one event per line, earliest first.",
+    "summary": "- This asks for a summary: cover the whole span in chronological order with the specifics "
+               "(names, numbers, decisions), not only the latest part.",
+    "suggestion": "- This asks for suggestions: make them concrete and build each on what the user said they "
+                  "like, use, own or did before, naming those details.",
+    "task": "- This asks you to do something: do it in full (the code, plan, steps or explanation asked for), "
+            "applying every standing instruction and stated preference; the memories supply the facts about "
+            "the user and their work.",
+}
+ABSTAIN_NOTE = ("\n\n[Note: no memory above names the subject of this question. If they really never cover it, "
+                "say you do not have that information; if the question asks for an inference, reason from what "
+                "they do say.]")
+
+_SUGGESTION = re.compile(r"\b(?:recommend\w*|suggest\w*|ideas?|tips?|advice|what should i|"
+                         r"any (?:good )?(?:options|ideas|tips|suggestions)|"
+                         r"can you (?:help me )?(?:find|pick|choose|plan))\b", re.I)
+_TASK = re.compile(r"^\s*(?:(?:can|could|would|will) you (?:please )?|please )?"
+                   r"(?:show me|write|create|draft|implement|build|set up|outline|walk me through|"
+                   r"give me (?:a|an|the|some)|explain how|"
+                   r"help me (?:write|build|set|create|plan|implement|fix|design|structure|improve|optimi[sz]e))\b"
+                   r"|^\s*how (?:do|can|should|would) i (?:implement|build|write|set up|add|create|fix|configure|"
+                   r"structure|test|deploy|optimi[sz]e|improve|handle|integrate|secure)\b", re.I)
+_TIME = re.compile(r"\b(?:when|what (?:date|day|month|year|time)|how long|how many (?:days|weeks|months|years|hours)|"
+                   r"how (?:old|recently)|before or after|first|earliest|latest)\b", re.I)
+
+
+def question_shapes(question: str) -> list[str]:
+    """The GUIDANCE keys that apply to a question, in a fixed order."""
+    from unimem.conversation import search
+
+    q = question or ""
+    shapes = []
+    if search._COUNTING.search(q) or re.search(r"\b(?:in total|total (?:number|amount|count))\b", q, re.I):
+        shapes.append("counting")
+    if search._ORDERING.search(q):
+        shapes.append("ordering")
+    elif _TIME.search(q):
+        shapes.append("time")
+    if search._SUMMARY.search(q):
+        shapes.append("summary")
+    if _SUGGESTION.search(q):
+        shapes.append("suggestion")
+    if _TASK.search(q):
+        shapes.append("task")
+    return shapes
+
+
+def answer_prompt(context: str, question: str, now: str, *, abstain: bool = False) -> str:
+    """The reader prompt for one question; the product and the benchmarks both use it."""
+    guidance = "".join(GUIDANCE[shape] + "\n" for shape in question_shapes(question))
+    return ANSWER.format(context=(context or "(no memories)") + (ABSTAIN_NOTE if abstain else ""),
+                         question=question, now=now, guidance=guidance)
 
 DECIDE = """You are deciding whether the memories below are enough to answer a question.
 If they are, reply {{"done": true}}. If something is missing, reply with up to {n}
@@ -112,8 +186,9 @@ def answer(store: Store, question: str, *, now=None, options: Options | None = N
     complete = complete or llm.complete
     if not isinstance(grounded, bool):
         raise ValueError("grounded must be a boolean")
+    options = options or answer_options()
     if grounded:
-        options = replace(options or Options(), context_strategy="coverage-v2", summaries=False)
+        options = replace(options, context_strategy="coverage-v2", summaries=False)
     rounds = max(1, min(int(rounds), MAX_ROUNDS))
     result: Recall = recall(store, question, now=now, options=options)
     asked: list[str] = []
@@ -132,16 +207,12 @@ def answer(store: Store, question: str, *, now=None, options: Options | None = N
     moment = timeparse.parse_moment(now) if isinstance(now, str) else now
     moment = moment or store.latest_moment()
     when = timeparse.label(moment.date()) if moment else "now"
-    ctx_text = result.context or "(no memories)"
-    if result.explain.get("abstain"):
-        ctx_text += (
-            "\n\n[Note: Lexical retrieval could not establish the requested detail. Inspect the quoted "
-            "memories and answer only if they explicitly support it; otherwise state that you do not have it.]"
-        )
     evidence = result.explain.get("context_selection", {}).get("evidence", [])
     if grounded:
-        ctx_text = GROUNDED.format(evidence=json.dumps(evidence, ensure_ascii=False))
-    text, used = complete(ANSWER.format(context=ctx_text, question=question, now=when))
+        prompt = answer_prompt(GROUNDED.format(evidence=json.dumps(evidence, ensure_ascii=False)), question, when)
+    else:
+        prompt = answer_prompt(result.context, question, when, abstain=bool(result.explain.get("abstain")))
+    text, used = complete(prompt)
     usage.append(used)
     response = _grounded_reply(text, evidence) if grounded else {"answer": text.strip()}
     return {"question": question, **response, "context": result.context, "tokens": result.tokens,
