@@ -104,7 +104,9 @@ class JWKSCache:
 
     def _fresh(self, jwks_uri: str, now: float, window: float) -> tuple[float, dict] | None:
         cached = self._cached.get(jwks_uri)
-        if cached is not None and (
+        # A freshness TTL or retry backoff may never extend the absolute
+        # trust lifetime of keys that the issuer can no longer refresh.
+        if cached is not None and now - cached[0] <= MAX_STALE_JWKS_SECONDS and (
             now - cached[0] < window or now < self._retry_not_before.get(jwks_uri, now)
         ):
             return cached
