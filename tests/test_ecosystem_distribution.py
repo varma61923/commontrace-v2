@@ -64,10 +64,13 @@ def test_action_rejects_path_escape_before_running_any_command(tmp_path, monkeyp
 def test_action_uses_real_installed_cli_to_initialize_and_check(tmp_path):
     result = subprocess.run([sys.executable, str(ROOT / 'distribution' / 'action' / 'check.py')],
                             env={**os.environ, 'GITHUB_WORKSPACE': str(tmp_path),
-                                 'UNIMEM_ACTION_INITIALIZE': 'true', 'UNIMEM_ACTION_STORE': '.'},
+                                 'UNIMEM_ACTION_INITIALIZE': 'true', 'UNIMEM_ACTION_STORE': '.',
+                                 'UNIMEM_OFFLINE': 'false', 'UNIMEM_OTEL': '1'},
                             capture_output=True, text=True)
     assert result.returncode == 0, result.stdout + result.stderr
     assert (tmp_path / 'memory' / 'INDEX.md').is_file()
+    assert 'offline mode: non-loopback network calls are refused' in result.stdout
+    assert 'exporting to' not in result.stdout
 
 
 @pytest.mark.parametrize(('api', 'document'), [('gateway', 'openapi/gateway.json'), ('hub', 'hub/openapi.json')])

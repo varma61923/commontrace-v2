@@ -16,8 +16,10 @@ def main() -> int:
     if initialize not in ("true", "false"):
         raise ValueError("initialize must be true or false")
     if initialize == "true":
-        subprocess.run([sys.executable, "-m", "unimem", "init", "--dest", root], check=True, timeout=60)
-    return subprocess.run([sys.executable, "-m", "unimem", "doctor", "--dest", root], timeout=60).returncode
+        subprocess.run([sys.executable, "-m", "unimem", "--offline", "init", "--dest", root],
+                       check=True, timeout=60)
+    return subprocess.run([sys.executable, "-m", "unimem", "--offline", "doctor", "--dest", root],
+                          timeout=60).returncode
 
 
 if __name__ == "__main__":
