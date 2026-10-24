@@ -5,7 +5,7 @@
   "description": "Agent memory store that measures, by randomized holdout, which lessons help and which hurt.",
   "version": "1.0.0",
   "repository": {
-    "url": "https://github.com/varma61923/unimem",
+    "url": "https://github.com/varma61923/commontrace-v2",
     "source": "github"
   },
   "packages": [

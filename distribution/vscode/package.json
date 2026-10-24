@@ -3,7 +3,7 @@
   "description": "Workspace memory and source-linked recall over native MCP.",
   "version": "1.0.0", "license": "AGPL-3.0-only", "engines": {"vscode": "^1.102.0"},
   "categories": ["AI", "Other"], "main": "./extension.js",
-  "repository": {"type": "git", "url": "https://github.com/varma61923/unimem"},
+  "repository": {"type": "git", "url": "https://github.com/varma61923/commontrace-v2"},
   "capabilities": {"untrustedWorkspaces": {"supported": false}},
   "activationEvents": ["onMcpServerDefinitionProvider:unimem"],
   "contributes": {

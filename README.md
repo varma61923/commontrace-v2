@@ -375,7 +375,7 @@ audit. The exact gates are defined in [CI](.github/workflows/ci.yml),
 [security checks](.github/workflows/security.yml), and the
 [architecture audit](.github/workflows/graphify.yml). Use the [Graphify exploration guide](docs/architecture-exploration.md)
 for local dependency queries and impact analysis. See the branch's
-[Actions runs](https://github.com/varma61923/unimem/actions) for current
+[Actions runs](https://github.com/varma61923/commontrace-v2/actions) for current
 results. Optional integrations use mocks or local fixtures; CI does not exercise
 live vendor requests, payments, enclaves or robot actuation.
 
