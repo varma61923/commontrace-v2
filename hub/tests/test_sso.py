@@ -384,6 +384,44 @@ class TestJWKSCache:
         with pytest.raises(sso.IdentityError, match="signing keys"):
             sso.verify_bearer_token(token, provider, jwks_cache=cache)
 
+    @pytest.mark.parametrize("ttl", [100, sso.MAX_STALE_JWKS_SECONDS * 2])
+    def test_backoff_and_ttl_cannot_extend_the_stale_key_ceiling(self, signing_key, ttl):
+        key, pub = signing_key
+        now = [0.0]
+
+        def fetch(uri):
+            if now[0] > 0:
+                raise ConnectionError("idp unreachable")
+            return {"keys": [_jwk(pub, "k1")]}
+
+        cache = sso.JWKSCache(fetch, ttl_seconds=ttl, clock=lambda: now[0])
+        provider = sso.IdentityProvider(issuer=ISSUER, audience=AUDIENCE, jwks_uri="https://idp/jwks")
+        token = _token(key, "k1")
+        sso.verify_bearer_token(token, provider, jwks_cache=cache)
+        now[0] = sso.MAX_STALE_JWKS_SECONDS - 1
+        sso.verify_bearer_token(token, provider, jwks_cache=cache)
+        now[0] = sso.MAX_STALE_JWKS_SECONDS + 1
+        with pytest.raises(sso.IdentityError, match="signing keys"):
+            sso.verify_bearer_token(token, provider, jwks_cache=cache)
+
+    def test_failed_fetch_cannot_serve_keys_that_expired_during_network_io(self, signing_key):
+        key, pub = signing_key
+        now = [0.0]
+
+        def fetch(uri):
+            if now[0] > 0:
+                now[0] += 5
+                raise ConnectionError("idp timed out")
+            return {"keys": [_jwk(pub, "k1")]}
+
+        cache = sso.JWKSCache(fetch, clock=lambda: now[0])
+        provider = sso.IdentityProvider(issuer=ISSUER, audience=AUDIENCE, jwks_uri="https://idp/jwks")
+        token = _token(key, "k1")
+        sso.verify_bearer_token(token, provider, jwks_cache=cache)
+        now[0] = sso.MAX_STALE_JWKS_SECONDS - 1
+        with pytest.raises(sso.IdentityError, match="signing keys"):
+            sso.verify_bearer_token(token, provider, jwks_cache=cache)
+
     def test_a_provider_with_neither_static_jwks_nor_uri_is_refused(self, signing_key):
         key, _ = signing_key
         provider = sso.IdentityProvider(issuer=ISSUER, audience=AUDIENCE)

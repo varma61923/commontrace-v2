@@ -72,8 +72,8 @@ export interface ToolCaller {
 }
 
 export interface HubClientOptions {
-  /** How many times `call()` will retry a `rate_limited` tool-level
-   * refusal before giving up and raising `HubToolError`. Default 3,
+  /** Total attempts, including the initial call, for a `rate_limited`
+   * tool-level refusal. Must be a positive safe integer. Default 3,
    * matching unimem/hub_client.py's own default attempt budget for
    * the same failure mode (see `call`'s docstring below). */
   maxAttempts?: number;
@@ -86,6 +86,20 @@ function isErrorBody(body: Record<string, unknown> | null | undefined): body is 
   return !!body && typeof body === "object" && typeof (body as ToolErrorBody).error === "string";
 }
 
+function objectBody(name: string, value: unknown): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new HubConnectionError(`${name}: response must be a JSON object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function retryBudget(value: number): number {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new HubConfigurationError("maxAttempts must be a positive safe integer");
+  }
+  return value;
+}
+
 /**
  * Parse an MCP CallToolResult into a JSON body dictionary, properly handling
  * structuredContent, JSON text content, non-JSON plain text errors on `isError`,
@@ -95,15 +109,20 @@ export function parseToolResult(
   name: string,
   result: Record<string, unknown>,
 ): Record<string, unknown> {
-  if (result.structuredContent && typeof result.structuredContent === "object") {
-    const sc = result.structuredContent as Record<string, unknown>;
+  if (result.structuredContent !== undefined) {
+    const sc = objectBody(name, result.structuredContent);
     if (result.isError && typeof sc.error !== "string") {
       return { ...sc, error: "tool_error", detail: typeof sc.detail === "string" ? sc.detail : JSON.stringify(sc) };
     }
     return sc;
   }
   const first = Array.isArray(result.content) ? result.content[0] : undefined;
-  const text = first && typeof first === "object" && "text" in first ? (first as { text: string }).text : "{}";
+  const text = first && typeof first === "object" && "text" in first && typeof first.text === "string"
+    ? first.text : undefined;
+  if (text === undefined) {
+    if (result.isError) return {error: "tool_error", detail: "tool returned no error text"};
+    throw new HubConnectionError(`${name}: response did not contain JSON text`);
+  }
   if (result.isError) {
     try {
       const parsed = JSON.parse(text);
@@ -116,8 +135,9 @@ export function parseToolResult(
     return { error: "tool_error", detail: text };
   }
   try {
-    return JSON.parse(text) as Record<string, unknown>;
+    return objectBody(name, JSON.parse(text));
   } catch (err) {
+    if (err instanceof HubConnectionError) throw err;
     throw new HubConnectionError(`${name}: response was not valid JSON`, err);
   }
 }
@@ -163,7 +183,7 @@ export class HubClient {
 
   private constructor(caller: ToolCaller, maxAttempts: number) {
     this.caller = caller;
-    this.maxAttempts = Math.max(1, maxAttempts);
+    this.maxAttempts = retryBudget(maxAttempts);
   }
 
   /**
@@ -172,6 +192,7 @@ export class HubClient {
    * API key from `python -m hub.manage issue-key`.
    */
   static async connect(url: string, apiKey: string, options: HubClientOptions = {}): Promise<HubClient> {
+    const maxAttempts = retryBudget(options.maxAttempts ?? 3);
     const hubUrl = checkHubUrl(url);
     const mcpClient = new Client({ name: "unimem-hub-client-ts", version: "0.1.0" });
     const transport = new StreamableHTTPClientTransport(hubUrl, {
@@ -195,7 +216,7 @@ export class HubClient {
       },
       close: () => mcpClient.close(),
     };
-    return new HubClient(caller, options.maxAttempts ?? 3);
+    return new HubClient(caller, maxAttempts);
   }
 
   /** Wrap an already-built caller directly -- how tests exercise this
@@ -224,7 +245,7 @@ export class HubClient {
    */
   async call<T = Record<string, unknown>>(name: string, args: Record<string, unknown> = {}): Promise<T> {
     for (let attempt = 1; ; attempt += 1) {
-      const body = await this.caller.callTool(name, args);
+      const body = objectBody(name, await this.caller.callTool(name, args));
       if (isErrorBody(body)) {
         if (body.error === "rate_limited" && attempt < this.maxAttempts) {
           const retryAfterSeconds = clampRetryAfter(body.retry_after);

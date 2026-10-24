@@ -33,8 +33,8 @@ export class HubConfigurationError extends Error {
 
 /** The request never got a tool-level answer at all: the transport
  * failed, the server is unreachable, or the connection could not be
- * established. Always safe to retry (with backoff) if you have not
- * already exhausted an attempt budget. */
+ * established. A lost response can follow a committed write: retry mutations
+ * only with the operation's idempotency key or after reconciling their state. */
 export class HubConnectionError extends Error {
   readonly cause?: unknown;
 

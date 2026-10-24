@@ -33,7 +33,8 @@ class BudgetExceeded(llm.LLMUnavailable):
 class LLMRuntime:
     """Routing is supplied as Config objects; credentials never enter manifests.
 
-    Calls are capped before dispatch. Tokens and cost stop the next call when
+    Logical completions are capped before dispatch; provider transport retries
+    may send additional requests. Tokens and cost stop the next call when
     reported usage reaches the cap; providers can overshoot on the last call.
     """
     def __init__(self, root: str, session_id: str, *, routes: dict[str, llm.Config] | None = None,

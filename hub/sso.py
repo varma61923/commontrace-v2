@@ -104,7 +104,9 @@ class JWKSCache:
 
     def _fresh(self, jwks_uri: str, now: float, window: float) -> tuple[float, dict] | None:
         cached = self._cached.get(jwks_uri)
-        if cached is not None and (
+        # A freshness TTL or retry backoff may never extend the absolute
+        # trust lifetime of keys that the issuer can no longer refresh.
+        if cached is not None and now - cached[0] <= MAX_STALE_JWKS_SECONDS and (
             now - cached[0] < window or now < self._retry_not_before.get(jwks_uri, now)
         ):
             return cached
@@ -151,6 +153,9 @@ class JWKSCache:
             if not isinstance(document, dict):
                 raise ValueError(f"JWKS document is a {type(document).__name__}, not an object")
         except Exception as exc:  # noqa: BLE001 - every fetch failure is handled the same way
+            # Network I/O (and contention before it) can cross the trust
+            # deadline. Decide fallback eligibility at the time of failure.
+            now = self._clock()
             if cached is not None and now - cached[0] <= MAX_STALE_JWKS_SECONDS:
                 logger.warning("JWKS refresh from %s failed (%s); serving the cached key set",
                                jwks_uri, type(exc).__name__)

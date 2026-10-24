@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from hub.models import AuditLogEntry
@@ -11,6 +12,13 @@ from hub.models import AuditLogEntry
 ACTOR_OPERATOR_CLI = "operator-cli"
 
 _MAX_SUMMARY = 500
+
+
+def safe_summary(action: str, summary: str) -> str:
+    """Webhook URLs may be bearer credentials, including in historical rows."""
+    if action in {"webhook.add", "webhook.disable"}:
+        return "Webhook destination redacted"
+    return summary
 
 
 def actor_for_api_key(key_prefix: str) -> str:
@@ -28,6 +36,7 @@ async def record(
     target_id: str = "",
     summary: str = "",
 ) -> AuditLogEntry:
+    summary = safe_summary(action, summary)
     entry = AuditLogEntry(
         actor=actor[:128],
         action=action[:64],
@@ -36,16 +45,27 @@ async def record(
         target_id=str(target_id)[:64],
         summary=summary[:_MAX_SUMMARY],
     )
-    session.add(entry)
     info = session.info if isinstance(session.info, dict) else {}
     key = info.get("transparency_key")
     if org_id and isinstance(key, str) and key:
         from hub import transparency
 
-        await transparency.append(session, org_id,
-            {"actor": actor[:128], "action": action[:64], "target_type": target_type[:32],
-             "target_id": str(target_id)[:64], "summary_hash": hashlib.sha256(summary.encode()).hexdigest()},
-            secret=key, algorithm=info.get("transparency_algorithm", "hmac-sha256"))
+        previous = await session.scalar(text("SELECT current_setting('app.org_id', true)"))
+        if previous and previous != str(org_id):
+            raise PermissionError("audit organization does not match the bound tenant")
+        # Signup and operator sessions may be unscoped. Transparency tables
+        # require a tenant even there. A savepoint restores SET LOCAL on error
+        # and keeps the audit row atomic with its signed transparency entry.
+        async with session.begin_nested():
+            await session.execute(text("SELECT set_config('app.org_id', :org, true)"), {"org": str(org_id)})
+            session.add(entry)
+            await transparency.append(session, org_id,
+                {"actor": actor[:128], "action": action[:64], "target_type": target_type[:32],
+                 "target_id": str(target_id)[:64], "summary_hash": hashlib.sha256(summary.encode()).hexdigest()},
+                secret=key, algorithm=info.get("transparency_algorithm", "hmac-sha256"))
+            await session.execute(text("SELECT set_config('app.org_id', :org, true)"), {"org": previous or ""})
+    else:
+        session.add(entry)
     return entry
 
 

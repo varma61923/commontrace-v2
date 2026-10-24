@@ -84,10 +84,13 @@ jobs:
           npm install --ignore-scripts
           npm run build
           npm audit --omit=dev --audit-level=high
-          cd ../../..
-          python scripts/smoke_generated_sdk.py build/release-sdk/typescript
-          cd build/release-sdk/typescript
           npm pack
+          consumer="$RUNNER_TEMP/unimem-sdk-consumer"
+          mkdir -p "$consumer"
+          printf '{"private":true}\n' > "$consumer/package.json"
+          npm install --prefix "$consumer" --ignore-scripts "$GITHUB_WORKSPACE"/build/release-sdk/typescript/unimem-sdk-*.tgz
+          cd "$GITHUB_WORKSPACE"
+          python scripts/smoke_generated_sdk.py "$consumer/node_modules/@unimem/sdk"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: typescript-dist

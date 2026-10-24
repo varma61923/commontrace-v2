@@ -41,7 +41,11 @@ export class MemoryClient {
       headers: {"Content-Type": "application/json", ...(this.token ? {Authorization: `Bearer ${this.token}`} : {})},
       body: JSON.stringify({...data, context}),
     });
-    if (!response.ok) throw new Error(`Memory gateway returned HTTP ${response.status}`);
+    if (!response.ok) {
+      // Release unread error/redirect streams so repeated refusals do not retain sockets.
+      void response.body?.cancel().catch(() => {});
+      throw new Error(`Memory gateway returned HTTP ${response.status}`);
+    }
     if (!response.body) throw new Error("Empty memory response");
     const reader = response.body.getReader();
     const chunks: Uint8Array[] = [];

@@ -1385,7 +1385,7 @@ def _render_audit_log(entries: list[AuditLogEntry], offset: int, limit: int, has
         f"<tr><td>{ui_kit.time_html(e.created_at)}</td><td><code>{h(e.actor)}</code></td>"
         f'<td><span class="pill">{h(e.action)}</span></td>'
         f"<td>{h(f'{e.target_type}:{e.target_id}' if e.target_type else '—')}</td>"
-        f"<td>{h(e.summary)}</td></tr>"
+        f"<td>{h(audit.safe_summary(e.action, e.summary))}</td></tr>"
         for e in entries
     )
     body.append(
@@ -1526,8 +1526,8 @@ _SIGNIN = (
     '<div class="box">'
     f'<span class="brand"><span class="mark">{ui_kit.icon("mark")}</span>UniMem</span>'
     "<div><h1>Sign in to your console</h1>"
-    '<p class="sub">Use an API key for your organisation — the same key your agents '
-    "authenticate with. It is verified once and never stored in your browser.</p></div>"
+    '<p class="sub">Use an API key with read permission for your organisation. '
+    "It is verified once and never stored in your browser.</p></div>"
     '<form method="post" action="{path}/signin">'
     '<label for="api_key">API key</label>'
     '<input type="password" id="api_key" name="api_key" placeholder="unimem_live_…" autocomplete="off" '
@@ -1542,7 +1542,7 @@ _SIGNIN = (
     "</div>"
     '<p class="fine">Most of this console is read-only — capturing a trace, running the '
     "experiment, proposing to the Knowledge Base still goes through your agents or the CLI. "
-    "An admin-scoped key can also manage users and API keys here directly.</p>"
+    "A key with read and admin scopes can also manage users and API keys here directly.</p>"
     "</div>"
 )
 
@@ -1612,7 +1612,7 @@ def add_console_routes(
                     ).limit(1)
                 )
             ).first()
-        if row is None:
+        if row is None or not scopes.satisfies(row[1], scopes.SCOPE_READ):
             return None
         claims["scopes"] = row[1]
         _VIEW.set({
@@ -1649,7 +1649,7 @@ def add_console_routes(
         raw_key = str(form.get("api_key") or "")
         async with session_scope(session_factory) as session:
             authenticated = await auth.verify_api_key(session, raw_key)
-        if authenticated is None:
+        if authenticated is None or not scopes.satisfies(authenticated.scopes, scopes.SCOPE_READ):
             logger.info("console sign-in rejected")
             return _page(
                 "Sign in",
@@ -2370,7 +2370,10 @@ def add_console_routes(
             failed = await events.failed_deliveries(session, org_id, limit=10)
         rows = [
             {
-                "id": e.id, "url": cipher.decrypt(e.url), "enabled": e.enabled,
+                "id": e.id,
+                "url": (cipher.decrypt(e.url) if is_admin
+                        else events.destination_label(cipher.decrypt(e.url))),
+                "enabled": e.enabled,
                 "events": list(e.events), "key_version": e.key_version,
             }
             for e in endpoints

@@ -160,6 +160,29 @@ class TestTheSessionCannotBeForged:
 
 
 class TestSignIn:
+    @pytest.mark.parametrize("scope", ["write", "admin", "scim"])
+    async def test_keys_without_read_permission_cannot_open_the_console(
+        self, session_factory, org_and_key, scope,
+    ):
+        org_id, _ = org_and_key
+        async with session_scope(session_factory) as session:
+            issued = await auth.issue_api_key(session, org_id, scopes=[scope])
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, issued.raw_key)
+            response = await client.get(f"{console.CONSOLE_PATH}/memory")
+        assert response.status_code == 303
+        assert response.headers["location"].endswith("/signin")
+
+    async def test_removing_read_scope_invalidates_an_existing_console_session(
+        self, session_factory, org_and_key,
+    ):
+        org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            async with session_scope(session_factory) as session:
+                await session.execute(sa_update(ApiKey).where(ApiKey.org_id == org_id).values(scopes=["write"]))
+            assert (await client.get(f"{console.CONSOLE_PATH}/memory")).status_code == 303
+
     async def test_an_unauthenticated_visit_redirects_rather_than_erroring(self):
         async with _client(_app()) as client:
             for path in ("", "/proof", "/memory", "/kb"):
@@ -1608,6 +1631,40 @@ class TestUsageReportFromTheConsole:
 
 
 class TestWebhookManagement:
+    async def test_destination_credentials_never_reach_readonly_views_or_audit(
+        self, session_factory, org_and_key,
+    ):
+        from hub.models import AuditLogEntry
+
+        org_id, admin_key = org_and_key
+        url = "https://hook-user:hook-password@example.invalid/private-token?key=query-token#fragment-token"
+        async with session_scope(session_factory) as session:
+            reader = await auth.issue_api_key(session, org_id, scopes=["read"])
+        app = _app(session_factory=session_factory, signing_key="test-signing-key")
+        async with _client(app) as client:
+            await _signed_in(client, admin_key)
+            response = await client.post(
+                f"{console.CONSOLE_PATH}/webhooks/create", data={"url": url},
+            )
+            assert response.status_code == 200
+            async with session_scope(session_factory) as session:
+                endpoint = (await events_module.endpoints_for(session, org_id))[0]
+            await client.post(f"{console.CONSOLE_PATH}/webhooks/{endpoint.id}/disable")
+            await _signed_in(client, reader.raw_key)
+            for path in ("/webhooks", "/audit"):
+                response = await client.get(f"{console.CONSOLE_PATH}{path}")
+                assert response.status_code == 200
+                for secret in ("hook-user", "hook-password", "private-token", "query-token", "fragment-token"):
+                    assert secret not in response.text
+            assert "example.invalid" in (await client.get(f"{console.CONSOLE_PATH}/webhooks")).text
+        async with session_scope(session_factory) as session:
+            summaries = (await session.execute(select(AuditLogEntry.summary).where(
+                AuditLogEntry.org_id == org_id,
+                AuditLogEntry.action.in_(["webhook.add", "webhook.disable"]),
+            ))).scalars().all()
+        assert len(summaries) == 2
+        assert all("private-token" not in summary and "hook-password" not in summary for summary in summaries)
+
     async def test_adding_an_endpoint_shows_the_secret_once(self, session_factory, org_and_key):
         _org_id, raw_key = org_and_key
         app = _app(session_factory=session_factory, signing_key="test-signing-key")
@@ -1632,10 +1689,12 @@ class TestWebhookManagement:
             )
         assert response.status_code == 200
         assert "no HUB_LEDGER_SIGNING_KEY" in response.text
+        async with session_scope(session_factory) as session:
+            assert await events_module.endpoints_for(session, _org_id) == []
 
     async def test_an_added_endpoints_subscriptions_persist(self, session_factory, org_and_key):
         org_id, raw_key = org_and_key
-        async with _client(_app(session_factory=session_factory)) as client:
+        async with _client(_app(session_factory=session_factory, signing_key="test-signing-key")) as client:
             await _signed_in(client, raw_key)
             await client.post(
                 f"{console.CONSOLE_PATH}/webhooks/create",
@@ -1765,6 +1824,21 @@ class TestWebhookManagement:
 
 
 class TestAuditLogPage:
+    async def test_historical_webhook_credentials_are_hidden(self, session_factory, org_and_readonly_key):
+        from hub.models import AuditLogEntry
+
+        org_id, raw_key = org_and_readonly_key
+        async with session_scope(session_factory) as session:
+            session.add(AuditLogEntry(actor="operator-cli", action="webhook.add", org_id=org_id,
+                                      summary="https://user:old-password@example.invalid/old-token"))
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(f"{console.CONSOLE_PATH}/audit")
+        assert response.status_code == 200
+        assert "old-password" not in response.text
+        assert "old-token" not in response.text
+        assert "Webhook destination redacted" in response.text
+
     async def test_shows_entries_for_this_org(self, session_factory, org_and_key):
         from hub import audit as audit_module
 

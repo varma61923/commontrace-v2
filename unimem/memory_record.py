@@ -75,7 +75,8 @@ class MemoryRecord:
             raise ValueError("unsupported memory status")
         if type(self.is_latest) is not bool or not isinstance(self.payload, dict):
             raise ValueError("latest flag and payload have invalid types")
-        if not isinstance(self.provenance, dict) or not isinstance(self.evidence, list):
+        if (not isinstance(self.provenance, dict) or not isinstance(self.evidence, list)
+                or any(not isinstance(item, dict) for item in self.evidence)):
             raise ValueError("provenance and evidence have invalid types")
         revisions = self.provenance.get("source_versions")
         if revisions is not None and (
@@ -86,6 +87,10 @@ class MemoryRecord:
         times = {}
         for name in ("created_at", "valid_from", "valid_until", "retracted_at"):
             value = getattr(self, name)
+            if value is None and name != "created_at":
+                continue
+            if not isinstance(value, str):
+                raise ValueError("memory timestamps must be ISO 8601 strings or optional null")
             if not value:
                 continue
             try:
