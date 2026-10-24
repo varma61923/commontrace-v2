@@ -60,3 +60,18 @@ def test_memory_envelope_has_a_bounded_json_wire_size():
 
     with pytest.raises(ValueError, match="one mebibyte"):
         MemoryRecord("large", "fact", 1, {"text": "x" * MAX_RECORD_BYTES})
+
+
+@pytest.mark.parametrize("changes", [
+    {field: value}
+    for field in ("created_at", "valid_from", "valid_until", "retracted_at")
+    for value in (False, 0, [], {})
+] + [{"created_at": None}, {"evidence": [None]}, {"evidence": ["citation"]}])
+def test_untrusted_record_put_rejects_invalid_envelopes_before_persistence(tmp_path, changes):
+    from unimem.memory_journal import Journal
+    from unimem.record_api import operate
+
+    record = {"id": "invalid", "kind": "fact", "version": 1, "payload": {"text": "fact"}, **changes}
+    with pytest.raises(ValueError):
+        operate(str(tmp_path), "record-put", {"record": record}, context=["agent:review"], untrusted=True)
+    assert Journal(str(tmp_path)).latest("invalid") is None

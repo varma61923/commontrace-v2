@@ -258,11 +258,33 @@ test("client.call throws HubToolError on structuredContent with nested or non-st
   );
 });
 
-test("client.call handles valid JSON null response without TypeError", async () => {
+test("client.call refuses a nonobject caller response", async () => {
   const caller = new FakeCaller(null as unknown as Record<string, unknown>);
   const client = HubClient.withCaller(caller);
-  const result = await client.call("test_tool");
-  assert.equal(result, null);
+  await assert.rejects(() => client.call("test_tool"), HubConnectionError);
+});
+
+test("Hub responses require an actual JSON object", () => {
+  for (const text of ["null", "[]", "true", "3", '"text"']) {
+    assert.throws(() => parseToolResult("get_trace", {content: [{type: "text", text}]}),
+      HubConnectionError, text);
+  }
+  for (const structuredContent of [null, [], true, 3]) {
+    assert.throws(() => parseToolResult("get_trace", {structuredContent}), HubConnectionError);
+  }
+  assert.throws(() => parseToolResult("get_trace", {content: []}), HubConnectionError);
+});
+
+test("invalid retry budgets are rejected before connecting", async () => {
+  const caller = new FakeCaller({});
+  for (const maxAttempts of [NaN, Infinity, -Infinity, 0, -1, 1.5]) {
+    assert.throws(() => HubClient.withCaller(caller, {maxAttempts}), HubConfigurationError);
+    let fetched = false;
+    await assert.rejects(() => HubClient.connect("https://hub.example.com/mcp", "secret", {
+      maxAttempts, fetch: async () => { fetched = true; throw new Error("unexpected network"); },
+    }), HubConfigurationError);
+    assert.equal(fetched, false);
+  }
 });
 
 

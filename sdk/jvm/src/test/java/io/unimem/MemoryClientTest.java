@@ -8,6 +8,72 @@ import java.net.InetSocketAddress;
 import java.util.concurrent.LinkedBlockingQueue;
 
 class MemoryClientTest {
+    @Test void responseBoundsAndHttpErrorsReleaseTheExchange() throws Exception {
+        var release = new java.util.concurrent.CountDownLatch(1);
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/v1/memory/search", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            exchange.sendResponseHeaders(503, 100);
+            exchange.getResponseBody().write('x');
+            exchange.getResponseBody().flush();
+            try { release.await(); }
+            catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            finally { exchange.close(); }
+        });
+        server.createContext("/v1/memory/add", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            byte[] bytes = new byte[8 * 1024 * 1024 + 1];
+            exchange.sendResponseHeaders(200, bytes.length);
+            try { exchange.getResponseBody().write(bytes); }
+            catch (java.io.IOException expected) { /* The client cancels oversized bodies. */ }
+            finally { exchange.close(); }
+        });
+        server.start();
+        try {
+            var client = new MemoryClient("http://127.0.0.1:" + server.getAddress().getPort(), "", "", List.of(),
+                java.time.Duration.ofSeconds(2));
+            var refusal = assertThrows(java.io.IOException.class, () -> client.search("query"));
+            assertEquals("Gateway HTTP 503", refusal.getMessage());
+            release.countDown();
+            var large = assertThrows(java.io.IOException.class, () -> client.add("fact"));
+            assertEquals("Response too large", large.getMessage());
+            for (var timeout : List.of(java.time.Duration.ZERO, java.time.Duration.ofSeconds(-1), java.time.Duration.ofSeconds(31))) {
+                assertThrows(IllegalArgumentException.class, () ->
+                    new MemoryClient("http://localhost", "", "", List.of(), timeout));
+            }
+        } finally { release.countDown(); server.stop(0); }
+    }
+    @Test void deadlineIncludesAStalledResponseBody() throws Exception {
+        var headersSent = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var executor = java.util.concurrent.Executors.newSingleThreadExecutor();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/v1/memory/add", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            exchange.sendResponseHeaders(200, 100);
+            exchange.getResponseBody().write('{');
+            exchange.getResponseBody().flush();
+            headersSent.countDown();
+            try { release.await(); }
+            catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            finally { exchange.close(); }
+        });
+        server.start();
+        var client = new MemoryClient("http://127.0.0.1:" + server.getAddress().getPort(), "", "", List.of(),
+            java.time.Duration.ofMillis(500));
+        var pending = executor.submit(() -> client.add("fact"));
+        try {
+            assertTrue(headersSent.await(2, java.util.concurrent.TimeUnit.SECONDS));
+            var failure = assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> pending.get(3, java.util.concurrent.TimeUnit.SECONDS));
+            assertInstanceOf(java.net.http.HttpTimeoutException.class, failure.getCause());
+        } finally {
+            release.countDown();
+            pending.cancel(true);
+            executor.shutdownNow();
+            server.stop(0);
+        }
+    }
     @Test void javaAndKotlinRecordWrappers() throws Exception {
         var json = new ObjectMapper();
         var requests = new LinkedBlockingQueue<com.fasterxml.jackson.databind.JsonNode>();

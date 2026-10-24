@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from unimem import llm_cache as llm_cache_mod
 from unimem.circuit_breaker import CircuitBreaker, CircuitOpenError
@@ -12,6 +13,9 @@ from unimem.exceptions import InfrastructureError
 from unimem.retry import call_with_retries, is_retryable
 from unimem.runtime_cache import RuntimeCache
 from unimem.secrets_provider import env_secret
+
+if TYPE_CHECKING:
+    from unimem.overload import OverloadPolicy
 
 DEFAULT_PROVIDER = "anthropic"
 DEFAULT_MODEL = "claude-sonnet-5"
@@ -33,10 +37,11 @@ REQUIRED_KEYS = ("rule", "applies_when", "do_not_apply_when", "evidence")
 
 _CIRCUITS = RuntimeCache[CircuitBreaker](max_entries=128, max_bytes=128 * 1024, ttl=3600,
                                        weigh=lambda _key, _value: 1024)
-_OVERLOADS = RuntimeCache(max_entries=128, max_bytes=128 * 1024, ttl=3600, weigh=lambda _key, _value: 1024)
+_OVERLOADS: RuntimeCache[OverloadPolicy] = RuntimeCache(
+    max_entries=128, max_bytes=128 * 1024, ttl=3600, weigh=lambda _key, _value: 1024)
 
 
-def _transient_provider_failure(error: BaseException) -> bool:
+def _transient_provider_failure(error: BaseException | None) -> bool:
     seen = set()
     while error is not None and id(error) not in seen:
         seen.add(id(error))
@@ -214,14 +219,17 @@ def _post_json(url: str, headers: dict, payload: dict, *, timeout: float | None 
             exc.close()
             raise
 
-    # POST lesson drafts are idempotent (same payload → same draft text), so a
-    # 5xx may be retried; 429 always is. Non-JSON/4xx surface immediately.
+    # Replaying inference does not mutate memory; retry transient provider
+    # failures. Each attempt may still be billable and can produce different text.
+    # Non-JSON and permanent HTTP refusals surface immediately.
     raw, error = call_with_retries(_once, max_retries=4, idempotent=True)
     if error is not None:
         if isinstance(error, urllib.error.HTTPError):
             raise LLMUnavailable(
                 f"Provider returned HTTP {error.code}") from error
         raise LLMUnavailable("Provider request failed") from error
+    if raw is None:
+        raise LLMUnavailable("Provider returned no response")
     try:
         data = json.loads(raw)
     except ValueError as exc:
@@ -231,6 +239,53 @@ def _post_json(url: str, headers: dict, payload: dict, *, timeout: float | None 
     if not isinstance(data, dict):
         raise LLMUnavailable(f"{url} returned JSON that is not an object")
     return data
+
+
+def _response_object(value: object, field: str) -> dict:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise LLMUnavailable(f"provider response has malformed {field}")
+    return value
+
+
+def _response_blocks(value: object, field: str) -> list[dict]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or any(not isinstance(block, dict) for block in value):
+        raise LLMUnavailable(f"provider response has malformed {field}")
+    return value
+
+
+def _response_text(value: object) -> str:
+    if not isinstance(value, str):
+        raise LLMUnavailable("provider response has malformed text")
+    return value
+
+
+def _token_count(usage: dict, key: str) -> int | None:
+    value = usage.get(key)
+    if value is not None and (type(value) is not int or not 0 <= value < 2**63):
+        raise LLMUnavailable("provider response has malformed token usage")
+    return value
+
+
+def _anthropic_result(data: dict) -> tuple[str, dict]:
+    blocks = _response_blocks(data.get("content"), "content")
+    text = "".join(_response_text(block.get("text", "")) for block in blocks)
+    usage = _response_object(data.get("usage"), "usage")
+    return text, {"input_tokens": _token_count(usage, "input_tokens"),
+                  "output_tokens": _token_count(usage, "output_tokens")}
+
+
+def _openai_result(data: dict) -> tuple[str, dict]:
+    choices = _response_blocks(data.get("choices"), "choices")
+    message = _response_object(choices[0].get("message"), "message") if choices else {}
+    text = message.get("content")
+    text = "" if text is None else _response_text(text)
+    usage = _response_object(data.get("usage"), "usage")
+    return text, {"input_tokens": _token_count(usage, "prompt_tokens"),
+                  "output_tokens": _token_count(usage, "completion_tokens")}
 
 
 def _call_anthropic(config: Config, prompt: str) -> tuple[str, dict]:
@@ -245,10 +300,7 @@ def _call_anthropic(config: Config, prompt: str) -> tuple[str, dict]:
         "content-type": "application/json",
     }
     data = _post_json(_ANTHROPIC_URL, headers, payload)
-    blocks = data.get("content") or []
-    text = "".join(b.get("text", "") for b in blocks if isinstance(b, dict))
-    usage = data.get("usage") or {}
-    return text, {"input_tokens": usage.get("input_tokens"), "output_tokens": usage.get("output_tokens")}
+    return _anthropic_result(data)
 
 
 def gemini_request(config: Config, prompt: str, *, max_tokens: int = GEMINI_MAX_TOKENS,
@@ -267,18 +319,22 @@ def gemini_request(config: Config, prompt: str, *, max_tokens: int = GEMINI_MAX_
 
 def gemini_parse(data: dict) -> tuple[str, dict]:
     """The answer without thought parts; output tokens include the thinking that was billed."""
-    candidates = data.get("candidates") or []
-    if not candidates or not isinstance(candidates[0], dict):
-        reason = (data.get("promptFeedback") or {}).get("blockReason") or "no candidates"
+    if not isinstance(data, dict):
+        raise LLMUnavailable("provider response must be a JSON object")
+    candidates = _response_blocks(data.get("candidates"), "candidates")
+    if not candidates:
+        reason = _response_object(data.get("promptFeedback"), "promptFeedback").get("blockReason") or "no candidates"
         raise LLMUnavailable(f"Gemini returned no answer ({reason})")
-    parts = (candidates[0].get("content") or {}).get("parts") or []
-    text = "".join(p.get("text", "") for p in parts if isinstance(p, dict) and not p.get("thought"))
+    content = _response_object(candidates[0].get("content"), "content")
+    parts = _response_blocks(content.get("parts"), "parts")
+    text = "".join(_response_text(p.get("text", "")) for p in parts if not p.get("thought"))
     if not text.strip() and candidates[0].get("finishReason") == "MAX_TOKENS":
         raise LLMUnavailable("Gemini spent its whole output budget thinking; raise the output cap")
-    usage = data.get("usageMetadata") or {}
-    output = (usage.get("candidatesTokenCount") or 0) + (usage.get("thoughtsTokenCount") or 0)
-    return text, {"input_tokens": usage.get("promptTokenCount"), "output_tokens": output,
-                  "thinking_tokens": usage.get("thoughtsTokenCount") or 0}
+    usage = _response_object(data.get("usageMetadata"), "usageMetadata")
+    thoughts = _token_count(usage, "thoughtsTokenCount") or 0
+    output = (_token_count(usage, "candidatesTokenCount") or 0) + thoughts
+    return text, {"input_tokens": _token_count(usage, "promptTokenCount"), "output_tokens": output,
+                  "thinking_tokens": thoughts}
 
 
 def _call_gemini(config: Config, prompt: str) -> tuple[str, dict]:
@@ -301,12 +357,7 @@ def _call_openai_compatible(config: Config, prompt: str) -> tuple[str, dict]:
     }
     headers = {"Authorization": f"Bearer {config.api_key}", "content-type": "application/json"}
     data = _post_json(url, headers, payload)
-    choices = data.get("choices") or []
-    text = ""
-    if choices and isinstance(choices[0], dict):
-        text = (choices[0].get("message") or {}).get("content") or ""
-    usage = data.get("usage") or {}
-    return text, {"input_tokens": usage.get("prompt_tokens"), "output_tokens": usage.get("completion_tokens")}
+    return _openai_result(data)
 
 
 def complete_with_image(
@@ -348,11 +399,7 @@ def _call_with_image(
             "content-type": "application/json",
         }
         result = _post_json(_ANTHROPIC_URL, headers, payload)
-        blocks = result.get("content") or []
-        text = "".join(b.get("text", "") for b in blocks if isinstance(b, dict))
-        usage = result.get("usage") or {}
-        return text, {"input_tokens": usage.get("input_tokens"),
-                      "output_tokens": usage.get("output_tokens")}
+        return _anthropic_result(result)
     if provider == "openai-compatible":
         base = config.base_url or _OLLAMA_DEFAULT_BASE_URL
         url = base.rstrip("/") + "/chat/completions"
@@ -371,13 +418,7 @@ def _call_with_image(
         }
         headers = {"Authorization": f"Bearer {config.api_key}", "content-type": "application/json"}
         result = _post_json(url, headers, payload)
-        choices = result.get("choices") or []
-        text = ""
-        if choices and isinstance(choices[0], dict):
-            text = (choices[0].get("message") or {}).get("content") or ""
-        usage = result.get("usage") or {}
-        return text, {"input_tokens": usage.get("prompt_tokens"),
-                      "output_tokens": usage.get("completion_tokens")}
+        return _openai_result(result)
     raise LLMUnavailable(
         f"provider {config.provider!r} does not support image input "
         "(vision needs 'anthropic' or 'openai-compatible'/'ollama')."
@@ -400,8 +441,8 @@ def _call_bedrock(config: Config, prompt: str) -> tuple[str, dict]:
         import boto3
     except ImportError:
         raise _sdk_missing("bedrock", "boto3") from None
-    client = boto3.client("bedrock-runtime", region_name=config.region)
     try:
+        client = boto3.client("bedrock-runtime", region_name=config.region)
         data = client.converse(
             modelId=config.model,
             messages=[{"role": "user", "content": [{"text": prompt}]}],
@@ -409,10 +450,14 @@ def _call_bedrock(config: Config, prompt: str) -> tuple[str, dict]:
         )
     except Exception as exc:  # noqa: BLE001 - botocore's error types are many; all mean "unavailable"
         raise LLMUnavailable(f"bedrock request failed: {type(exc).__name__}: {exc}") from exc
-    blocks = ((data.get("output") or {}).get("message") or {}).get("content") or []
-    text = "".join(b.get("text", "") for b in blocks if isinstance(b, dict))
-    usage = data.get("usage") or {}
-    return text, {"input_tokens": usage.get("inputTokens"), "output_tokens": usage.get("outputTokens")}
+    data = _response_object(data, "body")
+    output = _response_object(data.get("output"), "output")
+    message = _response_object(output.get("message"), "message")
+    blocks = _response_blocks(message.get("content"), "content")
+    text = "".join(_response_text(block.get("text", "")) for block in blocks)
+    usage = _response_object(data.get("usage"), "usage")
+    return text, {"input_tokens": _token_count(usage, "inputTokens"),
+                  "output_tokens": _token_count(usage, "outputTokens")}
 
 
 def _call_vertex(config: Config, prompt: str) -> tuple[str, dict]:
@@ -544,9 +589,8 @@ def draft(
 
     input_tokens, output_tokens = usage_raw.get("input_tokens"), usage_raw.get("output_tokens")
     estimated = input_tokens is None or output_tokens is None
-    if estimated:
-        input_tokens = input_tokens if input_tokens is not None else max(1, len(prompt) // 4)
-        output_tokens = output_tokens if output_tokens is not None else max(1, len(text) // 4)
+    input_tokens = input_tokens if input_tokens is not None else max(1, len(prompt) // 4)
+    output_tokens = output_tokens if output_tokens is not None else max(1, len(text) // 4)
 
     return Draft(
         rule=rule,

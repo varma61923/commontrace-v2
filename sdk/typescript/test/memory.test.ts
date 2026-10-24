@@ -28,6 +28,19 @@ test("malformed action authorization and nonobject responses fail closed", async
   }
 });
 
+test("HTTP refusals cancel the response body even when cancellation fails", async () => {
+  for (const status of [302, 401, 429, 503]) {
+    let cancelled = false;
+    const memory = new MemoryClient({url: "https://memory.example", fetch: async () =>
+      new Response(new ReadableStream({cancel() {
+        cancelled = true;
+        throw new Error("failed cancellation");
+      }}), {status})});
+    await assert.rejects(() => memory.add("fact"), new RegExp(`HTTP ${status}`));
+    assert.equal(cancelled, true);
+  }
+});
+
 test("one-call turns enforce a caller deadline without sending it to the gateway", async () => {
   let payload: Record<string, unknown> = {};
   let signal: AbortSignal | undefined;
