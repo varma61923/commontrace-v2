@@ -11,6 +11,38 @@ from hub.db import make_engine
 
 
 @pytest.mark.asyncio
+async def test_webhook_audit_migration_removes_credentials_and_preserves_other_actions(config):
+    engine = make_engine(config)
+    schema = "privacy_contract_" + uuid.uuid4().hex
+    try:
+        async with engine.connect() as connection:
+            await connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+            await connection.execute(text(f'SET search_path TO "{schema}"'))
+            await connection.commit()
+
+            async def upgrade(revision):
+                await connection.run_sync(lambda sync: migrate.execute(
+                    sync, "upgrade", revision=revision, apply=True))
+
+            await upgrade("ff47a9b1c3e5")
+            for action in ("webhook.add", "webhook.disable", "issue_key"):
+                await connection.execute(text(
+                    "INSERT INTO audit_log (id, created_at, actor, action, target_type, target_id, summary) "
+                    "VALUES (:id, now(), 'test', :action, 'endpoint', 'one', :summary)"
+                ), {"id": str(uuid.uuid4()), "action": action,
+                    "summary": "unchanged" if action == "issue_key" else "https://user:secret@example.com/token"})
+            await connection.commit()
+            await upgrade("ff58bac2d4f6")
+            rows = dict((await connection.execute(text("SELECT action, summary FROM audit_log"))).all())
+            assert rows == {"webhook.add": "Webhook destination redacted",
+                            "webhook.disable": "Webhook destination redacted", "issue_key": "unchanged"}
+    finally:
+        async with engine.begin() as connection:
+            await connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_plan_upgrade_verify_rollback_and_reupgrade_on_real_postgres(config):
     engine = make_engine(config)
     schema = "migration_contract_" + uuid.uuid4().hex

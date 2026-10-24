@@ -20,6 +20,15 @@ def _entry(**overrides):
 
 
 class TestFormats:
+    @pytest.mark.parametrize("action", ["webhook.add", "webhook.disable"])
+    def test_historical_webhook_urls_are_redacted_in_both_formats(self, action):
+        entry = _entry(action=action, summary="https://user:password@example.com/private-token?key=secret")
+        for fmt in audit_export.FORMATS:
+            exported = audit_export.render(entry, fmt)
+            assert "Webhook destination redacted" in exported
+            assert "password" not in exported
+            assert "private-token" not in exported
+
     def test_jsonl_round_trips_every_field(self):
         row = json.loads(audit_export.to_jsonl(_entry()))
         assert row == {

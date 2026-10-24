@@ -1146,7 +1146,7 @@ class TestWebhookCLI:
             session_factory=session_factory)
         assert "no such organization" in capsys.readouterr().err
 
-    async def test_the_audit_row_records_the_url_and_never_the_secret(
+    async def test_the_audit_row_redacts_destination_and_signing_secrets(
         self, session_factory, hooked
     ):
         from sqlalchemy import select
@@ -1157,7 +1157,7 @@ class TestWebhookCLI:
             entry = (await session.execute(
                 select(AuditLogEntry).where(AuditLogEntry.action == "webhook.add")
             )).scalar_one()
-        assert self.URL in entry.summary
+        assert entry.summary == "Webhook destination redacted"
         assert hooked["secret"] not in entry.summary
 
     async def test_listing_shows_the_endpoint_and_the_queue(
@@ -1304,7 +1304,7 @@ class TestEncryptionAtRestCLI:
             entry = (await session.execute(
                 select(AuditLogEntry).where(AuditLogEntry.action == "webhook.disable")
             )).scalar_one()
-        assert entry.summary == self.URL
+        assert entry.summary == "Webhook destination redacted"
 
 
 class TestUserCLI:

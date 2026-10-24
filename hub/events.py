@@ -57,6 +57,20 @@ async def _default_resolve(hostname: str) -> list:
     return await asyncio.to_thread(socket.getaddrinfo, hostname, None)
 
 
+def destination_label(url: str) -> str:
+    """Identify a destination without exposing URL credentials or bearer paths."""
+    try:
+        parsed = urlsplit(url)
+        host = parsed.hostname
+        if parsed.scheme not in ("http", "https") or not host:
+            return "[redacted webhook destination]"
+        host = f"[{host}]" if ":" in host else host
+        port = f":{parsed.port}" if parsed.port is not None else ""
+        return f"{parsed.scheme}://{host}{port}/[redacted]"
+    except ValueError:
+        return "[redacted webhook destination]"
+
+
 async def _reject_private_target(
     url: str, *, resolve=None, allowlist: Allowlist | None = None,
 ) -> list[str]:
@@ -219,8 +233,7 @@ def check_payload(event_type: str, payload: dict) -> dict:
     return dict(payload)
 
 
-def derive_secret(signing_key: str, endpoint_id: str, key_version: int) -> str:
-    """The endpoint's signing secret, recomputed rather than stored."""
+def _require_signing_key(signing_key: str) -> None:
     if not signing_key:
         raise EventError(
             "this deployment has no HUB_LEDGER_SIGNING_KEY, so webhook "
@@ -228,6 +241,11 @@ def derive_secret(signing_key: str, endpoint_id: str, key_version: int) -> str:
             "endpoint: an unsigned webhook is indistinguishable from anything "
             "else that can reach the customer's URL."
         )
+
+
+def derive_secret(signing_key: str, endpoint_id: str, key_version: int) -> str:
+    """The endpoint's signing secret, recomputed rather than stored."""
+    _require_signing_key(signing_key)
     return hmac.new(
         signing_key.encode("utf-8"),
         f"{_SECRET_DOMAIN}{endpoint_id}{key_version}".encode("utf-8"),
@@ -273,6 +291,9 @@ async def add_endpoint(
             "trace content, but they do carry trace ids and experiment "
             "verdicts, and plaintext delivery puts those on the wire."
         )
+    # Callers may handle EventError inside a committing transaction. Refuse
+    # incomplete configuration before adding/flushing any persistent state.
+    _require_signing_key(signing_key)
     await _reject_private_target(url)
     for name in events or []:
         if name not in EVENT_TYPES:
@@ -289,6 +310,7 @@ async def add_endpoint(
 
 
 async def rotate_secret(session, endpoint_id: str, *, signing_key: str = "") -> str:
+    _require_signing_key(signing_key)
     endpoint = await session.get(WebhookEndpoint, endpoint_id)
     if endpoint is None:
         raise EventError(f"no webhook endpoint with id {endpoint_id}")

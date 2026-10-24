@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from hub.audit import safe_summary
 from unimem import __version__
 
 FORMATS = ("jsonl", "cef")
@@ -19,7 +20,7 @@ def _fields(entry: Any) -> dict:
         "action": entry.action,
         "target_type": entry.target_type,
         "target_id": entry.target_id,
-        "summary": entry.summary,
+        "summary": safe_summary(entry.action, entry.summary),
     }
 
 
@@ -49,7 +50,7 @@ def to_cef(entry: Any) -> str:
         ("suser", entry.actor),
         ("cs1Label", "org_id"), ("cs1", entry.org_id or ""),
         ("cs2Label", "target"), ("cs2", target),
-        ("msg", entry.summary),
+        ("msg", safe_summary(entry.action, entry.summary)),
     ))
     header = "|".join(_header(v) for v in (
         "UniMem", "Hub", __version__, entry.action, entry.action, severity(entry.action),

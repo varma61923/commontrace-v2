@@ -18,6 +18,16 @@ KEY = "test-deployment-signing-key"
 URL = "https://example.invalid/hooks/unimem"
 
 
+@pytest.mark.parametrize(("url", "label"), [
+    ("https://user:pass@example.com:8443/token?key=secret#fragment", "https://example.com:8443/[redacted]"),
+    ("https://[2001:4860:4860::8888]/token", "https://[2001:4860:4860::8888]/[redacted]"),
+    ("https://host:bad/token", "[redacted webhook destination]"),
+    ("not-a-url", "[redacted webhook destination]"),
+])
+def test_destination_label_never_includes_bearer_components(url, label):
+    assert events.destination_label(url) == label
+
+
 async def _fake_public_resolve(hostname: str) -> list:
     return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("8.8.8.8", 0))]
 
@@ -166,6 +176,23 @@ class TestSigning:
 
 @pytest.mark.asyncio
 class TestEndpoints:
+    async def test_missing_key_cannot_persist_a_failed_creation(self, session_factory, org):
+        async with session_scope(session_factory) as session:
+            with pytest.raises(events.EventError, match="HUB_LEDGER_SIGNING_KEY"):
+                await events.add_endpoint(session, org, URL)
+        async with session_scope(session_factory) as session:
+            assert await events.endpoints_for(session, org) == []
+
+    async def test_missing_key_cannot_persist_a_failed_rotation(self, session_factory, endpoint):
+        async with session_scope(session_factory) as session:
+            row = await session.get(WebhookEndpoint, endpoint["id"])
+            version = row.key_version
+            with pytest.raises(events.EventError, match="HUB_LEDGER_SIGNING_KEY"):
+                await events.rotate_secret(session, endpoint["id"])
+        async with session_scope(session_factory) as session:
+            row = await session.get(WebhookEndpoint, endpoint["id"])
+            assert row.key_version == version
+
     async def test_plaintext_http_is_refused(self, session_factory, org):
         async with session_scope(session_factory) as session:
             with pytest.raises(events.EventError, match="https"):

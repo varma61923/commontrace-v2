@@ -142,6 +142,52 @@ async def _titles(session_factory, pattern: str) -> list[str]:
         return [r[0] for r in (await session.execute(_UNSAFE_QUERY, {"pat": pattern})).all()]
 
 
+async def test_signed_audit_binds_unscoped_sessions_without_crossing_tenants(
+    session_factory, enforcing_factory, two_orgs, monkeypatch,
+):
+    from hub import audit, transparency
+
+    tables = ("transparency_heads", "transparency_entries")
+    async with session_scope(session_factory) as session:
+        for table in tables:
+            await session.execute(text(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY"))
+            await session.execute(text(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY"))
+            await session.execute(text(f"CREATE POLICY tenant_isolation ON {table} "
+                "USING (org_id::text = current_setting('app.org_id', true)) "
+                "WITH CHECK (org_id::text = current_setting('app.org_id', true))"))
+            await session.execute(text(f"GRANT SELECT, INSERT, UPDATE, DELETE ON {table} TO {_RLS_ROLE}"))
+        await session.execute(text(f"GRANT SELECT, INSERT ON audit_log TO {_RLS_ROLE}"))
+    a, b, _ = two_orgs
+    try:
+        async with session_scope(enforcing_factory) as session:
+            session.info["transparency_key"] = "audit-regression-signing-key-32-bytes"
+            for org in (a, b):
+                await audit.record(session, actor="test", action="create_org", org_id=org)
+                assert not await session.scalar(text("SELECT current_setting('app.org_id', true)"))
+            await session.execute(text("SELECT set_config('app.org_id', :org, true)"), {"org": a})
+            with pytest.raises(PermissionError, match="bound tenant"):
+                await audit.record(session, actor="test", action="cross_tenant", org_id=b)
+
+        async def fail(*args, **kwargs):
+            raise ValueError("simulated signing failure")
+
+        monkeypatch.setattr(transparency, "append", fail)
+        async with session_scope(enforcing_factory) as session:
+            session.info["transparency_key"] = "audit-regression-signing-key-32-bytes"
+            with pytest.raises(ValueError, match="simulated signing"):
+                await audit.record(session, actor="test", action="failed_signing", org_id=a)
+            assert not await session.scalar(text("SELECT current_setting('app.org_id', true)"))
+        async with session_scope(session_factory) as session:
+            assert await session.scalar(text("SELECT count(*) FROM audit_log "
+                "WHERE action IN ('cross_tenant', 'failed_signing')")) == 0
+    finally:
+        async with session_scope(session_factory) as session:
+            for table in tables:
+                await session.execute(text(f"DROP POLICY tenant_isolation ON {table}"))
+                await session.execute(text(f"ALTER TABLE {table} NO FORCE ROW LEVEL SECURITY"))
+                await session.execute(text(f"ALTER TABLE {table} DISABLE ROW LEVEL SECURITY"))
+
+
 class TestAForgottenPredicateIsNotABreach:
     async def test_without_rls_the_unsafe_query_really_does_leak(
         self, session_factory, two_orgs
