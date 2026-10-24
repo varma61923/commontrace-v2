@@ -220,7 +220,7 @@ unimem install --target claude-code     # also: cursor, windsurf, codex, copilot
 
 **Interop.** Adapters for Mem0, Letta, Zep, the Claude memory store and AgentCore, plus a portable import format.
 
-**SDKs.** `sdk/typescript` provides the Hub MCP client and typed gateway-memory helpers. Go, Rust and JVM expose thin clients for the gateway memory API. The release workflow generates `@unimem/sdk` from the full `openapi/gateway.json` contract with pinned OpenAPI Generator, then installs the npm tarball in a clean consumer and exercises it against a local gateway.
+**SDKs.** TypeScript, Go, Rust and Java/Kotlin clients for the Hub, generated from its OpenAPI contract.
 
 ## The Hub: multi-tenant server
 
@@ -359,8 +359,6 @@ To check the Hub and generated API contracts:
 python scripts/dev.py test --hub -q  # requires HUB_TEST_DATABASE_URL: disposable PostgreSQL 16
 python scripts/export_openapi.py --check
 python scripts/export_hub_openapi.py --check
-# Requires Java 17+; generates the full gateway TypeScript SDK under ignored build/ output.
-python scripts/generate_sdks.py --api gateway --languages typescript --output build/release-sdk
 ```
 
 Run the focused governance boundary regressions with
@@ -377,7 +375,7 @@ audit. The exact gates are defined in [CI](.github/workflows/ci.yml),
 [security checks](.github/workflows/security.yml), and the
 [architecture audit](.github/workflows/graphify.yml). Use the [Graphify exploration guide](docs/architecture-exploration.md)
 for local dependency queries and impact analysis. See the branch's
-[Actions runs](https://github.com/varma61923/commontrace-v2/actions) for current
+[Actions runs](https://github.com/varma61923/unimem/actions) for current
 results. Optional integrations use mocks or local fixtures; CI does not exercise
 live vendor requests, payments, enclaves or robot actuation.
 

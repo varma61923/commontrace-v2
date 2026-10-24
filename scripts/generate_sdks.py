@@ -124,7 +124,7 @@ def generate(command: list[str], spec: Path, language: str, target: Path, *,
             "--git-user-id",
             "varma61923",
             "--git-repo-id",
-            "commontrace-v2",
+            "unimem",
             "--additional-properties",
             PROPERTIES[language] if package_version is None else re.sub(
                 r"(npmVersion|packageVersion|artifactVersion)=[^,]+",
