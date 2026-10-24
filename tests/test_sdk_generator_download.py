@@ -46,7 +46,7 @@ def test_typescript_generator_prevents_model_and_parameter_name_collisions(tmp_p
                             tmp_path / "sdk", package_version="2.3.4-rc.1")
     options = calls[0][calls[0].index("--additional-properties") + 1]
     assert calls[0][calls[0].index("--git-user-id") + 1] == "varma61923"
-    assert calls[0][calls[0].index("--git-repo-id") + 1] == "unimem"
+    assert calls[0][calls[0].index("--git-repo-id") + 1] == "commontrace-v2"
     assert "npmVersion=2.3.4-rc.1" in options
     assert "prefixParameterInterfaces=true" in options
     assert "licenseName=AGPL-3.0-only" in options
