@@ -81,7 +81,7 @@ numpy==2.5.4
 opentelemetry-api==1.45.1
 pycparser==3.12
 pydantic==2.14.1
-pydantic_core==2.50.1
+pydantic_core==2.50.2
 PyJWT==2.15.1
 python-multipart==0.0.32
 PyYAML==6.0.3
