@@ -52,4 +52,4 @@ cryptography==50.0.2       # AES-256-GCM envelope encryption for WebhookEndpoint
 numpy==2.5.4
 
 PyYAML==6.0.3
-pydantic==2.14.1          # validated provider configurations; already pinned transitively in the image lock
+pydantic==2.14.2          # validated provider configurations; already pinned transitively in the image lock
