@@ -49,7 +49,7 @@ hub-sync = [
     "httpx2>=2.10,<3.0",
 ]
 llm = [
-    "boto3>=1.35,<2.0",
+    "boto3>=1.43.123,<2.0",
     "google-genai>=1.0,<3.0",
 ]
 serve = [
@@ -60,7 +60,7 @@ otel = [
 ]
 graph = ["neo4j>=6.4.1,<7.0", "falkordb>=1.2,<2.0"]
 compile = []  # Pluggable open-weight trainers; core ships CPU governance reference only.
-tier = ["boto3>=1.40,<2.0", "google-cloud-storage>=3.0,<4.0"]
+tier = ["boto3>=1.43.123,<2.0", "google-cloud-storage>=3.0,<4.0"]
 kafka = ["confluent-kafka>=2.16,<3.0"]
 robotics = []  # rclpy is installed from the ROS 2 distribution, never eagerly imported.
 mcap = ["mcap>=1.6.0,<2.0"]
