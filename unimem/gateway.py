@@ -318,7 +318,7 @@ def _agent(req: dict) -> str:
     value = req.get("agent_id")
     if value is None:
         return ""
-    if not isinstance(value, str) or not _AGENT_RE.match(value):
+    if not isinstance(value, str) or not _AGENT_RE.fullmatch(value):
         raise _bad("agent_id must be 1-64 characters of letters, digits and . _ : -")
     return value
 
@@ -1471,15 +1471,17 @@ class Gateway:
                         "reward": graded["reward"],
                         **({"repaired": True} if graded.get("repaired") else {}),
                     }
-                if body.get("secondary_metrics") is not None:
-                    from unimem import sycophancy_io
-
-                    sycophancy_io.record_metrics(self.root, occasion_id, body["secondary_metrics"])
+                if type(body["succeeded"]) is not bool:
+                    raise _bad("succeeded must be boolean")
+                written = holdout_io.record_outcome(
+                    self.root,
+                    occasion_id,
+                    body["succeeded"],
+                    self.durable,
+                    secondary_metrics=body.get("secondary_metrics"),
+                )
                 policy.outcome(self.root, occasion_id, float(body["succeeded"]))
                 explored = causal_policy.record_outcome(self.root, occasion_id, float(body["succeeded"]))
-                written = holdout_io.record_outcome(
-                    self.root, occasion_id, body["succeeded"], secondary_metrics=body.get("secondary_metrics")
-                )
                 return {"recorded": written or explored, "succeeded": body["succeeded"]}
             if operation == "search":
                 return {

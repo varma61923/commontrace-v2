@@ -499,16 +499,10 @@ class MemoryClient:
 
         if not isinstance(succeeded, bool):
             raise ValueError("succeeded must be boolean")
-        if secondary_metrics is not None:
-            from unimem import sycophancy_io
-
-            sycophancy_io.record_metrics(self.root, occasion_id, secondary_metrics)
+        written = holdout_io.record_outcome(self.root, occasion_id, succeeded, secondary_metrics=secondary_metrics)
         policy.outcome(self.root, occasion_id, float(succeeded))
         exploration = causal_policy.record_outcome(self.root, occasion_id, float(succeeded))
-        return (
-            holdout_io.record_outcome(self.root, occasion_id, succeeded, secondary_metrics=secondary_metrics)
-            or exploration
-        )
+        return written or exploration
 
     def _graded_outcome(
         self, occasion_id: str, reward: float | None, metrics: dict | None, secondary_metrics: dict | None

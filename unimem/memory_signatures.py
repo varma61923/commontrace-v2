@@ -17,7 +17,8 @@ itself:
 
 Signatures are recorded at recall, only for randomized memories, only while a
 ``thompson-field`` schedule is in force or recording was enabled explicitly, and
-only when a memory's revision or embedding changes. They are derived from memory
+when a memory's revision or embedding changes, with at most daily recency refreshes
+for unchanged content. They are derived from memory
 content, so they are erasable: `forget` removes them by rewriting the file, and
 the canonical erasure cascade calls it. Hashed terms are not encryption: anyone
 holding a vocabulary can test whether a word occurred.
@@ -31,9 +32,12 @@ import json
 import math
 import os
 import re
-from array import array
+import struct
+import threading
+from collections import OrderedDict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any
 
 from unimem import _jsonl, effect_field, paths
@@ -41,6 +45,8 @@ from unimem import _jsonl, effect_field, paths
 MAX_DIMS = 4096
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,63}$")
 CANDIDATE_DAYS = 30  # a memory unseen for this long is no longer forecast
+REFRESH_DAYS = 1  # refresh recency at most daily for an unchanged signature
+MAX_CACHED_ROOTS = 128
 SIGNATURES_NAME = "signatures.jsonl"
 RECORDING_NAME = "record-signatures"
 DEFAULT_MODEL = "embedding"
@@ -72,20 +78,30 @@ def embedding(value: object, model: object = None) -> tuple[str, tuple[float, ..
         raise ValueError(f"embedding must be a list of 1 to {MAX_DIMS} numbers")
     vector = []
     for x in value:
-        if isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x):
+        if isinstance(x, bool) or not isinstance(x, (int, float)):
             raise ValueError("embedding values must be finite numbers")
-        vector.append(round(float(x), 6))
+        try:
+            number = float(x)
+        except OverflowError:
+            raise ValueError("embedding values must be finite numbers") from None
+        if not math.isfinite(number):
+            raise ValueError("embedding values must be finite numbers")
+        vector.append(round(number, 6))
     label = DEFAULT_MODEL if model is None else model
-    if not isinstance(label, str) or not MODEL_RE.match(label):
+    if not isinstance(label, str) or not MODEL_RE.fullmatch(label):
         raise ValueError("embedding_model must be a short label such as 'siglip2-base' or 'bge-small-en-v1.5'")
     if not any(vector):
         raise ValueError("embedding must not be all zeros")
     return label, tuple(vector)
 
 
-def _key(revision: str | None, emb: tuple[str, tuple[float, ...]] | None) -> str:
-    vector = "" if emb is None else emb[0] + ":" + hashlib.sha256(array("d", emb[1]).tobytes()).hexdigest()[:16]
-    return f"{revision or ''}|{vector}"
+def _key(revision: str | None, emb: tuple[str, tuple[float, ...]] | None, text: str | None = None) -> str:
+    vector = (
+        "" if emb is None else emb[0] + ":" + hashlib.sha256(struct.pack(f"<{len(emb[1])}d", *emb[1])).hexdigest()[:16]
+    )
+    if not revision:
+        revision = "text:" + hashlib.sha256((text or "")[: effect_field.MAX_TEXT_CHARS].encode("utf-8")).hexdigest()
+    return f"{revision}|{vector}"
 
 
 # -- recording -----------------------------------------------------------------------------------
@@ -114,30 +130,63 @@ def enabled(root: str, salt: str | None = None) -> bool:
     return allocation.field_mode(root, salt)
 
 
-_INDEX: dict[str, tuple[int, int, dict[str, Signature]]] = {}  # path -> (inode, parsed bytes, latest by memory)
+_INDEX: OrderedDict[str, tuple[tuple[int, ...], int, dict[str, Signature]]] = OrderedDict()
+_INDEX_LOCK = threading.Lock()
+
+
+def _after_fork() -> None:
+    global _INDEX_LOCK
+    _INDEX_LOCK = threading.Lock()
+    _INDEX.clear()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_after_fork)
 
 
 def _parse(row: Mapping[str, Any]) -> Signature | None:
     try:
-        memory, key = str(row["id"]), str(row["key"])
-        terms = {str(t): int(c) for t, c in dict(row.get("terms") or {}).items() if int(c) > 0}
-        vector = tuple(float(x) for x in row["vector"]) if row.get("vector") else None
-    except (KeyError, TypeError, ValueError):
+        memory, key = row["id"], row["key"]
+        if not isinstance(memory, str) or not memory or not isinstance(key, str) or not key:
+            return None
+        raw_terms = row.get("terms") or {}
+        if not isinstance(raw_terms, dict) or len(raw_terms) > effect_field.MAX_BAG_TERMS:
+            return None
+        if any(
+            not isinstance(t, str) or type(c) is not int or not 1 <= c <= effect_field.MAX_TEXT_CHARS
+            for t, c in raw_terms.items()
+        ):
+            return None
+        emb = embedding(row.get("vector"), row.get("model"))
+    except (KeyError, TypeError, ValueError, OverflowError):
         return None
-    return Signature(memory, key, terms, row.get("model") if vector else None, vector, str(row.get("at") or ""))
+    return Signature(
+        memory,
+        key,
+        MappingProxyType(dict(raw_terms)),
+        emb[0] if emb else None,
+        emb[1] if emb else None,
+        str(row.get("at") or ""),
+    )
 
 
 def load(root: str) -> dict[str, Signature]:
     """The latest signature of every memory. Appends are parsed incrementally."""
     path = signatures_path(root)
+    with _INDEX_LOCK:
+        return dict(_load(path))
+
+
+def _load(path: str) -> dict[str, Signature]:
     try:
         st = os.stat(path)
     except FileNotFoundError:
         _INDEX.pop(path, None)
         return {}
     cached = _INDEX.get(path)
-    if cached is not None and cached[0] == st.st_ino and cached[1] <= st.st_size:
-        offset, latest = cached[1], dict(cached[2])
+    stamp = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+    if cached is not None and cached[0][:2] == stamp[:2] and (cached[0] == stamp or cached[0][2] < st.st_size):
+        offset, latest = cached[1], cached[2]
     else:
         offset, latest = 0, {}
     if offset < st.st_size:
@@ -154,8 +203,11 @@ def load(root: str) -> dict[str, Signature]:
             if sig is not None:
                 latest[sig.memory] = sig
         offset += complete
-    _INDEX[path] = (st.st_ino, offset, latest)
-    return dict(latest)
+    _INDEX[path] = (stamp, offset, latest)
+    _INDEX.move_to_end(path)
+    while len(_INDEX) > MAX_CACHED_ROOTS:
+        _INDEX.popitem(last=False)
+    return latest
 
 
 def observe(
@@ -164,26 +216,35 @@ def observe(
     *,
     durable: bool = False,
 ) -> int:
-    """Record (memory, text, revision, embedding) signatures that are new or changed; returns how many."""
-    keys = {memory: sig.key for memory, sig in load(root).items()}
-    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    """Record new/changed (memory, text, revision, embedding) signatures or refresh daily; returns how many."""
+    observed_at = datetime.datetime.now(datetime.timezone.utc)
+    now = observed_at.isoformat()
+    refresh = (observed_at - datetime.timedelta(days=REFRESH_DAYS)).isoformat()
     rows = []
     for memory, text, revision, emb in items:
-        key = _key(revision, emb)
-        if keys.get(memory) == key:
-            continue
+        key = _key(revision, emb, text)
         row: dict[str, Any] = {"id": memory, "key": key, "terms": effect_field.term_bag(text or ""), "at": now}
         if emb is not None:
             row["model"], row["vector"] = emb[0], list(emb[1])
-        if row["terms"] or emb is not None:
-            rows.append(row)
-            keys[memory] = key
-    if rows:
-        path = signatures_path(root)
-        with _jsonl.locked(path):
-            for row in rows:
+        rows.append(row)
+    if not rows:
+        return 0
+    path = signatures_path(root)
+    written = 0
+    with _jsonl.locked(path):
+        _jsonl.discard_unterminated_tail(path)
+        with _INDEX_LOCK:
+            index = _load(path)
+            latest = {row["id"]: index[row["id"]] for row in rows if row["id"] in index}
+        for row in rows:
+            previous = latest.get(row["id"])
+            if previous is None and not row["terms"] and "vector" not in row:
+                continue
+            if previous is None or previous.key != row["key"] or previous.at < refresh:
                 _jsonl.append_row(path, row, fsync=durable)
-    return len(rows)
+                latest[row["id"]] = Signature(row["id"], row["key"], row["terms"], at=now)
+                written += 1
+    return written
 
 
 def forget(root: str, memories: Iterable[str]) -> list[str]:
@@ -197,7 +258,8 @@ def forget(root: str, memories: Iterable[str]) -> list[str]:
         hit = sorted({str(r.get("id")) for r in rows if r.get("id") in targets})
         if hit:
             _jsonl.write_rows(path, [r for r in rows if r.get("id") not in targets])
-            _INDEX.pop(path, None)
+            with _INDEX_LOCK:
+                _INDEX.pop(path, None)
     return hit
 
 

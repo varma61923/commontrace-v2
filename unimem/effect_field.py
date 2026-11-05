@@ -46,6 +46,7 @@ HELPS or HURTS, never withdraws or graduates anything, and never enters
 from __future__ import annotations
 
 import hashlib
+import heapq
 import importlib
 import json
 import math
@@ -53,6 +54,7 @@ import operator
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from numbers import Real
 from statistics import NormalDist
 from typing import Any
 
@@ -116,8 +118,21 @@ def _unit(weights: Mapping[str, float], scale: float = 1.0) -> Vector:
 
 
 def _dense_unit(values: Sequence[float], scale: float) -> tuple[float, ...]:
-    norm = math.sqrt(math.fsum(float(x) * float(x) for x in values))
-    return tuple(scale * float(x) / norm for x in values) if norm > 0 else ()
+    try:
+        if any(isinstance(x, bool) or not isinstance(x, Real) for x in values):
+            raise ValueError("embedding values must be finite numbers")
+        vector = tuple(float(x) for x in values)
+    except (TypeError, OverflowError):
+        raise ValueError("embedding values must be finite numbers") from None
+    if not all(math.isfinite(x) for x in vector):
+        raise ValueError("embedding values must be finite numbers")
+    largest = max(map(abs, vector), default=0.0)
+    if not largest:
+        return ()
+    # Scaling before squaring avoids overflow and underflow for finite vectors.
+    vector = tuple(x / largest for x in vector)
+    norm = math.sqrt(math.fsum(x * x for x in vector))
+    return tuple(scale * x / norm for x in vector)
 
 
 @dataclass(frozen=True)
@@ -192,25 +207,34 @@ class Kernel:
         Term similarity goes through an inverted index; embedding similarity is a
         dense product, through numpy when it is installed.
         """
+        if type(k) is not int or k < 0:
+            raise ValueError("neighbor count must be a non-negative integer")
         members = sorted(set(pool))
-        queries = list(queries)
+        queries = list(dict.fromkeys(queries))
+        if not k:
+            return {q: () for q in queries}
         postings: dict[str, list[tuple[str, float]]] = defaultdict(list)
         for memory in members:
             for term, w in self.vectors.get(memory, {}).items():
                 postings[term].append((memory, w))
-        scores: dict[str, dict[str, float]] = {q: defaultdict(float) for q in queries}
-        for q in queries:
-            for term, w in self.vectors.get(q, {}).items():
-                for memory, wm in postings.get(term, ()):
-                    scores[q][memory] += w * wm
-        for space in self.dense.values():
-            _dense_scores(space, queries, members, scores)
         out: dict[str, Neighbors] = {}
-        for q in queries:
-            ranked = sorted(
-                ((m, s) for m, s in scores[q].items() if s > 1e-9 and m != q), key=lambda item: (-item[1], item[0])
-            )
-            out[q] = tuple((m, round(min(1.0, s), 12)) for m, s in ranked[:k])
+        # Retain scores for a bounded query batch, rather than the entire Q*M fleet.
+        for start in range(0, len(queries), 128):
+            batch = queries[start : start + 128]
+            scores: dict[str, dict[str, float]] = {q: defaultdict(float) for q in batch}
+            for q in batch:
+                for term, w in self.vectors.get(q, {}).items():
+                    for memory, wm in postings.get(term, ()):
+                        scores[q][memory] += w * wm
+            for space in self.dense.values():
+                _dense_scores(space, batch, members, scores)
+            for q in batch:
+                ranked = heapq.nsmallest(
+                    k,
+                    ((m, s) for m, s in scores[q].items() if s > 1e-9 and m != q),
+                    key=lambda item: (-item[1], item[0]),
+                )
+                out[q] = tuple((m, round(min(1.0, s), 12)) for m, s in ranked)
         return out
 
     def digest(self) -> str:
@@ -237,22 +261,31 @@ def _dense_scores(
     ms = [m for m in members if m in space]
     if not qs or not ms:
         return
-    width = len(space[qs[0]])
-    qs = [q for q in qs if len(space[q]) == width]
-    ms = [m for m in ms if len(space[m]) == width]
     try:
         np: Any = importlib.import_module("numpy")
     except ImportError:
         for q in qs:
             vq = space[q]
             for m in ms:
-                scores[q][m] += math.fsum(x * y for x, y in zip(vq, space[m]))
+                if len(vq) == len(space[m]):
+                    scores[q][m] += math.fsum(x * y for x, y in zip(vq, space[m]))
         return
-    product = np.asarray([space[q] for q in qs], dtype=float) @ np.asarray([space[m] for m in ms], dtype=float).T
-    for i, q in enumerate(qs):
-        row = product[i]
-        for j in np.flatnonzero(row > 1e-9):
-            scores[q][ms[j]] += float(row[j])
+    by_width: dict[int, list[str]] = defaultdict(list)
+    for m in ms:
+        by_width[len(space[m])].append(m)
+    for width, members_of_width in by_width.items():
+        matching = [q for q in qs if len(space[q]) == width]
+        # Bound the temporary product independently of fleet size. Preserve signed
+        # contributions: a negative image cosine can cancel a positive text cosine.
+        for start in range(0, len(matching), 128):
+            batch = matching[start : start + 128]
+            query_matrix = np.asarray([space[q] for q in batch], dtype=float)
+            for offset in range(0, len(members_of_width), 512):
+                block = members_of_width[offset : offset + 512]
+                product = query_matrix @ np.asarray([space[m] for m in block], dtype=float).T
+                for i, q in enumerate(batch):
+                    for j in np.flatnonzero(product[i]):
+                        scores[q][block[j]] += float(product[i, j])
 
 
 @dataclass(frozen=True)

@@ -120,6 +120,35 @@ def write_json(path: str, value: Any) -> None:
     _replace(path, _write)
 
 
+def discard_unterminated_tail(path: str) -> None:
+    """Drop an interrupted final row from an unsigned journal, under its caller's lock.
+
+    Only newline-terminated rows are committed by the incremental reward/signature
+    readers. Signed journals must retain their own fail-closed recovery policy.
+    """
+    try:
+        fh = open(path, "r+b")
+    except FileNotFoundError:
+        return
+    with fh:
+        end = fh.seek(0, os.SEEK_END)
+        if not end:
+            return
+        fh.seek(end - 1)
+        if fh.read(1) == b"\n":
+            return
+        while end:
+            start = max(0, end - 8192)
+            fh.seek(start)
+            chunk = fh.read(end - start)
+            boundary = chunk.rfind(b"\n")
+            if boundary >= 0:
+                fh.truncate(start + boundary + 1)
+                return
+            end = start
+        fh.truncate(0)
+
+
 def append_row(path: str, row: dict[str, Any], *, fsync: bool = False, nofollow: bool = False) -> None:
     """Append one JSON object line to *path* in a single write.
 

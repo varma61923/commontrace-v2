@@ -263,6 +263,104 @@ def test_the_audit_reports_a_malformed_reward_row_instead_of_crashing(tmp_path):
     assert rewards.verify(root) == ["o1: unreadable reward"]
 
 
+def test_utility_scoring_stays_finite_at_float_boundaries():
+    terms = rewards.parse_utility(
+        {
+            "terms": {
+                "a": {"weight": 1e308, "low": -1e308, "high": 1e308},
+                "b": {"weight": 1e308},
+            }
+        }
+    )
+    assert rewards.score(terms, {"a": 0.0, "b": 0.5}) == pytest.approx(0.5)
+
+
+@pytest.mark.parametrize("draw,bit", [(float("nan"), True), (float("inf"), True), (0.5, "false")])
+def test_reward_audit_rejects_nonfinite_draws_and_nonboolean_bits(tmp_path, draw, bit):
+    root = str(tmp_path)
+    holdout_io.configure(root, rate=0.5, salt="audit")
+    rewards.record(root, "o1", reward=1.0)
+    from unimem import _jsonl
+
+    path = rewards.rewards_path(root)
+    row = _jsonl.read_rows(path)[0]
+    _jsonl.write_rows(path, [{**row, "draw": draw, "succeeded": bit}])
+    assert rewards.verify(root)
+
+
+def test_reward_load_does_not_expose_mutable_cache_rows(tmp_path):
+    root = str(tmp_path)
+    holdout_io.configure(root, rate=0.5, salt="cache")
+    rewards.record(root, "o1", reward=0.4)
+    rewards.load(root)["o1"]["reward"] = 0.9
+    assert rewards.load(root)["o1"]["reward"] == 0.4
+
+
+def test_reward_audit_sees_a_same_size_in_place_edit(tmp_path):
+    root = str(tmp_path)
+    holdout_io.configure(root, rate=0.5, salt="edited")
+    rewards.record(root, "o1", reward=0.4)
+    assert rewards.load(root)["o1"]["reward"] == 0.4
+    path = rewards.rewards_path(root)
+    with open(path, encoding="utf-8") as stream:
+        original = stream.read()
+    with open(path, "w", encoding="utf-8") as stream:
+        stream.write(original.replace('"reward": 0.4', '"reward": 1.4'))
+    assert rewards.verify(root) == ["o1: unreadable reward"]
+
+
+def test_power_loss_during_reward_append_does_not_swallow_the_retry(tmp_path):
+    root = str(tmp_path)
+    holdout_io.configure(root, rate=0.5, salt="partial")
+    rewards.record(root, "complete", reward=0.2)
+    with open(rewards.rewards_path(root), "ab") as stream:
+        stream.write(b'{"occasion_id": "interrupted", "reward":')
+    assert rewards.record(root, "interrupted", reward=0.6)["recorded"]
+    assert rewards.load(root)["interrupted"]["reward"] == 0.6
+    assert rewards.verify(root) == []
+
+
+def test_binary_outcome_cannot_override_an_interrupted_reward(tmp_path, monkeypatch):
+    root = str(tmp_path)
+    holdout_io.configure(root, rate=0.5, salt="commit")
+    original = holdout_io.record_outcome
+    monkeypatch.setattr(holdout_io, "record_outcome", lambda *_a, **_kw: (_ for _ in ()).throw(OSError("crash")))
+    with pytest.raises(OSError):
+        rewards.record(root, "o1", reward=1.0)
+    monkeypatch.setattr(holdout_io, "record_outcome", original)
+    with pytest.raises(holdout_io.ConflictingOutcome):
+        original(root, "o1", False)
+    assert rewards.record(root, "o1", reward=1.0)["repaired"]
+
+
+def test_refused_binary_memory_outcomes_never_update_learners(gw, monkeypatch):
+    from unimem import causal_policy, policy
+
+    g, root = gw
+    holdout_io.record_outcome(root, "o1", True)
+    seen = []
+    monkeypatch.setattr(policy, "outcome", lambda *_a: seen.append("policy"))
+    monkeypatch.setattr(causal_policy, "record_outcome", lambda *_a: seen.append("exploration"))
+    for value, status in [(False, 409), (0.5, 400), ("yes", 400)]:
+        assert call(g, "POST", "/v1/memory/outcome", {"occasion_id": "o1", "succeeded": value})[0] == status
+    assert seen == []
+
+
+def test_refused_local_binary_outcome_never_updates_learners(tmp_path, monkeypatch):
+    from unimem import causal_policy, policy
+    from unimem.client import MemoryClient
+
+    root = str(tmp_path)
+    memory = MemoryClient(root)
+    assert memory.outcome("o1", True)
+    seen = []
+    monkeypatch.setattr(policy, "outcome", lambda *_a: seen.append("policy"))
+    monkeypatch.setattr(causal_policy, "record_outcome", lambda *_a: seen.append("exploration"))
+    with pytest.raises(holdout_io.ConflictingOutcome):
+        memory.outcome("o1", False)
+    assert seen == []
+
+
 def test_the_python_api_takes_exactly_one_outcome(tmp_path):
     root = str(tmp_path)
     holdout_io.configure(root, rate=0.5, salt="api")

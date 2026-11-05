@@ -162,6 +162,7 @@ def test_nothing_is_withheld_until_an_experiment_is_started_on_purpose(root):
         ({"occasion_id": "o", "items": [{"id": "a", "meta": "x"}]}, "meta"),
         ({"occasion_id": "o", "items": [{"id": f"i{n}"} for n in range(201)]}, "longer than 200"),
         ({"occasion_id": "o", "items": [], "agent_id": "bad agent!"}, "agent_id"),
+        ({"occasion_id": "o", "items": [], "agent_id": "agent\n"}, "agent_id"),
         ({"occasion_id": "o", "items": [], "env": 5}, "env must be a string"),
         ({"occasion_id": "o"}, "query"),
     ],

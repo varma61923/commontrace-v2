@@ -42,7 +42,15 @@ def clock(monkeypatch):
 
 @pytest.mark.parametrize(
     "value, model",
-    [([], None), ([math.nan], None), ([True], None), ("0.1", None), ([0.0, 0.0], None), ([1.0], "bad label!")],
+    [
+        ([], None),
+        ([math.nan], None),
+        ([True], None),
+        ("0.1", None),
+        ([0.0, 0.0], None),
+        ([1.0], "bad label!"),
+        ([1.0], "clip\n"),
+    ],
 )
 def test_embeddings_are_validated(value, model):
     with pytest.raises(ValueError):
@@ -83,6 +91,78 @@ def test_a_batch_naming_one_memory_twice_records_it_once(tmp_path):
     with open(memory_signatures.signatures_path(root), encoding="utf-8") as fh:
         assert [json.loads(line)["key"] for line in fh] == ["r1|", "r2|"]
     assert memory_signatures.load(root)["a"].key == "r2|"
+
+
+def test_unversioned_text_changes_refresh_a_signature(tmp_path):
+    root = str(tmp_path)
+    assert memory_signatures.observe(root, [("a", "check grasp pose", None, None)]) == 1
+    assert memory_signatures.observe(root, [("a", "check grasp pose", None, None)]) == 0
+    assert memory_signatures.observe(root, [("a", "verify battery voltage", None, None)]) == 1
+    assert memory_signatures.load(root)["a"].terms == effect_field.term_bag("verify battery voltage")
+
+
+def test_a_contentless_revision_does_not_reuse_the_previous_content_kernel(tmp_path):
+    root = str(tmp_path)
+    memory_signatures.observe(root, [("a", "check grasp pose", "r1", None)])
+    assert memory_signatures.kernel(root, {}, [], [])[0].has("a")
+    assert memory_signatures.observe(root, [("a", None, "r2", None)]) == 1
+    assert not memory_signatures.kernel(root, {}, [], [])[0].has("a")
+
+
+def test_unchanged_but_recently_seen_memories_remain_forecast_candidates(tmp_path):
+    from unimem import _jsonl
+
+    root = str(tmp_path)
+    memory_signatures.observe(root, [("a", "check grasp pose", "r1", None)])
+    path = memory_signatures.signatures_path(root)
+    row = _jsonl.read_rows(path)[0]
+    row["at"] = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=31)).isoformat()
+    _jsonl.write_rows(path, [row])
+    assert memory_signatures.kernel(root, {}, [], [])[1] == []
+    memory_signatures.observe(root, [("a", "check grasp pose", "r1", None)])
+    assert memory_signatures.kernel(root, {}, [], [])[1] == ["a"]
+
+
+def test_signature_terms_cannot_mutate_the_cached_kernel(tmp_path):
+    root = str(tmp_path)
+    memory_signatures.observe(root, [("a", "check grasp pose", "r1", None)])
+    with pytest.raises(TypeError):
+        memory_signatures.load(root)["a"].terms["injected"] = 100
+
+
+def test_a_partial_signature_append_does_not_swallow_the_next_observation(tmp_path):
+    root = str(tmp_path)
+    memory_signatures.observe(root, [("a", "check grasp pose", "r1", None)])
+    with open(memory_signatures.signatures_path(root), "ab") as stream:
+        stream.write(b'{"id":"b","terms":')
+    assert memory_signatures.observe(root, [("b", "verify battery voltage", "r1", None)]) == 1
+    assert set(memory_signatures.load(root)) == {"a", "b"}
+
+
+def test_concurrent_signature_observers_do_not_append_duplicate_revisions(tmp_path, monkeypatch):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    root = str(tmp_path)
+    original = memory_signatures._key
+    barrier = threading.Barrier(2)
+
+    def synchronized(*args):
+        barrier.wait(timeout=5)
+        return original(*args)
+
+    monkeypatch.setattr(memory_signatures, "_key", synchronized)
+    with ThreadPoolExecutor(2) as executor:
+        futures = [
+            executor.submit(memory_signatures.observe, root, [("a", "check grasp pose", "r1", None)]) for _ in range(2)
+        ]
+        assert sorted(f.result(timeout=10) for f in futures) == [0, 1]
+
+
+@pytest.mark.parametrize("value", [[10**1000], [1.0, float("inf")]])
+def test_invalid_embedding_magnitudes_raise_validation_errors(value):
+    with pytest.raises(ValueError, match="finite"):
+        memory_signatures.embedding(value)
 
 
 def test_a_zero_norm_embedding_is_not_a_space_and_never_dilutes_the_words():

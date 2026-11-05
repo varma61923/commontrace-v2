@@ -32,13 +32,15 @@ occasion already on record is a conflict, as it is for binary outcomes.
 
 from __future__ import annotations
 
+import copy
 import datetime
 import hashlib
 import json
 import math
 import os
 import re
-from collections import defaultdict
+import threading
+from collections import OrderedDict, defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -52,6 +54,7 @@ TERM_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,63}$")
 BETTER = ("higher", "lower")
 REWARDS_NAME = "rewards.jsonl"
 UTILITY_NAME = "utility.json"
+MAX_CACHED_ROOTS = 128
 
 
 def _dir(root: str) -> str:
@@ -72,11 +75,23 @@ def _digest(value: Any) -> str:
 
 
 def _fraction(value: object, label: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{label} must be a finite number")
     if not 0.0 <= value <= 1.0:
         raise ValueError(f"{label} must be between 0 and 1")
     return float(value)
+
+
+def _number(value: object, label: str, *, boolean: bool = False) -> float:
+    if not isinstance(value, (int, float)) or (isinstance(value, bool) and not boolean):
+        raise ValueError(f"{label} must be a finite number")
+    try:
+        out = float(value)
+    except OverflowError:
+        raise ValueError(f"{label} must be a finite number") from None
+    if not math.isfinite(out):
+        raise ValueError(f"{label} must be a finite number")
+    return out
 
 
 # -- randomized rounding -------------------------------------------------------------------------
@@ -85,7 +100,7 @@ def _fraction(value: object, label: str) -> float:
 def draw(salt: str, occasion_id: str) -> float:
     """The occasion's uniform rounding draw in ``[0, 1)``, reproducible from the salt."""
     h = hashlib.sha256(DOMAIN + b"\0" + salt.encode("utf-8") + b"\0" + occasion_id.encode("utf-8")).digest()
-    return int.from_bytes(h[:8], "big") / 2.0**64
+    return min(int.from_bytes(h[:8], "big") / 2.0**64, math.nextafter(1.0, 0.0))
 
 
 def realize(salt: str, occasion_id: str, reward: float) -> bool:
@@ -108,7 +123,14 @@ class Term:
     better: str = "higher"
 
     def scale(self, value: float) -> float:
-        x = min(1.0, max(0.0, (value - self.low) / (self.high - self.low)))
+        if value <= self.low:
+            x = 0.0
+        elif value >= self.high:
+            x = 1.0
+        elif math.isfinite(self.high - self.low):
+            x = (value - self.low) / (self.high - self.low)
+        else:
+            x = (value / 2.0 - self.low / 2.0) / (self.high / 2.0 - self.low / 2.0)
         return x if self.better == "higher" else 1.0 - x
 
 
@@ -118,17 +140,15 @@ def parse_utility(spec: Mapping[str, Any]) -> dict[str, Term]:
     if not isinstance(terms, Mapping) or not 1 <= len(terms) <= MAX_TERMS:
         raise ValueError(f"utility needs 1 to {MAX_TERMS} terms")
     out: dict[str, Term] = {}
-    for name, raw in sorted(terms.items()):
-        if not isinstance(name, str) or not TERM_RE.match(name):
+    for name, raw in terms.items():
+        if not isinstance(name, str) or not TERM_RE.fullmatch(name):
             raise ValueError(f"utility term name {name!r} must be a short identifier")
         if not isinstance(raw, Mapping) or set(raw) - {"weight", "low", "high", "better"}:
             raise ValueError(f"utility term {name!r} takes weight, low, high and better")
         values = {}
         for key, default in (("weight", 1.0), ("low", 0.0), ("high", 1.0)):
             value = raw.get(key, default)
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
-                raise ValueError(f"utility term {name!r} {key} must be a finite number")
-            values[key] = float(value)
+            values[key] = _number(value, f"utility term {name!r} {key}")
         better = raw.get("better", "higher")
         if better not in BETTER:
             raise ValueError(f"utility term {name!r} better must be higher or lower")
@@ -154,9 +174,7 @@ def _metrics(metrics: Mapping[str, Any]) -> dict[str, float]:
     for name, value in metrics.items():
         if not isinstance(name, str) or not 1 <= len(name) <= 64:
             raise ValueError("metric names must be strings of 1 to 64 characters")
-        if not isinstance(value, (bool, int, float)) or not math.isfinite(value):
-            raise ValueError(f"metric {name!r} must be a finite number")
-        out[name] = float(value)
+        out[name] = _number(value, f"metric {name!r}", boolean=True)
     return out
 
 
@@ -166,8 +184,11 @@ def score(terms: Mapping[str, Term], metrics: Mapping[str, Any]) -> float:
     missing = sorted(set(terms) - set(values))
     if missing:
         raise ValueError("metrics are missing utility terms: " + ", ".join(missing))
-    total = math.fsum(t.weight for t in terms.values())
-    return min(1.0, max(0.0, math.fsum(t.weight * t.scale(values[n]) for n, t in terms.items()) / total))
+    if not terms:
+        raise ValueError("utility needs at least one term")
+    largest = max(t.weight for t in terms.values())
+    total = math.fsum(t.weight / largest for t in terms.values())
+    return min(1.0, max(0.0, math.fsum((t.weight / largest) * t.scale(values[n]) for n, t in terms.items()) / total))
 
 
 def configure(root: str, spec: Mapping[str, Any]) -> dict[str, Any]:
@@ -192,20 +213,51 @@ def utility(root: str) -> tuple[dict[str, Term], str] | None:
 # -- recording -----------------------------------------------------------------------------------
 
 
-_INDEX: dict[str, tuple[int, int, dict[str, dict[str, Any]]]] = {}  # path -> (inode, parsed bytes, rows)
+_INDEX: OrderedDict[str, tuple[tuple[int, ...], int, dict[str, dict[str, Any]]]] = OrderedDict()
+_INDEX_LOCK = threading.Lock()
+
+
+def _after_fork() -> None:
+    global _INDEX_LOCK
+    _INDEX_LOCK = threading.Lock()
+    _INDEX.clear()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_after_fork)
 
 
 def load(root: str) -> dict[str, dict[str, Any]]:
     """Every recorded reward by occasion (the first record wins). Appends are parsed incrementally."""
     path = rewards_path(root)
+    with _INDEX_LOCK:
+        return copy.deepcopy(_load(path))
+
+
+def committed_outcome(root: str, occasion: str) -> bool | None:
+    """Read one commitment without copying the entire reward index."""
+    path = rewards_path(root)
+    with _INDEX_LOCK:
+        row = _load(path).get(occasion)
+        if row is None:
+            return None
+        _fraction(row.get("reward"), "committed reward")
+        bit = row.get("succeeded")
+        if type(bit) is not bool:
+            raise ValueError("committed reward must have a boolean outcome")
+        return bit
+
+
+def _load(path: str) -> dict[str, dict[str, Any]]:
     try:
         st = os.stat(path)
     except FileNotFoundError:
         _INDEX.pop(path, None)
         return {}
     cached = _INDEX.get(path)
-    if cached is not None and cached[0] == st.st_ino and cached[1] <= st.st_size:
-        offset, out = cached[1], dict(cached[2])
+    stamp = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+    if cached is not None and cached[0][:2] == stamp[:2] and (cached[0] == stamp or cached[0][2] < st.st_size):
+        offset, out = cached[1], cached[2]
     else:
         offset, out = 0, {}
     if offset < st.st_size:
@@ -222,8 +274,11 @@ def load(root: str) -> dict[str, dict[str, Any]]:
             if isinstance(occasion, str) and occasion not in out:
                 out[occasion] = row
         offset += complete
-    _INDEX[path] = (st.st_ino, offset, out)
-    return dict(out)
+    _INDEX[path] = (stamp, offset, out)
+    _INDEX.move_to_end(path)
+    while len(_INDEX) > MAX_CACHED_ROOTS:
+        _INDEX.popitem(last=False)
+    return out
 
 
 def record(
@@ -268,15 +323,20 @@ def record(
     def result(bit: bool, recorded: bool, **extra: Any) -> dict[str, Any]:
         return {"occasion_id": occasion_id, "reward": reward, "succeeded": bit, "recorded": recorded, **extra}
 
-    with _jsonl.locked(path):
-        existing = load(root).get(occasion_id)
-        outcomes = holdout_io.read_outcomes(root)
+    # Binary and graded writers share this lock, including the repair path.
+    with _jsonl.locked(holdout_io.outcomes_log_path(root)), _jsonl.locked(path):
+        _jsonl.discard_unterminated_tail(path)
+        with _INDEX_LOCK:
+            existing = _load(path).get(occasion_id)
+        outcomes = holdout_io._outcomes_shared(holdout_io.outcomes_log_path(root))
         if existing is not None:
-            if abs(float(existing.get("reward", -1.0)) - reward) > 1e-12:
+            if _fraction(existing.get("reward"), "committed reward") != reward:
                 raise holdout_io.ConflictingOutcome(
                     f"occasion {occasion_id!r} already has reward {existing.get('reward')}; refusing to change it"
                 )
-            committed = bool(existing["succeeded"])
+            committed = existing.get("succeeded")
+            if type(committed) is not bool:
+                raise ValueError("committed reward must have a boolean outcome")
             if occasion_id not in outcomes:
                 holdout_io.record_outcome(root, occasion_id, committed, durable, secondary_metrics=secondary_metrics)
                 return result(committed, True, repaired=True)
@@ -342,11 +402,13 @@ def audit(root: str) -> Audit:
         checked += 1
         try:
             expected = realize(salt, occasion, row["reward"])
-            recorded_draw = float(row["draw"])
+            recorded_draw = _number(row["draw"], "draw")
+            if not 0.0 <= recorded_draw < 1.0 or type(row.get("succeeded")) is not bool:
+                raise ValueError("invalid rounding record")
         except (KeyError, TypeError, ValueError):
             problems.append(f"{occasion}: unreadable reward")
             continue
-        if bool(row.get("succeeded")) != expected or abs(recorded_draw - draw(salt, occasion)) > 1e-12:
+        if row["succeeded"] != expected or recorded_draw != draw(salt, occasion):
             problems.append(f"{occasion}: recorded bit is not the rounding of its reward")
         if occasion not in outcomes:
             interrupted.append(occasion)

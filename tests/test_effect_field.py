@@ -109,6 +109,66 @@ def test_dense_kernels_normalize_and_the_digest_commits_to_the_inputs():
     assert kernel.digest() == same.digest() != other.digest()
 
 
+def test_neighbors_match_pairwise_similarity_with_signed_embeddings_and_mixed_widths(monkeypatch):
+    bag = effect_field.term_bag("refund ledger invoice")
+    kernel = effect_field.Kernel.combined(
+        {"q": bag, "opposite": bag},
+        {
+            "q": ("model", [1.0, 0.0]),
+            "opposite": ("model", [-1.0, 0.0]),
+            "wide": ("model", [1.0, 0.0, 0.0]),
+            "peer": ("model", [2.0, 0.0, 0.0]),
+        },
+    )
+    queries = ["q", "q", "wide"]
+    pool = ["opposite", "peer"]
+    expected = {
+        q: tuple((m, round(kernel.similarity(q, m), 12)) for m in pool if kernel.similarity(q, m) > 1e-9)
+        for q in queries
+    }
+    accelerated = kernel.neighbors(queries, pool)
+    original = effect_field.importlib.import_module
+
+    def without_numpy(name):
+        if name == "numpy":
+            raise ImportError("core installation")
+        return original(name)
+
+    monkeypatch.setattr(effect_field.importlib, "import_module", without_numpy)
+    assert accelerated == kernel.neighbors(queries, pool) == expected
+
+
+def test_dense_normalization_handles_extreme_finite_magnitudes():
+    kernel = effect_field.Kernel.from_embeddings({"a": [1e308, 1e308], "b": [1e-300, 1e-300]})
+    assert kernel.has("a") and kernel.has("b")
+    assert kernel.similarity("a", "b") == pytest.approx(1.0)
+
+
+def test_dense_kernel_accepts_native_encoder_float32_vectors():
+    np = pytest.importorskip("numpy")
+    kernel = effect_field.Kernel.from_embeddings({"a": np.asarray([3, 4], dtype=np.float32), "b": [6.0, 8.0]})
+    assert kernel.similarity("a", "b") == pytest.approx(1.0)
+
+
+def test_dense_neighbor_batches_preserve_exact_topk_across_both_boundaries():
+    rng = random.Random(71)
+    queries = [f"q{i}" for i in range(129)]
+    members = [f"m{i}" for i in range(513)]
+    kernel = effect_field.Kernel.from_embeddings(
+        {m: [rng.uniform(-1, 1) for _ in range(8)] for m in [*queries, *members]}
+    )
+    actual = kernel.neighbors(queries, members, 3)
+    for q in queries:
+        expected = sorted(((m, kernel.similarity(q, m)) for m in members), key=lambda item: (-item[1], item[0]))[:3]
+        assert actual[q] == tuple((m, round(s, 12)) for m, s in expected)
+
+
+@pytest.mark.parametrize("vector", [[float("nan")], [float("inf")], [10**1000], [True]])
+def test_dense_kernel_rejects_invalid_values(vector):
+    with pytest.raises(ValueError, match="finite"):
+        effect_field.Kernel.from_embeddings({"a": vector})
+
+
 # -- transfer --------------------------------------------------------------------------------------
 
 

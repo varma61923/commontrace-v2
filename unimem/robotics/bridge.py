@@ -68,9 +68,12 @@ class HTTPGateway:
                 raise ValueError("gateway returned a non-object")
             return value
         except HTTPError as exc:
-            if exc.code in REFUSALS:
-                raise GatewayRefused(exc.code, _error_code(exc)) from None
-            raise ConnectionError("robot gateway request failed; outcome remains queued for retry") from None
+            try:
+                if exc.code in REFUSALS:
+                    raise GatewayRefused(exc.code, _error_code(exc)) from None
+                raise ConnectionError("robot gateway request failed; outcome remains queued for retry") from None
+            finally:
+                exc.close()
         except Exception:
             raise ConnectionError("robot gateway request failed; outcome remains queued for retry") from None
 

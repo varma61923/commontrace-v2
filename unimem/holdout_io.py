@@ -359,21 +359,30 @@ def record_outcome(
     fp.text(occasion_id, "occasion")
     if not isinstance(succeeded, bool):
         raise TypeError(f"succeeded must be a bool, got {type(succeeded).__name__}")
-    if secondary_metrics is not None:
-        from unimem import sycophancy_io
+    from unimem import _jsonl, rewards
 
-        sycophancy_io.record_metrics(root, occasion_id, secondary_metrics)
     path = outcomes_log_path(root)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with frontmatter.locked(path):
+    with _jsonl.locked(path):
+        commitment = rewards.committed_outcome(root, occasion_id)
+        if commitment is not None and commitment is not succeeded:
+            raise ConflictingOutcome(f"occasion {occasion_id!r} already has a committed reward; refusing to change it")
         existing = _outcomes_shared(path).get(occasion_id)
         if existing is not None:
             if existing == succeeded:
+                if secondary_metrics is not None:
+                    from unimem import sycophancy_io
+
+                    sycophancy_io.record_metrics(root, occasion_id, secondary_metrics)
                 return False
             raise ConflictingOutcome(
                 f"occasion {occasion_id!r} is already recorded as "
                 f"{'succeeded' if existing else 'failed'}; refusing to change it"
             )
+        if secondary_metrics is not None:
+            from unimem import sycophancy_io
+
+            sycophancy_io.record_metrics(root, occasion_id, secondary_metrics)
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
         _append_lines(
             path,
