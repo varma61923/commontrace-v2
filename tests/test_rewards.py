@@ -142,8 +142,10 @@ def test_a_reward_is_recorded_once_and_never_rewrites_an_outcome(tmp_path):
     holdout_io.record_outcome(root, "o2", True)
     with pytest.raises(holdout_io.ConflictingOutcome, match="binary outcome"):
         rewards.record(root, "o2", reward=1.0)
-    with pytest.raises(ValueError, match="not both"):
+    with pytest.raises(ValueError, match="exactly one"):
         rewards.record(root, "o3", reward=0.5, metrics={"x": 1})
+    with pytest.raises(ValueError, match="exactly one"):
+        rewards.record(root, "o3")
     with pytest.raises(ValueError, match="utility"):
         rewards.record(root, "o3", metrics={"x": 1})
     assert holdout_io.read_outcomes(root) == {"o1": first["succeeded"], "o2": True}

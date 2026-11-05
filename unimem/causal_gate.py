@@ -768,13 +768,6 @@ def store_kernel(root: str, measured: Iterable[str]) -> tuple[effect_field.Kerne
     return memory_signatures.kernel(root, texts, measured, active)
 
 
-def _field_mode(root: str) -> bool:
-    from unimem import allocation, holdout_io
-
-    current = allocation.active(root, holdout_io.load_config(root).salt)
-    return current is not None and current.policy.get("mode") == allocation.MODE_FIELD
-
-
 def plan_rates(
     root: str, floor: float, *, field: bool = False
 ) -> tuple[dict[str, float], dict[str, dict[str, float]], dict]:
@@ -845,11 +838,13 @@ def report(
     sources = sources_for(root, lessons | set(candidates))
     findings = drift(rows, alpha=alpha, min_arm=min_arm, practical=practical)
     gated, resets = forget_before_drift(rows, findings)
-    use_field = _field_mode(root) if field is None else field
+    from unimem import allocation, attribution
+
+    use_field = allocation.field_mode(root) if field is None else field
     field_model = fit(gated, sources, kernel=kernel, candidates=candidates, context_transfer=True)
     model = field_model if use_field else fit(gated, sources)
     lesson_rates, context_rates = rates(model, floor)
-    from unimem import attribution
+    field_off_policy = asdict(evaluate(rows, sources, floor=floor, kernel=kernel))
 
     by_lesson: dict[str, list[Row]] = defaultdict(list)
     for r in gated:
@@ -866,7 +861,7 @@ def report(
         "model": model.to_dict(),
         "proposed_rates": {"lessons": lesson_rates, "contexts": context_rates, "floor": floor, "drift_resets": resets},
         "drift": [asdict(d) for d in findings],
-        "off_policy": asdict(evaluate(rows, sources, floor=floor, kernel=kernel if use_field else None)),
+        "off_policy": field_off_policy if use_field else asdict(evaluate(rows, sources, floor=floor)),
         "effect_field": {
             **(transfer.summary() if transfer is not None else {}),
             "used_by_gate": use_field,
@@ -881,7 +876,7 @@ def report(
             ],
             "lookalikes": [asdict(x) for x in effect_field.lookalikes(estimates, kernel, practical=practical)],
             "context_field": field_model.context_summary(),
-            "off_policy": asdict(evaluate(rows, sources, floor=floor, kernel=kernel)),
+            "off_policy": field_off_policy,
         },
         "note": (
             "Posteriors are empirical-Bayes allocation weights, not proofs; "
@@ -951,10 +946,14 @@ def render(out: Mapping[str, Any]) -> str:
 def _render_field(section: Mapping[str, Any]) -> list[str]:
     if not section.get("verdict"):
         return []
-    gain = section.get("lpd_gain")
+    gain, z = section.get("lpd_gain"), section.get("z")
     detail = (
         f"over {section['measured']} measured memories with a witness"
-        + ("" if gain is None else f", predictive gain {gain:+.3f} nats/memory, z {section['z']:.2f}")
+        + (
+            ""
+            if gain is None
+            else f", predictive gain {gain:+.3f} nats/memory, z " + ("unbounded" if z is None else f"{z:.2f}")
+        )
         + f" (needs {section['threshold']:.2f})"
     )
     used = (

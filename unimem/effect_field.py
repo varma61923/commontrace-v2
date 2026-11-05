@@ -151,24 +151,22 @@ class Kernel:
         embeddings: Mapping[str, tuple[str, Sequence[float]]] | None = None,
     ) -> Kernel:
         """TF-IDF over hashed term `bags`, joined with `embeddings` (memory -> (model, vector))."""
-        embeddings = embeddings or {}
+        units = {m: (model, _dense_unit(vector, 1.0)) for m, (model, vector) in (embeddings or {}).items()}
+        units = {m: (model, unit) for m, (model, unit) in units.items() if unit}
         df = Counter(term for bag in bags.values() for term in bag)
         n = len(bags)
         idf = {term: math.log((1.0 + n) / (1.0 + d)) + 1.0 for term, d in df.items()}
         spaces = Counter({m: 1 for m, bag in bags.items() if bag})
-        for m, (_model, vector) in embeddings.items():
-            if vector:
-                spaces[m] += 1
+        spaces.update(units.keys())
         vectors = {
             m: _unit({t: (1.0 + math.log(c)) * idf[t] for t, c in bag.items() if c > 0}, 1.0 / math.sqrt(spaces[m]))
             for m, bag in bags.items()
             if bag
         }
         dense: dict[str, dict[str, tuple[float, ...]]] = defaultdict(dict)
-        for m, (model, vector) in embeddings.items():
-            unit = _dense_unit(vector, 1.0 / math.sqrt(spaces[m])) if vector else ()
-            if unit:
-                dense[model][m] = unit
+        for m, (model, unit) in units.items():
+            scale = 1.0 / math.sqrt(spaces[m])
+            dense[model][m] = tuple(scale * x for x in unit)
         kind = KERNEL_LEXICAL + "".join(f"+{model}" for model in sorted(dense))
         return cls(kind, vectors, dict(dense))
 
@@ -472,7 +470,7 @@ class Field:
             "share": self.share,
             "measured": self.measured,
             "lpd_gain": None if self.lpd_gain is None else round(self.lpd_gain, 6),
-            "z": None if self.z is None else round(self.z, 4),
+            "z": None if self.z is None or not math.isfinite(self.z) else round(self.z, 4),
             "threshold": round(self.threshold, 4),
         }
 

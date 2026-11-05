@@ -215,7 +215,7 @@ def _run(root: str, clock, rng: random.Random, effects: dict[str, float], start:
         clock.now += datetime.timedelta(seconds=30)
 
 
-def test_thompson_field_schedules_forecast_new_lessons_and_the_run_still_audits(tmp_path, clock):
+def test_thompson_field_schedules_forecast_new_lessons_and_the_run_still_audits(tmp_path, clock, monkeypatch):
     root = str(tmp_path)
     rng = random.Random(21)
     texts, effects = corpus(rng)
@@ -249,11 +249,29 @@ def test_thompson_field_schedules_forecast_new_lessons_and_the_run_still_audits(
         integrity.SEVERITY_INVALIDATES
     )
 
+    assert allocation.field_mode(root) and not allocation.field_mode(root, "another-experiment")
+    evaluated = []
+    evaluate = causal_gate.evaluate
+    monkeypatch.setattr(causal_gate, "evaluate", lambda *a, **kw: evaluated.append(kw) or evaluate(*a, **kw))
     out = causal_gate.report(root)
     section = out["effect_field"]
     assert section["used_by_gate"] is True and section["verdict"] == "VALIDATED"
     assert "field" in out["model"] and section["off_policy"]["eval_occasions"] > 0
-    assert causal_gate.report(root, field=False)["effect_field"]["used_by_gate"] is False
+    assert out["off_policy"] == section["off_policy"] and len(evaluated) == 1  # the field gate is scored once
+    plain = causal_gate.report(root, field=False)
+    assert plain["effect_field"]["used_by_gate"] is False and len(evaluated) == 3
+    assert [call.get("kernel") is None for call in evaluated] == [False, False, True]
+
+
+def test_an_unbounded_z_is_reported_as_strict_json_and_rendered():
+    field = effect_field.Field(effect_field.VALIDATED, "lexical", measured=12, lpd_gain=0.2, z=float("inf"))
+    summary = field.summary()
+    assert summary["z"] is None and json.loads(json.dumps(summary, allow_nan=False)) == summary
+    [line, *_] = causal_gate._render_field({**summary, "used_by_gate": True})
+    assert "z unbounded" in line and "VALIDATED" in line
+    finite = effect_field.Field(effect_field.NOT_VALIDATED, "lexical", measured=12, lpd_gain=-0.1, z=-1.234567)
+    assert finite.summary()["z"] == -1.2346
+    assert "z -1.23" in causal_gate._render_field({**finite.summary(), "used_by_gate": False})[0]
 
 
 def test_legacy_thompson_policies_hash_exactly_as_before():

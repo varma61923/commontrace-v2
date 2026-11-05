@@ -163,6 +163,16 @@ def active(root: str, salt: str, now: datetime.datetime | None = None) -> Schedu
     return in_force(history(root), salt, now)
 
 
+def field_mode(root: str, salt: str | None = None) -> bool:
+    """Is a ``thompson-field`` schedule in force? `salt` defaults to the experiment's own."""
+    if salt is None:
+        from unimem import holdout_io
+
+        salt = holdout_io.load_config(root).salt
+    current = active(root, salt)
+    return current is not None and current.policy.get("mode") == MODE_FIELD
+
+
 def _publish(
     root: str,
     *,

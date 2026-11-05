@@ -240,7 +240,7 @@ def record(
     `secondary_metrics` are passed to the outcomes log exactly as for a binary outcome.
     """
     if (reward is None) == (metrics is None):
-        raise ValueError("give a reward or metrics, not both")
+        raise ValueError("give exactly one of reward or metrics")
     if not isinstance(occasion_id, str) or not occasion_id.strip():
         raise ValueError("occasion_id must be a non-empty string")
     from unimem import frontier_protocol as fp

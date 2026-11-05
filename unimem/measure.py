@@ -217,7 +217,6 @@ class CausalMemory:
         assignments: list[dict] = []
         if ids and config.running:
             if record:
-                self._observe_signatures(keyed, revisions)
                 withheld = holdout_io.assign_and_log(
                     self._root,
                     ids,
@@ -230,6 +229,7 @@ class CausalMemory:
                     context=context,
                     relevance=relevance or None,
                 )
+                self._observe_signatures(keyed, revisions, config.salt)
             else:
                 withheld, assignments = holdout_io.plan_assignments(
                     self._root,
@@ -255,11 +255,11 @@ class CausalMemory:
             },
         )
 
-    def _observe_signatures(self, keyed: list[tuple[str, Any]], revisions: dict[str, str | None]) -> None:
+    def _observe_signatures(self, keyed: list[tuple[str, Any]], revisions: dict[str, str | None], salt: str) -> None:
         """Record content signatures of the randomized memories while the effect field is in use."""
         from unimem import memory_signatures
 
-        if not memory_signatures.enabled(self._root):
+        if not memory_signatures.enabled(self._root, salt):
             return
         rows = []
         for item_id, item in keyed:

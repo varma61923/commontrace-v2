@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import json
 import math
 import os
 import random
@@ -71,7 +72,24 @@ def test_recording_follows_field_mode_or_an_explicit_switch(tmp_path):
     memory_signatures.set_recording(root, False)
     assert not memory_signatures.enabled(root)
     allocation.enable(root, allocation.Policy(mode=allocation.MODE_FIELD), now=T0 - datetime.timedelta(minutes=1))
-    assert memory_signatures.enabled(root)
+    assert memory_signatures.enabled(root) and memory_signatures.enabled(root, "s")
+    assert not memory_signatures.enabled(root, "another-experiment")
+
+
+def test_a_batch_naming_one_memory_twice_records_it_once(tmp_path):
+    root = str(tmp_path)
+    rows = [("a", "re-verify the grasp pose", "r1", None)] * 2 + [("a", "re-verify the grasp pose", "r2", None)]
+    assert memory_signatures.observe(root, rows) == 2
+    with open(memory_signatures.signatures_path(root), encoding="utf-8") as fh:
+        assert [json.loads(line)["key"] for line in fh] == ["r1|", "r2|"]
+    assert memory_signatures.load(root)["a"].key == "r2|"
+
+
+def test_a_zero_norm_embedding_is_not_a_space_and_never_dilutes_the_words():
+    bag = effect_field.term_bag("pick the red cube")
+    k = effect_field.Kernel.combined({"a": bag, "b": bag}, {"a": ("clip", [0.0, 0.0]), "b": ("clip", ())})
+    assert k.kind == "lexical-tfidf-v2" and k.dense == {}
+    assert k.similarity("a", "b") == pytest.approx(1.0)
 
 
 def test_the_canonical_erasure_cascade_removes_signatures(tmp_path):

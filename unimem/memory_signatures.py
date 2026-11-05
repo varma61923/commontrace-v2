@@ -105,13 +105,13 @@ def set_recording(root: str, on: bool) -> None:
             pass
 
 
-def enabled(root: str) -> bool:
+def enabled(root: str, salt: str | None = None) -> bool:
+    """Should recall record signatures? `salt` saves a config read when the caller already has it."""
     if os.path.exists(os.path.join(_dir(root), RECORDING_NAME)):
         return True
-    from unimem import allocation, holdout_io
+    from unimem import allocation
 
-    current = allocation.active(root, holdout_io.load_config(root).salt)
-    return current is not None and current.policy.get("mode") == allocation.MODE_FIELD
+    return allocation.field_mode(root, salt)
 
 
 _INDEX: dict[str, tuple[int, int, dict[str, Signature]]] = {}  # path -> (inode, parsed bytes, latest by memory)
@@ -165,18 +165,19 @@ def observe(
     durable: bool = False,
 ) -> int:
     """Record (memory, text, revision, embedding) signatures that are new or changed; returns how many."""
-    known = load(root)
+    keys = {memory: sig.key for memory, sig in load(root).items()}
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     rows = []
     for memory, text, revision, emb in items:
         key = _key(revision, emb)
-        if memory in known and known[memory].key == key:
+        if keys.get(memory) == key:
             continue
         row: dict[str, Any] = {"id": memory, "key": key, "terms": effect_field.term_bag(text or ""), "at": now}
         if emb is not None:
             row["model"], row["vector"] = emb[0], list(emb[1])
         if row["terms"] or emb is not None:
             rows.append(row)
+            keys[memory] = key
     if rows:
         path = signatures_path(root)
         with _jsonl.locked(path):
