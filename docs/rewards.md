@@ -25,6 +25,7 @@ The same outcome can be sent through any surface:
 |---|---|
 | HTTP gateway | `POST /v1/outcome` with `{"occasion_id", "reward"}` or `{"occasion_id", "metrics"}` |
 | Python | `CausalMemory.record_outcome(id, reward=0.8)`; `MemoryClient.outcome(id, reward=0.8)` |
+| MCP agents | the `record_reward` tool, with the `occasion_id` used for `retrieve` |
 | Frameworks | `unimem.integrations.langgraph.record_outcome(..., reward=)`; `pydantic_ai.record_outcome(..., reward=)` |
 | Robots | `RobotBridge.finish(id, reward=0.7)` or `finish(id, metrics={...})`; the durable `OutcomeQueue` keeps graded outcomes while offline; ROS `/task/end` envelopes accept `reward` or `metrics` |
 
