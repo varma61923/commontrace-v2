@@ -277,6 +277,73 @@ def _dense_scores(
             scores[q][ms[j]] += float(row[j])
 
 
+@dataclass(frozen=True)
+class CellKernel:
+    """Similarity between (memory, context) cells: content similarity times context similarity.
+
+    Content similarity comes from a memory `Kernel` (a memory is identical to itself;
+    memories without a content vector match only themselves). Context similarity is
+    the share of ``/``-separated components two contexts agree on, padded so that
+    short labels match nothing else. A product of positive-semidefinite kernels is
+    positive semidefinite, so a skill variant on ``jaw/depot/pick`` can learn from its
+    siblings on ``jaw/yard/pick`` while a different skill on ``suction/lab/pick``
+    teaches it almost nothing.
+    """
+
+    content: Kernel | None
+    cells: Mapping[str, tuple[str, str]]  # cell id -> (memory, context)
+    width: int = 1
+
+    @classmethod
+    def build(cls, content: Kernel | None, cells: Mapping[str, tuple[str, str]]) -> CellKernel:
+        width = max((len(context.split("/")) for _m, context in cells.values()), default=1)
+        return cls(content, dict(cells), width)
+
+    @property
+    def kind(self) -> str:
+        return (self.content.kind if self.content is not None else "identity") + "*" + KERNEL_CONTEXT
+
+    def has(self, cell: str) -> bool:
+        return cell in self.cells
+
+    def _context(self, a: str, b: str) -> float:
+        if a == b:
+            return 1.0
+        pa, pb = a.split("/"), b.split("/")
+        return sum(1 for i in range(min(len(pa), len(pb))) if pa[i] == pb[i]) / self.width
+
+    def _memory(self, a: str, b: str) -> float:
+        if a == b:
+            return 1.0
+        return self.content.similarity(a, b) if self.content is not None else 0.0
+
+    def similarity(self, a: str, b: str) -> float:
+        (ma, ca), (mb, cb) = self.cells[a], self.cells[b]
+        return self._memory(ma, mb) * self._context(ca, cb)
+
+    def neighbors(self, queries: Iterable[str], pool: Iterable[str], k: int = NEIGHBORS) -> dict[str, Neighbors]:
+        """Each query cell's `k` most similar pool cells: its own memory's other contexts and its
+        content neighbours' contexts."""
+        by_memory: dict[str, list[str]] = defaultdict(list)
+        for cell in sorted(set(pool)):
+            by_memory[self.cells[cell][0]].append(cell)
+        queries = list(queries)
+        memories = sorted({self.cells[q][0] for q in queries})
+        near = self.content.neighbors(memories, sorted(by_memory), NEIGHBORS) if self.content is not None else {}
+        out: dict[str, Neighbors] = {}
+        for q in queries:
+            memory, context = self.cells[q]
+            scored = []
+            for other, weight in ((memory, 1.0), *near.get(memory, ())):
+                for cell in by_memory.get(other, ()):
+                    if cell != q:
+                        s = weight * self._context(context, self.cells[cell][1])
+                        if s > 1e-9:
+                            scored.append((cell, round(min(1.0, s), 12)))
+            out[q] = tuple(sorted(scored, key=lambda item: (-item[1], item[0]))[:k])
+        return out
+
+
 # -- Gaussian-process transfer -------------------------------------------------------------------
 
 
@@ -313,25 +380,33 @@ def _transfer(
     hood: _Neighborhood,
     power: int,
     share: float,
-    tau2: float,
+    scale: float,
+    scales: Mapping[str, float],
     residual: Mapping[str, float],
     noise: Mapping[str, float],
 ) -> tuple[float, float]:
-    """(shift of the prior mean, reduction of the prior variance) from the witnesses' residuals."""
+    """(shift of the prior mean, reduction of the prior variance) from the witnesses' residuals.
+
+    Item i's deviation has prior sd `scales[i]` (`scale` for the query); a `share` of its
+    variance is the field, with covariance ``share * s_i * s_j * k_ij ** power``.
+    """
     if share <= 0.0 or not hood.ids:
         return 0.0, 0.0
-    s2, r2 = share * tau2, (1.0 - share) * tau2
+    sd = [scales[m] for m in hood.ids]
     n = len(hood.ids)
     a = [
-        [s2 + r2 + noise[hood.ids[i]] + JITTER if i == j else s2 * hood.among[i][j] ** power for j in range(n)]
+        [
+            sd[i] ** 2 + noise[hood.ids[i]] + JITTER if i == j else share * sd[i] * sd[j] * hood.among[i][j] ** power
+            for j in range(n)
+        ]
         for i in range(n)
     ]
     low = _cholesky(a)
     if low is None:
         return 0.0, 0.0
-    lc = _forward(low, [s2 * s**power for s in hood.to_query])
+    lc = _forward(low, [share * scale * sd[j] * s**power for j, s in enumerate(hood.to_query)])
     ly = _forward(low, [residual[m] for m in hood.ids])
-    return math.fsum(x * y for x, y in zip(lc, ly)), min(s2, math.fsum(x * x for x in lc))
+    return math.fsum(x * y for x, y in zip(lc, ly)), min(share * scale * scale, math.fsum(x * x for x in lc))
 
 
 def _log_normal(x: float, mean: float, variance: float) -> float:
@@ -354,6 +429,10 @@ class Field:
     _hoods: dict[str, _Neighborhood] = field(default_factory=dict, repr=False)
     _residual: dict[str, float] = field(default_factory=dict, repr=False)
     _noise: dict[str, float] = field(default_factory=dict, repr=False)
+    _scales: dict[str, float] = field(default_factory=dict, repr=False)
+
+    def _scale(self, memory: str) -> float:
+        return self._scales.get(memory, math.sqrt(self.tau2))
 
     @property
     def validated(self) -> bool:
@@ -372,7 +451,13 @@ class Field:
         if not self.validated:
             return base_mean, base_var
         shift, reduction = _transfer(
-            self._hoods.get(memory, _EMPTY), self.power, self.share, self.tau2, self._residual, self._noise
+            self._hoods.get(memory, _EMPTY),
+            self.power,
+            self.share,
+            self._scale(memory),
+            self._scales,
+            self._residual,
+            self._noise,
         )
         return base_mean + shift, max(base_var - reduction, JITTER)
 
@@ -392,7 +477,7 @@ class Field:
 _EMPTY = _Neighborhood((), (), ())
 
 
-def _hood(kernel: Kernel, neighbors: Neighbors) -> _Neighborhood:
+def _hood(kernel: Kernel | CellKernel, neighbors: Neighbors) -> _Neighborhood:
     ids = tuple(m for m, _s in neighbors)
     among = tuple(tuple(1.0 if a == b else kernel.similarity(a, b) for b in ids) for a in ids)
     return _Neighborhood(ids, tuple(s for _m, s in neighbors), among)
@@ -402,12 +487,14 @@ def fit(
     estimates: Mapping[str, tuple[float, float]],
     bases: Mapping[str, tuple[float, float]],
     tau2: float,
-    kernel: Kernel,
+    kernel: Kernel | CellKernel,
     *,
     candidates: Iterable[str] = (),
     k: int = NEIGHBORS,
     powers: Sequence[int] = POWERS,
     baseline: Mapping[str, tuple[float, float]] | None = None,
+    scales: Mapping[str, float] | None = None,
+    targets: Iterable[str] | None = None,
 ) -> Field:
     """Fit and validate the field over measured `estimates` (memory -> (effect, variance)).
 
@@ -415,21 +502,34 @@ def fit(
     memory and every candidate; `tau2` is the gate's between-memory variance. The
     validation threshold is Bonferroni-corrected over ``len(powers) * len(SHARES)``.
     `baseline` is the prior used when the field does not validate, if it differs
-    from `bases`; the field must beat that prior, not merely its own base.
+    from `bases`; the field must beat that prior, not merely its own base. `scales`
+    gives an item its own prior sd of deviation (default ``sqrt(tau2)`` for all).
+    `targets` restricts which measured items are scored and given priors (default: all);
+    every measured item still serves as a witness.
     """
     reference = bases if baseline is None else baseline
     threshold = validate_z(len(powers))
     measured = sorted(m for m in estimates if m in bases and kernel.has(m))
-    queries = sorted(set(measured) | {c for c in candidates if c in bases and kernel.has(c)})
+    wanted = set(measured) if targets is None else set(targets) & set(measured)
+    queries = sorted(wanted | {c for c in candidates if c in bases and kernel.has(c)})
     hoods = {q: _hood(kernel, nb) for q, nb in kernel.neighbors(queries, measured, k).items()}
     residual = {m: estimates[m][0] - bases[m][0] for m in measured}
     noise = {m: estimates[m][1] for m in measured}
+    default = math.sqrt(max(tau2, 0.0))
+    scale = {q: float((scales or {}).get(q, default)) for q in {*queries, *measured}}
     out = Field(
-        INSUFFICIENT, kernel.kind, tau2=tau2, threshold=threshold, _hoods=hoods, _residual=residual, _noise=noise
+        INSUFFICIENT,
+        kernel.kind,
+        tau2=tau2,
+        threshold=threshold,
+        _hoods=hoods,
+        _residual=residual,
+        _noise=noise,
+        _scales=scale,
     )
-    scored = [m for m in measured if hoods[m].ids]
+    scored = [m for m in sorted(wanted) if hoods[m].ids]
     out.measured = len(scored)
-    if len(scored) < MIN_MEASURED or tau2 <= 0.0:
+    if len(scored) < MIN_MEASURED or tau2 <= 0.0 or min(scale.values(), default=0.0) <= 0.0:
         return out
 
     def gains(power: int, share: float) -> list[float]:
@@ -437,7 +537,7 @@ def fit(
         for m in scored:
             effect, variance = estimates[m]
             mean, var = bases[m]
-            shift, reduction = _transfer(hoods[m], power, share, tau2, residual, noise)
+            shift, reduction = _transfer(hoods[m], power, share, scale[m], scale, residual, noise)
             row.append(
                 _log_normal(effect, mean + shift, max(var - reduction, JITTER) + variance)
                 - _log_normal(effect, reference[m][0], reference[m][1] + variance)

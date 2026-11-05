@@ -259,18 +259,17 @@ class Model:
     rows: int = 0
     transfer: effect_field.Field | None = None
     forecasts: dict[str, Posterior] = field(default_factory=dict)  # unmeasured memories the field informs
-    context_transfer: dict[str, effect_field.Field] = field(default_factory=dict)  # memory -> its context field
+    context_transfer: dict[str, effect_field.Field] = field(default_factory=dict)  # memory -> its fleet field
 
     def context_summary(self) -> dict[str, Any] | None:
         if not self.context_transfer:
             return None
         fields = self.context_transfer
         return {
-            "kernel": effect_field.KERNEL_CONTEXT,
+            "kernel": next(iter(fields.values())).kernel,
             "memories": len(fields),
             "validated": sorted(m for m, f in fields.items() if f.validated),
             "insufficient": sum(f.verdict == effect_field.INSUFFICIENT for f in fields.values()),
-            "fields": {m: f.summary() for m, f in sorted(fields.items()) if f.verdict != effect_field.INSUFFICIENT},
         }
 
     def posterior(self, lesson: str, context: str = "") -> Posterior | None:
@@ -310,6 +309,57 @@ def _posterior(
         sd=sd,
         p_helps=_norm_cdf(mean / sd) if sd > 0 else float(mean > 0),
     )
+
+
+def _fleet_field(
+    kernel: effect_field.Kernel | None,
+    cell_base: dict[tuple[str, str], tuple[float, float]],
+    cell_raw: Mapping[tuple[str, str], Contrast | None],
+    tau2_context: float,
+) -> dict[str, effect_field.Field]:
+    """A field for each memory over its (memory, context) cells, updating `cell_base` in place.
+
+    Similarity is content x context components (``embodiment/site/skill``,
+    ``model/task``): a cell's witnesses are its own memory's other contexts and
+    content-similar memories' contexts. Each memory's deviations are scaled by its own
+    between-context sd, and each memory is validated on its own cells against the plain
+    context prior, so one memory's structure is neither diluted by nor imposed on another's.
+    """
+    by_memory: dict[str, list[tuple[float, float]]] = defaultdict(list)
+    cells_of: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    for cell in cell_base:
+        cells_of[cell[0]].append(cell)
+        est = cell_raw.get(cell)
+        if est is not None:
+            by_memory[cell[0]].append((est.effect, est.variance))
+    tau2_of = {}
+    for memory in cells_of:
+        own = _dersimonian_laird([by_memory[memory]])
+        tau2_of[memory] = max(CONTEXT_TAU_FLOOR**2, own) if own is not None else tau2_context
+    key = {cell: f"{cell[0]}\x1e{cell[1]}" for cell in cell_base}
+    bases = {key[c]: (mean, var - tau2_context + tau2_of[c[0]]) for c, (mean, var) in cell_base.items()}
+    baseline = {key[c]: b for c, b in cell_base.items()}
+    scales = {key[c]: math.sqrt(tau2_of[c[0]]) for c in cell_base}
+    estimates = {key[c]: (est.effect, est.variance) for c in cell_base if (est := cell_raw.get(c)) is not None}
+    cell_kernel = effect_field.CellKernel.build(kernel, {k: c for c, k in key.items()})
+    fields: dict[str, effect_field.Field] = {}
+    for memory, cells in sorted(cells_of.items()):
+        targets = [key[c] for c in cells]
+        fields[memory] = fleet = effect_field.fit(
+            estimates,
+            bases,
+            tau2_of[memory],
+            cell_kernel,
+            candidates=[t for t in targets if t not in estimates],
+            powers=(1,),  # component overlap has no sharpness to tune
+            baseline=baseline,
+            scales=scales,
+            targets=targets,
+        )
+        if fleet.validated:
+            for c in cells:
+                cell_base[c] = fleet.prior(key[c], *bases[key[c]])
+    return fields
 
 
 def _counts(rows: Sequence[Row]) -> tuple[int, int]:
@@ -432,37 +482,7 @@ def fit(
             cell_base[(lesson, ctx)] = (base_mean, base_var + tau2_context)
             cell_rows_of[(lesson, ctx)] = cell_rows
     if context_transfer and cell_base:
-        # Contexts of one memory that share components (embodiment, site, skill, model) share deviations.
-        # Each memory gets its own field and its own validation: one memory's structure must not be
-        # diluted by, or imposed on, another's.
-        by_memory: dict[str, list[tuple[str, str]]] = defaultdict(list)
-        for cell in cell_base:
-            by_memory[cell[0]].append(cell)
-        for lesson, lesson_cells in sorted(by_memory.items()):
-            estimates = {
-                ctx: (est.effect, est.variance)
-                for (_l, ctx) in lesson_cells
-                if (est := cell_raw[(lesson, ctx)]) is not None
-            }
-            own = _dersimonian_laird([list(estimates.values())])
-            tau2_own = max(CONTEXT_TAU_FLOOR**2, own) if own is not None else tau2_context
-            context = effect_field.fit(
-                estimates,
-                {
-                    ctx: (cell_base[(lesson, ctx)][0], cell_base[(lesson, ctx)][1] - tau2_context + tau2_own)
-                    for (_l, ctx) in lesson_cells
-                },
-                tau2_own,
-                effect_field.Kernel.contexts({ctx: (lesson, ctx) for (_l, ctx) in lesson_cells}),
-                candidates=[ctx for (_l, ctx) in lesson_cells if cell_raw[(lesson, ctx)] is None],
-                powers=(1,),  # component overlap has no sharpness to tune
-                baseline={ctx: cell_base[(lesson, ctx)] for (_l, ctx) in lesson_cells},
-            )
-            model.context_transfer[lesson] = context
-            if context.validated:
-                for _l, ctx in lesson_cells:
-                    mean, var = cell_base[(lesson, ctx)]
-                    cell_base[(lesson, ctx)] = context.prior(ctx, mean, var - tau2_context + tau2_own)
+        model.context_transfer = _fleet_field(kernel, cell_base, cell_raw, tau2_context)
     for (lesson, ctx), (prior_mean, prior_var) in cell_base.items():
         mean, variance = _combine(prior_mean, prior_var, cell_raw[(lesson, ctx)])
         model.contexts[(lesson, ctx)] = _posterior(
@@ -797,8 +817,7 @@ def plan_rates(
         basis["field"] = {**model.transfer.summary(), "kernel_digest": kernel.digest()}
         basis["forecasts"] = {lesson: round(p.p_helps, 4) for lesson, p in sorted(model.forecasts.items())}
     if model.context_transfer:
-        context_summary = model.context_summary()
-        basis["context_field"] = {k: v for k, v in (context_summary or {}).items() if k != "fields"}
+        basis["context_field"] = model.context_summary()
     return lesson_rates, context_rates, basis
 
 
@@ -950,8 +969,8 @@ def _render_field(section: Mapping[str, Any]) -> list[str]:
     if ctx:
         validated = ctx["validated"]
         lines.append(
-            "    context field (shared embodiment/site/skill or model/task components): validated for "
-            f"{len(validated)} of {ctx['memories'] - ctx['insufficient']} memories with enough contexts"
+            f"    fleet field over contexts ({ctx['kernel']}): validated for {len(validated)} of "
+            f"{ctx['memories'] - ctx['insufficient']} memories with enough contexts"
             + (f" ({', '.join(validated[:5])})" if validated else "")
         )
     for f in section.get("forecasts", []):

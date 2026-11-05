@@ -14,6 +14,7 @@ LOCAL_TOOLS = (
     "store_status",
     "experiment_status",
     "causal_gate_report",
+    "record_reward",
     "pooled_effect",
     "skill_catalog",
     "skill_evidence",

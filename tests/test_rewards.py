@@ -308,3 +308,19 @@ def test_the_client_sdk_and_framework_integrations_report_graded_outcomes(tmp_pa
     assert pydantic_ai.record_outcome(Memory(), Result(), reward=0.4)
     assert pydantic_ai.record_outcome(Memory(), Result(), succeeded=False)
     assert calls == [("run-7", {"reward": 0.4}), ("run-7", {"succeeded": False})]
+
+
+def test_an_mcp_agent_reports_a_graded_outcome(tmp_path):
+    pytest.importorskip("mcp", reason="needs the MCP SDK")
+    from tests.test_mcp_server import call
+    from unimem import mcp_server
+
+    root = str(tmp_path)
+    holdout_io.configure(root, rate=0.5, salt="mcp")
+    server = mcp_server.build_server(root)
+    out = call(server, "record_reward", occasion_id="session-9", reward=0.9)
+    assert out["recorded"] is True and out["reward"] == 0.9
+    assert holdout_io.read_outcomes(root)["session-9"] == rewards.realize("mcp", "session-9", 0.9)
+    assert "error" in json.dumps(call(server, "record_reward", occasion_id="session-9", reward=0.1)).lower()
+    assert "error" in json.dumps(call(server, "record_reward", occasion_id="s2", reward=1.5)).lower()
+    assert "error" in json.dumps(call(server, "record_reward", occasion_id="s2", metrics={"x": 1})).lower()

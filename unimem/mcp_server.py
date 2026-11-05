@@ -2003,6 +2003,29 @@ def build_server(root: str, *, allow_approval: bool = True):
         return _ok(**out)
 
     @mcp.tool()
+    def record_reward(occasion_id: str, reward: float | None = None, metrics: dict | None = None) -> dict:
+        """Report how a task went as a graded outcome, under the occasion_id you retrieved with.
+
+        Use this when pass/fail loses information: the fraction of tests that pass,
+        an evaluator's score, a reviewer's 1-5 rating rescaled to [0, 1]. Give
+        `reward` in [0, 1], or `metrics` (named numbers such as
+        {"tests_passed": 0.9, "minutes": 12}) when the store has a configured
+        utility (`unimem reward configure`). The reward is recorded through audited
+        randomized rounding, so every effect estimate becomes an unbiased effect on
+        expected reward. One answer per occasion; a different one is refused.
+        """
+        from unimem import holdout_io, rewards
+
+        try:
+            with _quiet():
+                out = rewards.record(root, occasion_id, reward=reward, metrics=metrics)
+        except holdout_io.ConflictingOutcome as exc:
+            return _err(str(exc))
+        except (TypeError, ValueError) as exc:
+            return _err(str(exc))
+        return _ok(**out)
+
+    @mcp.tool()
     def experiment_status() -> dict:
         """Is the randomized holdout you are feeding actually going to answer?
 

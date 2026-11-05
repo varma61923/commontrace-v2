@@ -74,32 +74,46 @@ resolved assignment yet are forecast at the next plan, like unmeasured active
 lessons. Recording costs about 1 ms per recall for eight 384-dimension items.
 It happens only in field mode.
 
-## Context field: one memory across a fleet
+## Fleet field: one memory across a fleet
 
 The causal gate estimates each memory's effect per occasion context, but a
 heterogeneous fleet spreads its evidence thin. Three embodiments at four sites
 are twelve contexts, and a new site starts with almost nothing. In
-`thompson-field` mode a second field is fitted for each memory over its own
-contexts:
+`thompson-field` mode each memory gets a second field over its
+(memory, context) cells:
 
-- **Kernel.** Similarity is the share of `/`-separated components two contexts
+- **Similarity.** Similarity is content similarity times context similarity.
+  Context similarity is the share of `/`-separated components two contexts
   agree on. `RobotBridge` contexts are `embodiment/site/skill`, so
-  `jaw/depot/pick` is two-thirds similar to `jaw/yard/pick` and one-third
-  similar to `suction/depot/pick`. For language agents a `model/task` label
-  works the same way. Labels without components only match themselves, and
-  contexts of different memories never compare.
+  `jaw/depot/pick` is two-thirds similar to `jaw/yard/pick`. For language
+  agents a `model/task` label works the same way.
+- **Witnesses.** A cell borrows from its own memory's other contexts and from
+  content-similar memories in similar contexts. A skill variant on a jaw
+  gripper therefore learns from its siblings on other jaw grippers.
 - **Variance.** Each memory uses its own between-context variance
   (DerSimonian-Laird over its contexts).
-- **Validation.** Each memory is validated separately: leave-one-out
-  predictive density must beat the gate's plain context prior at alpha 0.05,
-  Bonferroni-corrected over the 5 shares. A memory whose contexts do not
-  follow their components keeps the plain prior exactly.
+- **Validation.** Each memory is validated on its own cells:
+  leave-one-out predictive density must beat the gate's plain context prior at
+  alpha 0.05, Bonferroni-corrected over the 5 shares. A memory whose contexts
+  do not follow their components keeps the plain prior exactly.
 
-In a simulated fleet (one memory that helps jaw grippers by 25 points, hurts
-suction by 25 points and does nothing for dexterous hands; 30 occasions per
-context), the field validated in 4 of 5 seeds. In those seeds the error of the
-per-context effects fell by 5% to 46%. With effects shuffled across contexts
-it validated in none of 5.
+Measured, with seeded simulations:
+
+- **One memory, sparse contexts.** One memory helps jaw grippers by 25 points,
+  hurts suction by 25 points and does nothing for dexterous hands, with 30
+  occasions per context. The field validated in 4 of 5 seeds and cut the error
+  of the per-context effects by 5% to 46% in those seeds. With effects shuffled
+  across contexts it validated in none of 5.
+- **Siblings.** Two content-similar memories each have only 12 occasions per
+  context. The target memory's field validates, uses its sibling's cells as
+  witnesses, and estimates more accurately than it can alone.
+- **Whole fleet.** `python -m benchmarks.fleet_learning_bench --reps 10` runs
+  embedding-only skills, graded rewards and embodiment-specific effects over
+  12 contexts, with new variants every era. `thompson-field` beats `thompson`
+  by +0.16 ± 0.07 task-progress points per 100 tasks (paired; regret 12.75 vs
+  12.91 per 100 against an oracle). That gain is real but small. In this
+  scenario most effects are context-specific and most cells hold a handful of
+  occasions, so the honest system mostly declines to transfer.
 
 ## Validation
 

@@ -119,8 +119,9 @@ def test_near_duplicate_witnesses_count_as_about_one_and_never_exceed_the_field_
     ten = effect_field._Neighborhood(ids, (1.0,) * 10, tuple((1.0,) * 10 for _ in ids))
     residual = {m: 0.1 for m in ("a", *ids)}
     noise = {m: 1e-4 for m in ("a", *ids)}
-    shift1, red1 = effect_field._transfer(one, 1, share, tau2, residual, noise)
-    shift10, red10 = effect_field._transfer(ten, 1, share, tau2, residual, noise)
+    sd = {m: tau2**0.5 for m in residual}
+    shift1, red1 = effect_field._transfer(one, 1, share, tau2**0.5, sd, residual, noise)
+    shift10, red10 = effect_field._transfer(ten, 1, share, tau2**0.5, sd, residual, noise)
     assert red1 < red10 <= share * tau2
     assert red10 < 1.1 * red1  # independent copies would have cut the variance ten times
     assert 0.0 < shift1 < shift10 < 0.1
@@ -342,7 +343,7 @@ def test_sparse_robot_contexts_borrow_from_contexts_sharing_an_embodiment():
         assert model.context_transfer["gripper-tip"].validated, model.context_transfer["gripper-tip"].summary()
         assert _context_rmse(model, truth) < 0.8 * _context_rmse(causal_gate.fit(rows), truth)
         summary = model.to_dict()["context_field"]
-        assert "gripper-tip" in summary["validated"] and summary["kernel"] == "context-components-v1"
+        assert "gripper-tip" in summary["validated"] and summary["kernel"] == "identity*context-components-v1"
 
 
 def test_the_context_field_stays_out_when_components_do_not_predict_effects():
@@ -352,3 +353,29 @@ def test_the_context_field_stays_out_when_components_do_not_predict_effects():
         assert not model.context_transfer["gripper-tip"].validated
         plain = causal_gate.fit(rows)
         assert model.contexts[("gripper-tip", "jaw/depot/pick")] == plain.contexts[("gripper-tip", "jaw/depot/pick")]
+
+
+def test_content_similar_memories_lend_each_other_context_evidence():
+    rng = random.Random(9)
+    contexts = [f"{e}/{s}/pick" for e in EMBODIMENT_EFFECT for s in SITES]
+    rows, i = [], 0
+    for memory in ("regrasp-a", "regrasp-b"):
+        for c in contexts:
+            for _ in range(12):  # too sparse for either memory alone
+                shown = rng.random() >= 0.5
+                effect = EMBODIMENT_EFFECT[c.split("/")[0]] if shown else 0.0
+                rows.append(Row(memory, f"o{i}", shown, rng.random() < 0.5 + effect, 0.5, c))
+                i += 1
+    siblings = effect_field.Kernel.from_embeddings({"regrasp-a": [1.0, 0.1], "regrasp-b": [1.0, 0.12]}, "enc")
+    alone = causal_gate.fit(rows, context_transfer=True)
+    together = causal_gate.fit(rows, kernel=siblings, context_transfer=True)
+    truth = {c: EMBODIMENT_EFFECT[c.split("/")[0]] for c in contexts}
+
+    def rmse(model):
+        errors = [(model.contexts[("regrasp-a", c)].mean - t) ** 2 for c, t in truth.items()]
+        return (sum(errors) / len(errors)) ** 0.5
+
+    assert together.context_transfer["regrasp-a"].validated
+    witnesses = together.context_transfer["regrasp-a"].witnesses("regrasp-a\x1ejaw/depot/pick")
+    assert any(w.startswith("regrasp-b\x1e") for w, _s in witnesses)
+    assert rmse(together) < rmse(alone)
