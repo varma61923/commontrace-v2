@@ -238,6 +238,11 @@ def record(
     """Record a graded outcome (`reward`, or `metrics` scored by the utility) for `occasion_id`.
 
     `secondary_metrics` are passed to the outcomes log exactly as for a binary outcome.
+
+    The reward row is the commitment and is written before the binary outcome. A crash
+    between the two leaves a reward without an outcome; recording the same reward again
+    finishes the write (``repaired``), so an edge device that loses power mid-write and
+    replays its queue converges instead of being refused forever.
     """
     if (reward is None) == (metrics is None):
         raise ValueError("give exactly one of reward or metrics")
@@ -259,26 +264,30 @@ def record(
     u = draw(salt, occasion_id)
     succeeded = u < reward
     path = rewards_path(root)
+
+    def result(bit: bool, recorded: bool, **extra: Any) -> dict[str, Any]:
+        return {"occasion_id": occasion_id, "reward": reward, "succeeded": bit, "recorded": recorded, **extra}
+
     with _jsonl.locked(path):
         existing = load(root).get(occasion_id)
+        outcomes = holdout_io.read_outcomes(root)
         if existing is not None:
-            if abs(float(existing.get("reward", -1.0)) - reward) <= 1e-12:
-                return {
-                    "occasion_id": occasion_id,
-                    "reward": reward,
-                    "succeeded": bool(existing["succeeded"]),
-                    "recorded": False,
-                }
-            raise holdout_io.ConflictingOutcome(
-                f"occasion {occasion_id!r} already has reward {existing.get('reward')}; refusing to change it"
-            )
-        if occasion_id in holdout_io.read_outcomes(root):
+            if abs(float(existing.get("reward", -1.0)) - reward) > 1e-12:
+                raise holdout_io.ConflictingOutcome(
+                    f"occasion {occasion_id!r} already has reward {existing.get('reward')}; refusing to change it"
+                )
+            committed = bool(existing["succeeded"])
+            if occasion_id not in outcomes:
+                holdout_io.record_outcome(root, occasion_id, committed, durable, secondary_metrics=secondary_metrics)
+                return result(committed, True, repaired=True)
+            if outcomes[occasion_id] != committed:
+                raise holdout_io.ConflictingOutcome(
+                    f"occasion {occasion_id!r} has a binary outcome that disagrees with its recorded reward"
+                )
+            return result(committed, False)
+        if occasion_id in outcomes:
             raise holdout_io.ConflictingOutcome(
                 f"occasion {occasion_id!r} already has a binary outcome; a reward cannot be attached afterwards"
-            )
-        if not holdout_io.record_outcome(root, occasion_id, succeeded, durable, secondary_metrics=secondary_metrics):
-            raise holdout_io.ConflictingOutcome(
-                f"occasion {occasion_id!r} received a binary outcome concurrently; the reward was not attached"
             )
         row: dict[str, Any] = {
             "occasion_id": occasion_id,
@@ -291,23 +300,46 @@ def record(
         if metrics is not None:
             row["metrics"] = dict(sorted(_metrics(metrics).items()))
             row["utility_digest"] = utility_digest
+        if secondary_metrics is not None:
+            from unimem import sycophancy_io
+
+            sycophancy_io.record_metrics(root, occasion_id, secondary_metrics)
         _jsonl.append_row(path, row, fsync=durable)
-    return {"occasion_id": occasion_id, "reward": reward, "succeeded": succeeded, "recorded": True}
+        if not holdout_io.record_outcome(root, occasion_id, succeeded, durable):
+            raise holdout_io.ConflictingOutcome(
+                f"occasion {occasion_id!r} received a binary outcome concurrently; `unimem reward verify` reports it"
+            )
+    return result(succeeded, True)
 
 
 # -- audit and reward-scale effects --------------------------------------------------------------
 
 
-def verify(root: str) -> list[str]:
-    """Problems with the recorded rewards; empty when every bit is the rounding of its reward."""
+@dataclass(frozen=True)
+class Audit:
+    """What `audit` could check. Rewards from an earlier salt cannot be re-derived, so they are
+    counted as `unverifiable`, never silently passed."""
+
+    checked: int
+    unverifiable: int
+    interrupted: tuple[str, ...]
+    problems: tuple[str, ...]
+
+
+def audit(root: str) -> Audit:
+    """Recompute every rounding draw under the current salt and check it against the outcomes log."""
     salt = holdout_io.load_config(root).salt
     current = salt_digest(salt)
     outcomes = holdout_io.read_outcomes(root)
     problems: list[str] = []
+    interrupted: list[str] = []
     digests: set[str] = set()
+    checked = unverifiable = 0
     for occasion, row in sorted(load(root).items()):
         if row.get("salt_digest") != current:
+            unverifiable += 1
             continue
+        checked += 1
         try:
             expected = realize(salt, occasion, row["reward"])
             recorded_draw = float(row["draw"])
@@ -316,13 +348,21 @@ def verify(root: str) -> list[str]:
             continue
         if bool(row.get("succeeded")) != expected or abs(recorded_draw - draw(salt, occasion)) > 1e-12:
             problems.append(f"{occasion}: recorded bit is not the rounding of its reward")
-        if outcomes.get(occasion) != expected:
+        if occasion not in outcomes:
+            interrupted.append(occasion)
+            problems.append(f"{occasion}: reward has no outcome yet (interrupted write; record it again to finish)")
+        elif outcomes[occasion] != expected:
             problems.append(f"{occasion}: outcomes log disagrees with the rounded reward")
         if row.get("utility_digest"):
             digests.add(str(row["utility_digest"]))
     if len(digests) > 1:
         problems.append(f"{len(digests)} different utilities scored this experiment's rewards")
-    return problems
+    return Audit(checked, unverifiable, tuple(interrupted), tuple(problems))
+
+
+def verify(root: str) -> list[str]:
+    """Problems with the recorded rewards; empty when every bit is the rounding of its reward."""
+    return list(audit(root).problems)
 
 
 def effects(root: str) -> list[dict[str, Any]]:

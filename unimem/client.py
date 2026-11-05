@@ -480,19 +480,21 @@ class MemoryClient:
 
         A graded outcome feeds the reflect policy and the exploration learner at full
         resolution and the holdout experiment through audited randomized rounding
-        (`unimem.rewards`). Against a remote gateway, post graded outcomes to
-        ``POST /v1/outcome``.
+        (`unimem.rewards`), locally or through a remote gateway's memory API.
         """
         if sum(v is not None for v in (succeeded, reward, metrics)) != 1:
             raise ValueError("give exactly one of succeeded, reward or metrics")
         occasion_id = self._occasion(occasion_id)
-        if succeeded is None:
-            return self._graded_outcome(occasion_id, reward, metrics, secondary_metrics)
         if self.url:
-            body = {"occasion_id": occasion_id, "succeeded": succeeded}
+            body: dict = {"occasion_id": occasion_id}
+            for key, value in (("succeeded", succeeded), ("reward", reward), ("metrics", metrics)):
+                if value is not None:
+                    body[key] = value
             if secondary_metrics is not None:
                 body["secondary_metrics"] = secondary_metrics
             return self._request("outcome", body)["recorded"]
+        if succeeded is None:
+            return self._graded_outcome(occasion_id, reward, metrics, secondary_metrics)
         from unimem import causal_policy, holdout_io, policy
 
         if not isinstance(succeeded, bool):
@@ -511,8 +513,6 @@ class MemoryClient:
     def _graded_outcome(
         self, occasion_id: str, reward: float | None, metrics: dict | None, secondary_metrics: dict | None
     ) -> bool:
-        if self.url:
-            raise ValueError("graded outcomes on a remote client go to POST /v1/outcome with `reward` or `metrics`")
         from unimem import causal_policy, policy, rewards
 
         out = rewards.record(

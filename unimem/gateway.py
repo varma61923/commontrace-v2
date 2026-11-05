@@ -1448,22 +1448,39 @@ class Gateway:
                     if ":" in occasion_id:
                         raise ApiError(403, "agent_scope", "occasion belongs to another principal")
                     occasion_id = memory_control.occasion(occasion_id, principal=principal["id"])
-                if not isinstance(body.get("succeeded"), bool):
-                    raise _bad("succeeded must be boolean")
+                if sum(body.get(k) is not None for k in ("succeeded", "reward", "metrics")) != 1:
+                    raise _bad("give exactly one of succeeded, reward or metrics")
                 from unimem import causal_policy, policy
 
+                if body.get("succeeded") is None:
+                    from unimem import rewards
+
+                    graded = rewards.record(
+                        self.root,
+                        occasion_id,
+                        reward=body.get("reward"),
+                        metrics=body.get("metrics"),
+                        durable=self.durable,
+                        secondary_metrics=body.get("secondary_metrics"),
+                    )
+                    policy.outcome(self.root, occasion_id, graded["reward"])
+                    explored = causal_policy.record_outcome(self.root, occasion_id, graded["reward"])
+                    return {
+                        "recorded": bool(graded["recorded"]) or explored,
+                        "succeeded": graded["succeeded"],
+                        "reward": graded["reward"],
+                        **({"repaired": True} if graded.get("repaired") else {}),
+                    }
                 if body.get("secondary_metrics") is not None:
                     from unimem import sycophancy_io
 
                     sycophancy_io.record_metrics(self.root, occasion_id, body["secondary_metrics"])
                 policy.outcome(self.root, occasion_id, float(body["succeeded"]))
                 explored = causal_policy.record_outcome(self.root, occasion_id, float(body["succeeded"]))
-                return {
-                    "recorded": holdout_io.record_outcome(
-                        self.root, occasion_id, body["succeeded"], secondary_metrics=body.get("secondary_metrics")
-                    )
-                    or explored
-                }
+                written = holdout_io.record_outcome(
+                    self.root, occasion_id, body["succeeded"], secondary_metrics=body.get("secondary_metrics")
+                )
+                return {"recorded": written or explored, "succeeded": body["succeeded"]}
             if operation == "search":
                 return {
                     "results": REGISTRY.retrieve(
@@ -1491,6 +1508,8 @@ class Gateway:
                 return memory_control.proposal(
                     self.root, body.get("text", ""), sources=body.get("sources", []), context=context
                 )
+        except holdout_io.ConflictingOutcome as exc:
+            raise ApiError(409, "conflicting_outcome", str(exc)) from None
         except (ValueError, TypeError) as exc:
             from unimem import team_isolation
 

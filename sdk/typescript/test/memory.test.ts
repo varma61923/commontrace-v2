@@ -18,6 +18,28 @@ test("memory API pins principal scope and refuses redirects", async () => {
   await assert.rejects(() => redirect.add("fact"), /302/);
 });
 
+test("outcomes are binary, a graded reward or utility metrics, and refused when ambiguous", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const memory = new MemoryClient({url: "http://127.0.0.1:9000", fetch: async (url, init) => {
+    assert.equal(String(url), "http://127.0.0.1:9000/v1/memory/outcome");
+    bodies.push(JSON.parse(String(init?.body)));
+    return new Response(JSON.stringify({recorded: true, succeeded: true}));
+  }});
+  assert.equal(await memory.outcome("o1", true), true);
+  assert.equal(await memory.outcome("o2", {reward: 0.75}), true);
+  assert.equal(await memory.outcome("o3", {metrics: {tests_passed: 9, minutes: 12}}), true);
+  assert.deepEqual(bodies.map(({context: _context, ...body}) => body), [
+    {occasion_id: "o1", succeeded: true},
+    {occasion_id: "o2", reward: 0.75},
+    {occasion_id: "o3", metrics: {tests_passed: 9, minutes: 12}},
+  ]);
+  for (const bad of [{reward: 1.5}, {reward: Number.NaN}, {metrics: {}}, {metrics: {x: Infinity}},
+                     {reward: 0.5, metrics: {x: 1}}, {}] as never[]) {
+    await assert.rejects(() => memory.outcome("o4", bad), /reward|metrics|outcome/);
+  }
+  assert.equal(bodies.length, 3);
+});
+
 test("malformed action authorization and nonobject responses fail closed", async () => {
   const memory = new MemoryClient({url: "http://127.0.0.1:9000", fetch: async () =>
     new Response('{"allowed":"false"}')});

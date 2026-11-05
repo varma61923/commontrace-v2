@@ -63,11 +63,23 @@ def run(args: argparse.Namespace) -> int:
             )
             return 0
         if args.reward_cmd == "verify":
-            problems = rewards.verify(root)
-            print("[unimem] rewards verify: " + ("OK" if not problems else f"{len(problems)} problem(s)"))
-            for problem in problems:
+            report = rewards.audit(root)
+            print(
+                "[unimem] rewards verify: "
+                + ("OK" if not report.problems else f"{len(report.problems)} problem(s)")
+                + f" ({report.checked} checked"
+                + (
+                    f", {report.unverifiable} recorded under an earlier salt and not checkable"
+                    if report.unverifiable
+                    else ""
+                )
+                + ")"
+            )
+            for problem in report.problems:
                 print("  " + problem)
-            return 1 if problems else 0
+            if report.interrupted:
+                print(f"  {len(report.interrupted)} interrupted write(s): record the same reward again to finish them")
+            return 1 if report.problems else 0
         rows = rewards.effects(root)
         if args.json:
             print(json.dumps(rows, indent=2, sort_keys=True))

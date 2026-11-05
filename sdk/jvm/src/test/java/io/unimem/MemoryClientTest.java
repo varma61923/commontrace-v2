@@ -2,6 +2,7 @@ package io.unimem;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 import java.util.List;
+import java.util.Map;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
 import java.net.InetSocketAddress;
@@ -122,6 +123,41 @@ class MemoryClientTest {
                 assertThrows(IllegalArgumentException.class, () -> java.reapDueRecords(limit));
                 assertThrows(IllegalArgumentException.class, () -> kotlin.reapDueRecords(limit));
             }
+            assertTrue(requests.isEmpty());
+        } finally { server.stop(0); }
+    }
+    @Test void gradedOutcomesUseTheMemoryOutcomeContract() throws Exception {
+        var json = new ObjectMapper();
+        var requests = new LinkedBlockingQueue<com.fasterxml.jackson.databind.JsonNode>();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/v1/memory/outcome", exchange -> {
+            requests.add(json.readTree(exchange.getRequestBody()));
+            byte[] reply = "{\"recorded\":true,\"succeeded\":false,\"reward\":0.25}".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, reply.length);
+            exchange.getResponseBody().write(reply);
+            exchange.close();
+        });
+        server.start();
+        try {
+            String url = "http://127.0.0.1:" + server.getAddress().getPort();
+            var java = new MemoryClient(url, "secret", "robot-7", List.of());
+            var kotlin = new KotlinMemoryClient(url, "secret", "robot-7", List.of());
+            for (boolean useKotlin : List.of(false, true)) {
+                var graded = useKotlin ? kotlin.outcomeReward("pick-1", 0.25) : java.outcomeReward("pick-1", 0.25);
+                assertTrue(graded.get("recorded").asBoolean());
+                var sent = requests.poll();
+                assertEquals(0.25, sent.get("reward").asDouble());
+                assertFalse(sent.has("succeeded"));
+                var metrics = Map.of("progress", 0.7, "energy_wh", 30.0);
+                if (useKotlin) kotlin.outcomeMetrics("pick-2", metrics); else java.outcomeMetrics("pick-2", metrics);
+                assertEquals(json.readTree("{\"energy_wh\":30.0,\"progress\":0.7}"), requests.poll().get("metrics"));
+            }
+            for (double reward : new double[] {-0.1, 1.1, Double.NaN}) {
+                assertThrows(IllegalArgumentException.class, () -> java.outcomeReward("pick-3", reward));
+            }
+            assertThrows(IllegalArgumentException.class, () -> java.outcomeMetrics("pick-3", Map.of()));
+            assertThrows(IllegalArgumentException.class,
+                () -> kotlin.outcomeMetrics("pick-3", Map.of("force", Double.POSITIVE_INFINITY)));
             assertTrue(requests.isEmpty());
         } finally { server.stop(0); }
     }

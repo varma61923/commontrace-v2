@@ -1,7 +1,7 @@
 //! Scoped memory API shared by the local binary and hosted HTTP gateway.
 use reqwest::{blocking::Client as Http, redirect::Policy, Url};
 use serde_json::{Value, json};
-use std::{error::Error, io::Read, time::Duration};
+use std::{collections::BTreeMap, error::Error, io::Read, time::Duration};
 pub type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 pub struct MemoryClient { base: String, token: String, context: Vec<String>, http: Http }
 impl MemoryClient {
@@ -41,6 +41,18 @@ impl MemoryClient {
     }
     pub fn outcome(&self,occasion:&str,succeeded:bool)->Result<Value>{
         self.call("outcome",json!({"occasion_id":occasion,"succeeded":succeeded}))
+    }
+    /// Report a graded outcome in [0, 1], realized by the gateway's audited randomized rounding.
+    pub fn outcome_reward(&self,occasion:&str,reward:f64)->Result<Value>{
+        if !(0.0..=1.0).contains(&reward){return Err("Reward must be a finite number between 0 and 1".into());}
+        self.call("outcome",json!({"occasion_id":occasion,"reward":reward}))
+    }
+    /// Report named measurements that the store's configured utility scores into a reward.
+    pub fn outcome_metrics(&self,occasion:&str,metrics:&BTreeMap<String,f64>)->Result<Value>{
+        if metrics.is_empty() || metrics.len()>64 || metrics.values().any(|v| !v.is_finite()) {
+            return Err("Metrics must hold 1 to 64 finite numbers".into());
+        }
+        self.call("outcome",json!({"occasion_id":occasion,"metrics":metrics}))
     }
     /// Store a versioned envelope, preserving its payload and provenance.
     pub fn put_record(&self,record:Value)->Result<Value>{
@@ -162,6 +174,44 @@ impl MemoryClient {
         assert!(client.turn("session","query",json!([])).is_err());
         assert!(client.put_record(json!([])).is_err());
         server.join().unwrap();
+    }
+    #[test] fn graded_outcomes_use_the_memory_outcome_contract_and_refuse_bad_values() {
+        let listener=TcpListener::bind("127.0.0.1:0").unwrap();
+        let address=listener.local_addr().unwrap();
+        let (tx,rx)=mpsc::channel();
+        let server=thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream,_)=listener.accept().unwrap();
+                let mut reader=BufReader::new(stream.try_clone().unwrap());
+                let mut first=String::new();reader.read_line(&mut first).unwrap();
+                let mut length=0;
+                loop {
+                    let mut line=String::new();reader.read_line(&mut line).unwrap();
+                    if line=="\r\n" {break;}
+                    if let Some((key,value))=line.split_once(':') {
+                        if key.eq_ignore_ascii_case("content-length") {length=value.trim().parse().unwrap();}
+                    }
+                }
+                let mut raw=vec![0;length];reader.read_exact(&mut raw).unwrap();
+                tx.send((first,serde_json::from_slice::<Value>(&raw).unwrap())).unwrap();
+                let reply=r#"{"recorded":true,"succeeded":true,"reward":0.7}"#;
+                write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",reply.len(),reply).unwrap();
+            }
+        });
+        let client=MemoryClient::new(&format!("http://{address}"),"secret","robot-7",vec![]).unwrap();
+        assert_eq!(client.outcome_reward("pick-1",0.7).unwrap()["recorded"],true);
+        let (first,request)=rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(first,"POST /v1/memory/outcome HTTP/1.1\r\n");
+        assert_eq!(request["reward"],0.7);assert!(request.get("succeeded").is_none());
+        let metrics:BTreeMap<String,f64>=[("progress".to_string(),0.7),("energy_wh".to_string(),30.0)].into();
+        client.outcome_metrics("pick-2",&metrics).unwrap();
+        let (_,request)=rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(request["metrics"],json!({"energy_wh":30.0,"progress":0.7}));
+        for reward in [-0.1,1.1,f64::NAN] {assert!(client.outcome_reward("pick-3",reward).is_err());}
+        assert!(client.outcome_metrics("pick-3",&BTreeMap::new()).is_err());
+        assert!(client.outcome_metrics("pick-3",&[("force".to_string(),f64::INFINITY)].into()).is_err());
+        server.join().unwrap();
+        assert!(rx.try_recv().is_err());
     }
     #[test] fn insecure_urls_and_non_memory_operations_fail(){
         assert!(MemoryClient::new("http://remote.example","","a",vec![]).is_err());

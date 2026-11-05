@@ -14,7 +14,9 @@ import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutionException;
@@ -131,6 +133,24 @@ public final class MemoryClient {
     }
     public JsonNode outcome(String occasion, boolean succeeded) throws IOException, InterruptedException {
         return call("outcome", json.createObjectNode().put("occasion_id", occasion).put("succeeded", succeeded));
+    }
+    /** Report a graded outcome in [0, 1], realized by the gateway's audited randomized rounding. */
+    public JsonNode outcomeReward(String occasion, double reward) throws IOException, InterruptedException {
+        if (!(reward >= 0.0 && reward <= 1.0)) {
+            throw new IllegalArgumentException("reward must be a finite number between 0 and 1");
+        }
+        return call("outcome", json.createObjectNode().put("occasion_id", occasion).put("reward", reward));
+    }
+    /** Report named measurements that the store's configured utility scores into a reward. */
+    public JsonNode outcomeMetrics(String occasion, Map<String, Double> metrics) throws IOException, InterruptedException {
+        if (metrics == null || metrics.isEmpty() || metrics.size() > 64
+            || metrics.values().stream().anyMatch(v -> v == null || !Double.isFinite(v))) {
+            throw new IllegalArgumentException("metrics must hold 1 to 64 finite numbers");
+        }
+        ObjectNode body = json.createObjectNode().put("occasion_id", occasion);
+        ObjectNode values = body.putObject("metrics");
+        new TreeMap<>(metrics).forEach(values::put);
+        return call("outcome", body);
     }
     public JsonNode putRecord(ObjectNode record) throws IOException, InterruptedException {
         return call("record-put", json.createObjectNode().set("record", record));

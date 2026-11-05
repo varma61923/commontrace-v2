@@ -27,6 +27,7 @@ export {
 export type {
   MemoryClientOptions,
   Evidence,
+  GradedOutcome,
   Recall,
   MemoryTurn,
   PromptMessage,

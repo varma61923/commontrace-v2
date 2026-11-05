@@ -806,6 +806,7 @@ OPERATIONS: dict[tuple[str, str], Operation] = {
                 "recorded": boolean(),
                 "succeeded": boolean(),
                 "reward": number(),
+                "repaired": boolean("a reward whose outcome write was interrupted was completed by this call"),
                 "undecided": boolean(),
                 "reason": string(),
                 "note": string(),

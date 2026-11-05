@@ -191,6 +191,66 @@ def test_a_bad_metric_is_refused_before_anything_is_recorded(tmp_path, extra):
     assert rewards.record(root, "o1", metrics={"progress": 0.5, "energy (Wh)": 12.0, "stalled": False})["recorded"]
 
 
+def test_an_interrupted_write_is_reported_and_finished_by_recording_the_same_reward_again(tmp_path, monkeypatch):
+    root = str(tmp_path)
+    holdout_io.configure(root, rate=0.5, salt="crash")
+    record_outcome = holdout_io.record_outcome
+
+    def power_loss(*_args, **_kwargs):
+        raise OSError("power lost")
+
+    monkeypatch.setattr(holdout_io, "record_outcome", power_loss)
+    with pytest.raises(OSError):
+        rewards.record(root, "o1", reward=0.6)
+    monkeypatch.setattr(holdout_io, "record_outcome", record_outcome)
+    report = rewards.audit(root)
+    assert report.interrupted == ("o1",) and "interrupted write" in report.problems[0]
+    with pytest.raises(holdout_io.ConflictingOutcome, match="refusing"):
+        rewards.record(root, "o1", reward=0.7)
+    out = rewards.record(root, "o1", reward=0.6)
+    assert out["recorded"] and out["repaired"] and out["succeeded"] == rewards.realize("crash", "o1", 0.6)
+    assert holdout_io.read_outcomes(root)["o1"] == out["succeeded"]
+    assert rewards.audit(root).problems == () and rewards.record(root, "o1", reward=0.6)["recorded"] is False
+
+
+def test_a_disagreeing_binary_outcome_is_a_conflict_even_for_the_same_reward(tmp_path):
+    root = str(tmp_path)
+    holdout_io.configure(root, rate=0.5, salt="race")
+    first = rewards.record(root, "o1", reward=0.5)
+    with open(holdout_io.outcomes_log_path(root), "w", encoding="utf-8") as fh:
+        fh.write(json.dumps({"occasion_id": "o1", "succeeded": not first["succeeded"], "at": "x"}) + "\n")
+    with pytest.raises(holdout_io.ConflictingOutcome, match="disagrees"):
+        rewards.record(root, "o1", reward=0.5)
+    assert any("disagrees" in p for p in rewards.verify(root))
+
+
+def test_refused_secondary_metrics_leave_no_reward_commitment(tmp_path, monkeypatch):
+    from unimem import sycophancy_io
+
+    root = str(tmp_path)
+    holdout_io.configure(root, rate=0.5, salt="secondary")
+
+    def refuse(*_args, **_kwargs):
+        raise ValueError("UniMem secondary metrics require an assigned preregistered personalization audit")
+
+    monkeypatch.setattr(sycophancy_io, "record_metrics", refuse)
+    with pytest.raises(ValueError, match="preregistered"):
+        rewards.record(root, "o1", reward=0.5, secondary_metrics={"accuracy": 1.0, "agreement": True})
+    assert rewards.load(root) == {} and holdout_io.read_outcomes(root) == {}
+
+
+def test_rewards_from_an_earlier_salt_are_counted_as_uncheckable_not_passed(tmp_path, capsys):
+    root = str(tmp_path)
+    holdout_io.configure(root, rate=0.5, salt="first")
+    rewards.record(root, "o1", reward=0.5)
+    holdout_io.configure(root, rate=0.5, salt="second")
+    rewards.record(root, "o2", reward=0.5)
+    report = rewards.audit(root)
+    assert (report.checked, report.unverifiable, report.problems) == (1, 1, ())
+    assert main(["reward", "verify", "--dest", root]) == 0
+    assert "1 checked, 1 recorded under an earlier salt and not checkable" in capsys.readouterr().out
+
+
 def test_the_audit_reports_a_malformed_reward_row_instead_of_crashing(tmp_path):
     root = str(tmp_path)
     holdout_io.configure(root, rate=0.5, salt="malformed")
@@ -334,8 +394,6 @@ def test_the_client_sdk_and_framework_integrations_report_graded_outcomes(tmp_pa
     assert holdout_io.read_outcomes(root)[occasion] == rewards.realize("sdk", occasion, 0.75)
     with pytest.raises(ValueError, match="exactly one"):
         client.outcome("t2", True, reward=0.5)
-    with pytest.raises(ValueError, match="/v1/outcome"):
-        MemoryClient(url="https://memory.example").outcome("t3", reward=0.5)
 
     calls = []
 
@@ -354,6 +412,53 @@ def test_the_client_sdk_and_framework_integrations_report_graded_outcomes(tmp_pa
         with pytest.raises(ValueError, match="exactly one"):
             pydantic_ai.record_outcome(Memory(), Result(), **ambiguous)
     assert len(calls) == 2
+
+
+def test_a_remote_client_reports_graded_outcomes_through_the_memory_api(gw, monkeypatch):
+    from unimem.client import MemoryClient
+
+    g, root = gw
+    sent = []
+
+    def over_the_wire(_self, operation, payload):
+        sent.append(payload)
+        status, body = call(g, "POST", "/v1/memory/" + operation, payload)
+        if status != 200:
+            raise RuntimeError(f"{status}: {body['error']['code']}")
+        return body
+
+    monkeypatch.setattr(MemoryClient, "_request", over_the_wire)
+    remote = MemoryClient(url="https://memory.example", token="t" * 40)
+    assert remote.outcome("r1", reward=0.8) is True
+    assert sent[-1] == {"occasion_id": "r1", "reward": 0.8}
+    assert holdout_io.read_outcomes(root)["r1"] == rewards.realize("gw-tests", "r1", 0.8)
+    assert remote.outcome("r1", reward=0.8) is False
+    with pytest.raises(RuntimeError, match="409: conflicting_outcome"):
+        remote.outcome("r1", reward=0.2)
+    rewards.configure(root, {"terms": {"tests_passed": {"high": 12}}})
+    assert remote.outcome("r2", metrics={"tests_passed": 9})
+    assert rewards.load(root)["r2"]["reward"] == pytest.approx(0.75)
+    assert remote.outcome("r3", True) and holdout_io.read_outcomes(root)["r3"] is True
+    with pytest.raises(RuntimeError, match="409: conflicting_outcome"):
+        remote.outcome("r3", False)
+
+
+def test_the_memory_api_takes_exactly_one_outcome_and_documents_graded_ones(gw):
+    g, _root = gw
+    for bad in (
+        {"occasion_id": "m1"},
+        {"occasion_id": "m1", "succeeded": True, "reward": 0.5},
+        {"occasion_id": "m1", "reward": 1.5},
+        {"occasion_id": "m1", "reward": "high"},
+        {"occasion_id": "m1", "metrics": {"x": 1}},
+    ):
+        assert call(g, "POST", "/v1/memory/outcome", bad)[0] == 400, bad
+    status, body = call(g, "POST", "/v1/memory/outcome", {"occasion_id": "m1", "reward": 0.3})
+    assert status == 200 and body["reward"] == 0.3 and isinstance(body["succeeded"], bool)
+    doc = call(g, "GET", "/v1/openapi.json")[1]
+    request = doc["components"]["schemas"]["OutcomeRequest"]
+    assert request["required"] == ["occasion_id"] and request["properties"]["reward"]["maximum"] == 1
+    assert doc["components"]["schemas"]["OutcomeResponse"]["required"] == ["recorded", "succeeded"]
 
 
 def test_a_refused_graded_outcome_leaves_no_secondary_metrics(tmp_path, monkeypatch):

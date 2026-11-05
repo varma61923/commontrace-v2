@@ -8,6 +8,25 @@ export interface MemoryClientOptions {
 }
 export interface Evidence { id: string; text: string; sources?: string[]; layer?: string }
 export interface Recall { context: string; evidence: Evidence[]; occasion_id: string; tokens_estimate: number }
+export type GradedOutcome = {reward: number} | {metrics: Record<string, number>};
+function outcomeBody(result: boolean | GradedOutcome): Record<string, unknown> {
+  if (typeof result === "boolean") return {succeeded: result};
+  const keys = result && typeof result === "object" ? Object.keys(result) : [];
+  if (keys.length !== 1 || !(keys[0] === "reward" || keys[0] === "metrics")) {
+    throw new TypeError("outcome needs a boolean, {reward} or {metrics}");
+  }
+  if ("reward" in result) {
+    if (typeof result.reward !== "number" || !Number.isFinite(result.reward) || result.reward < 0 || result.reward > 1) {
+      throw new RangeError("reward must be a finite number between 0 and 1");
+    }
+    return {reward: result.reward};
+  }
+  const entries = Object.entries(result.metrics ?? {});
+  if (entries.length === 0 || entries.length > 64 || entries.some(([, v]) => typeof v !== "number" || !Number.isFinite(v))) {
+    throw new RangeError("metrics must be an object of 1 to 64 finite numbers");
+  }
+  return {metrics: result.metrics};
+}
 export class MemoryClient {
   readonly context: string[];
   private readonly url: string;
@@ -107,8 +126,10 @@ export class MemoryClient {
                                    adaptive_budget?: boolean} = {}) {
     return this.request<Recall>("reflect", {query, ...options});
   }
-  async outcome(occasionId: string, succeeded: boolean) {
-    return (await this.request<{recorded: boolean}>("outcome", {occasion_id: occasionId, succeeded})).recorded;
+  /** Report how an occasion went: a boolean, a graded `{reward}` in [0, 1], or utility `{metrics}`.
+   *  Graded outcomes are realized by the gateway's audited randomized rounding. */
+  async outcome(occasionId: string, result: boolean | GradedOutcome) {
+    return (await this.request<{recorded: boolean}>("outcome", {occasion_id: occasionId, ...outcomeBody(result)})).recorded;
   }
   async checkAction(tool: string, tags: string[] = []) {
     if ((await this.request<{allowed: boolean}>("check-action", {tool, tags})).allowed !== true) {

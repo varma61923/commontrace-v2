@@ -23,8 +23,9 @@ The same outcome can be sent through any surface:
 
 | Surface | Call |
 |---|---|
-| HTTP gateway | `POST /v1/outcome` with `{"occasion_id", "reward"}` or `{"occasion_id", "metrics"}` |
-| Python | `CausalMemory.record_outcome(id, reward=0.8)`; `MemoryClient.outcome(id, reward=0.8)` |
+| HTTP gateway | `POST /v1/outcome` or `POST /v1/memory/outcome` with `{"occasion_id", "reward"}` or `{"occasion_id", "metrics"}` |
+| Python | `CausalMemory.record_outcome(id, reward=0.8)`; `MemoryClient.outcome(id, reward=0.8)`, local or remote |
+| SDKs | TypeScript `outcome(id, {reward})` / `outcome(id, {metrics})`; Go `OutcomeReward` / `OutcomeMetrics`; Rust `outcome_reward` / `outcome_metrics`; Java and Kotlin `outcomeReward` / `outcomeMetrics` |
 | MCP agents | the `record_reward` tool, with the `occasion_id` used for `retrieve` |
 | Frameworks | `unimem.integrations.langgraph.record_outcome(..., reward=)`; `pydantic_ai.record_outcome(..., reward=)` |
 | Robots | `RobotBridge.finish(id, reward=0.7)` or `finish(id, metrics={...})`; the durable `OutcomeQueue` keeps graded outcomes while offline; ROS `/task/end` envelopes accept `reward` or `metrics` |
@@ -73,7 +74,14 @@ more than one utility scored the running experiment.
 - A reward is never attached to an occasion that already has a binary outcome.
 - `verify` recomputes every draw under the current salt. It checks each stored
   bit against its reward and against the outcomes log, so binary outcomes
-  cannot be quietly chosen instead of derived.
+  cannot be quietly chosen instead of derived. Rewards recorded under an
+  earlier salt cannot be re-derived; `verify` counts them as not checkable
+  rather than passing them silently.
+- The reward row is the commitment and is written before the binary outcome.
+  If a process dies between the two writes, `verify` lists the occasion as an
+  interrupted write, and recording the same reward again finishes it. A robot's
+  `OutcomeQueue` replay therefore converges after a power loss instead of being
+  refused.
 
 ## Limits
 
@@ -82,5 +90,3 @@ more than one utility scored the running experiment.
   way it wants, which is no stronger than reporting a false binary outcome.
 - A utility is a modelling decision. UniMem measures the effect on the utility
   you declared, not on what you meant.
-- Remote `MemoryClient` instances and the generated SDKs keep the binary
-  `/v1/memory/outcome` contract. Send graded outcomes to `/v1/outcome`.

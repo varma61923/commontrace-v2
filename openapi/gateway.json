@@ -1090,6 +1090,10 @@
           "recorded": {
             "type": "boolean"
           },
+          "repaired": {
+            "description": "a reward whose outcome write was interrupted was completed by this call",
+            "type": "boolean"
+          },
           "reward": {
             "type": "number"
           },
@@ -1151,10 +1155,24 @@
             "maxItems": 100,
             "type": "array"
           },
+          "metrics": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "description": "named measurements scored into a reward by the store's configured utility",
+            "maxProperties": 64,
+            "type": "object"
+          },
           "occasion_id": {
             "maxLength": 256,
             "minLength": 1,
             "type": "string"
+          },
+          "reward": {
+            "description": "graded outcome, realized by audited randomized rounding (unimem.rewards)",
+            "maximum": 1,
+            "minimum": 0,
+            "type": "number"
           },
           "secondary_metrics": {
             "additionalProperties": false,
@@ -1191,12 +1209,12 @@
             "type": "object"
           },
           "succeeded": {
+            "description": "give exactly one of succeeded, reward or metrics",
             "type": "boolean"
           }
         },
         "required": [
-          "occasion_id",
-          "succeeded"
+          "occasion_id"
         ],
         "type": "object"
       },
@@ -1205,10 +1223,20 @@
         "properties": {
           "recorded": {
             "type": "boolean"
+          },
+          "repaired": {
+            "type": "boolean"
+          },
+          "reward": {
+            "type": "number"
+          },
+          "succeeded": {
+            "type": "boolean"
           }
         },
         "required": [
-          "recorded"
+          "recorded",
+          "succeeded"
         ],
         "type": "object"
       },
