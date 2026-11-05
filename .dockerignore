@@ -61,7 +61,6 @@ hub/.env
 !unimem/commands/capture_cmd.py
 !unimem/commands/experiment_cmd.py
 !unimem/commands/query_cmd.py
-!unimem/commands/reward_cmd.py
 !unimem/commons_integrity.py
 !unimem/completeness.py
 !unimem/compression.py
@@ -90,6 +89,7 @@ hub/.env
 !unimem/distill.py
 !unimem/distillation_worker.py
 !unimem/dosage.py
+!unimem/effect_field.py
 !unimem/embeddings.py
 !unimem/entities.py
 !unimem/entity_store.py
@@ -147,9 +147,6 @@ hub/.env
 !unimem/local_llm.py
 !unimem/market_listing.py
 !unimem/measure.py
-!unimem/effect_field.py
-!unimem/memory_signatures.py
-!unimem/rewards.py
 !unimem/memfs.py
 !unimem/memory_authority.py
 !unimem/memory_control.py
@@ -158,6 +155,7 @@ hub/.env
 !unimem/memory_ifc.py
 !unimem/memory_journal.py
 !unimem/memory_record.py
+!unimem/memory_signatures.py
 !unimem/multihop.py
 !unimem/observations.py
 !unimem/offline.py
@@ -197,6 +195,7 @@ hub/.env
 !unimem/retrieval_io.py
 !unimem/retry.py
 !unimem/revision.py
+!unimem/rewards.py
 !unimem/runtime_cache.py
 !unimem/safety.py
 !unimem/schema_properties.py
