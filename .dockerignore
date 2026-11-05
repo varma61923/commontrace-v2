@@ -61,6 +61,7 @@ hub/.env
 !unimem/commands/capture_cmd.py
 !unimem/commands/experiment_cmd.py
 !unimem/commands/query_cmd.py
+!unimem/commands/reward_cmd.py
 !unimem/commons_integrity.py
 !unimem/completeness.py
 !unimem/compression.py
@@ -146,6 +147,9 @@ hub/.env
 !unimem/local_llm.py
 !unimem/market_listing.py
 !unimem/measure.py
+!unimem/effect_field.py
+!unimem/memory_signatures.py
+!unimem/rewards.py
 !unimem/memfs.py
 !unimem/memory_authority.py
 !unimem/memory_control.py
