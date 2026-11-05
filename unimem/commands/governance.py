@@ -449,7 +449,8 @@ def allocate_add_parser(subparsers: argparse._SubParsersAction) -> None:
         default="verdict",
         help="verdict: explore/monitor rates from each memory's verdict (default). "
         "thompson: the causal gate injects each memory, per occasion context, with the "
-        "posterior probability that it helps there.",
+        "posterior probability that it helps there. thompson-field: thompson with a validated "
+        "effect field that carries evidence between similar memories and forecasts new ones.",
     )
     en.set_defaults(func=allocate_run_enable)
 

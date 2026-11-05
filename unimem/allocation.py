@@ -77,7 +77,8 @@ SCHEDULES_NAME = "schedules.jsonl"
 # -- policy and schedules --------------------------------------------------------------------------
 
 
-MODES = ("verdict", "thompson")
+MODE_FIELD = "thompson-field"
+MODES = ("verdict", "thompson", MODE_FIELD)
 
 
 @dataclass(frozen=True)
@@ -88,7 +89,9 @@ class Policy:
     its sequential verdict. ``thompson`` hands the rates to `causal_gate`: each
     memory, and each memory within each occasion context, is injected with the
     posterior probability that it helps there, never withheld less than `monitor`
-    nor more than ``1 - monitor`` of the time.
+    nor more than ``1 - monitor`` of the time. ``thompson-field`` is ``thompson`` with
+    an `effect_field`: a validated content prior carries evidence between similar
+    memories and forecasts rates for active lessons that have no evidence yet.
     """
 
     explore: float = EXPLORE_RATE
@@ -103,7 +106,7 @@ class Policy:
             raise ValueError("an era needs at least one occasion")
         if self.mode not in MODES:
             raise ValueError(f"mode must be one of {', '.join(MODES)}")
-        if self.mode == "thompson" and not self.monitor < 0.5:
+        if self.mode != "verdict" and not self.monitor < 0.5:
             raise ValueError("thompson allocation needs a monitor rate below 50%")
 
 
@@ -253,10 +256,10 @@ def plan(
     if current is None:
         raise ValueError("adaptive allocation is not enabled for this experiment (unimem allocate enable)")
     policy = Policy(**current.policy)
-    if policy.mode == "thompson":
+    if policy.mode != "verdict":
         from unimem import causal_gate
 
-        rates, context_rates, basis = causal_gate.plan_rates(root, policy.monitor)
+        rates, context_rates, basis = causal_gate.plan_rates(root, policy.monitor, field=policy.mode == MODE_FIELD)
         basis["previous_version"] = current.version
         if require_certificate:
             from unimem import frontier_protocol as fp

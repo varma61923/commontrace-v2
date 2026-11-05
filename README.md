@@ -164,9 +164,10 @@ An average can hide two opposite effects. A lesson about the test runner helps t
 - **Thompson allocation.** Each memory is injected with the posterior probability that it helps in that context, clipped so both arms keep learning. The rates are published as hash-chained allocation schedules, so every contextual decision is audited exactly like the rest of the experiment.
 - **Drift detection.** UniMem flags a memory whose effect changed over time, for example after a tool upgrade or a codebase migration. With strong evidence of drift, the gate relearns that memory from the occasions after the change.
 - **An honest off-policy check.** The gate is fitted on earlier occasions and scored on later ones by importance sampling over each occasion's full assignment, against what was actually delivered.
+- **Evidence transfer between paraphrases.** An effect field, a Gaussian-process prior over lesson content, carries randomized evidence to similar memories, so a new rewording of a proven-harmful lesson starts mostly withheld. It is used only after leave-one-out prediction shows that content predicts effects in this store. It also flags look-alike lessons whose effects have opposite signs ([effect field](docs/effect-field.md)).
 
 ```bash
-unimem allocate enable --mode thompson --dest ./mem
+unimem allocate enable --mode thompson --dest ./mem   # or --mode thompson-field
 unimem allocate plan --if-due --dest ./mem      # run on a schedule, e.g. hourly
 unimem allocate gate --dest ./mem
 ```
@@ -308,6 +309,7 @@ UniMem is pre-1.0 software under active development.
 
 | Area | Status |
 |---|---|
+| G31 Effect field | Validated Gaussian-process transfer of randomized effects between similar lessons, forecasts for unmeasured lessons in `thompson-field` schedules, and opposite-effect look-alike detection; [model, validation and limits](docs/effect-field.md). |
 | G6 Delegated capabilities | Pinned holders, monotone HMAC/Ed25519 chains, request proofs, scoped retrieval, recipient handoffs and revocation quarantine; [workflow and limits](docs/capabilities.md). |
 | G7 Team isolation | Scoped point-read snapshots, commit-time stale-generation guards, fenced work leases and reviewable semantic merges; [guarantees and limits](docs/team-isolation.md). |
 | G29 Pooled evidence | Signed sufficient-statistics contributions, ownership-group random effects, modified Hartung–Knapp intervals, e-values and reference Gaussian privacy accounting; [workflow and limits](docs/pooled-evidence.md). |
@@ -416,6 +418,7 @@ Some components are adapted from permissively licensed projects (Apache-2.0 and 
 - The causal gate: Thompson (1933) for probability matching, and DerSimonian & Laird (1986) for between-unit variance in empirical-Bayes shrinkage.
 - Retrieval: HippoRAG (Gutiérrez et al., 2024), IRCoT (Trivedi et al., 2023), RM3 (Lavrenko & Croft, 2001), and HyDE (Gao et al., 2023).
 - Memory poisoning: AgentPoison (Chen et al., 2024) and MemoryGraft (2025).
+- The effect field: Gaussian-process regression (Rasmussen & Williams, 2006). It answers two problems raised in self-evolving agent memory work with randomized evidence: negative transfer between look-alike experiences (STRATA, 2026) and context-conditioned memory value (BEAM, 2026).
 
 Finite read, write, recall and export permissions support exhaustive change checks and reviewed activation. See [memory policy](docs/memory-policy.md) for the bounded guarantee, native Cedar adapter and optional relationship prefilter.
 

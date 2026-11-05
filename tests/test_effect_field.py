@@ -1,0 +1,285 @@
+"""Effect field: content-similar memories share randomized evidence, only when it predicts."""
+
+from __future__ import annotations
+
+import datetime
+import json
+import os
+import random
+import types
+from dataclasses import asdict
+
+import pytest
+
+from unimem import allocation, causal_gate, effect_field, holdout_io, integrity
+from unimem.causal_gate import Row
+from unimem.cli import main
+from unimem.commands import experiment_cmd
+
+T0 = datetime.datetime(2026, 3, 1, 9, 0, tzinfo=datetime.timezone.utc)
+
+FAMILIES = {
+    "refund": ("refund payments ledger invoice reconcile settlement", 0.20),
+    "legacy": ("legacy endpoint deprecated soap fallback adapter", -0.20),
+    "retry": ("retry backoff throttle jitter quota limit", 0.0),
+}
+
+
+@pytest.fixture(autouse=True)
+def _no_fsync(monkeypatch):
+    monkeypatch.setattr(os, "fsync", lambda fd: None)
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    state = types.SimpleNamespace(now=T0)
+
+    class Frozen(datetime.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return state.now
+
+    frozen = types.SimpleNamespace(datetime=Frozen, timezone=datetime.timezone, timedelta=datetime.timedelta)
+    monkeypatch.setattr(holdout_io, "datetime", frozen)
+    monkeypatch.setattr(allocation, "datetime", frozen)
+    return state
+
+
+def paraphrase(rng: random.Random, family: str) -> str:
+    """Four of the family's content words plus four words of its own."""
+    words = FAMILIES[family][0].split()
+    return " ".join(rng.sample(words, 4) + [f"w{rng.randrange(400)}" for _ in range(4)])
+
+
+def corpus(rng: random.Random, per: int = 8, *, linked: bool = True) -> tuple[dict[str, str], dict[str, float]]:
+    texts = {f"{f}-{i}": paraphrase(rng, f) for f in FAMILIES for i in range(per)}
+    effects = {m: FAMILIES[m.split("-")[0]][1] for m in texts}
+    if not linked:
+        values = list(effects.values())
+        rng.shuffle(values)
+        effects = dict(zip(effects, values))
+    return texts, effects
+
+
+def simulate(rng: random.Random, effects: dict[str, float], occasions: int = 600, shown: int = 3) -> list[Row]:
+    """Each occasion offers `shown` random memories, each independently withheld half the time."""
+    lessons = sorted(effects)
+    rows = []
+    for i in range(occasions):
+        offered = rng.sample(lessons, shown)
+        injected = {m: rng.random() >= 0.5 for m in offered}
+        p = 0.5 + sum(effects[m] for m in offered if injected[m])
+        succeeded = rng.random() < min(0.95, max(0.05, p))
+        rows += [Row(m, f"o{i}", injected[m], succeeded, 0.5, "", f"{i:08d}") for m in offered]
+    return rows
+
+
+def rmse(model: causal_gate.Model, effects: dict[str, float]) -> float:
+    return (sum((model.lessons[m].mean - e) ** 2 for m, e in effects.items()) / len(effects)) ** 0.5
+
+
+# -- kernel ----------------------------------------------------------------------------------------
+
+
+def test_tokens_keep_content_words_and_cjk_bigrams():
+    assert effect_field.tokens("The 429 retry is in THE queue") == ["retry", "queue"]
+    assert effect_field.tokens("退款流程") == ["退款", "款流", "流程"]
+
+
+def test_lexical_similarity_is_cosine_on_tfidf_and_neighbors_exclude_the_query():
+    kernel = effect_field.Kernel.lexical(
+        {"a": "refund ledger invoice", "b": "refund ledger invoice", "c": "refund ledger", "d": "kubernetes helm"}
+    )
+    assert kernel.similarity("a", "b") == pytest.approx(1.0)
+    assert kernel.similarity("a", "d") == 0.0
+    assert 0.0 < kernel.similarity("a", "c") < 1.0
+    near = kernel.neighbors(["a"], ["a", "b", "c", "d"])["a"]
+    assert [m for m, _s in near] == ["b", "c"]
+    assert kernel.similarity("a", "missing") == 0.0
+
+
+def test_dense_kernels_normalize_and_the_digest_commits_to_the_inputs():
+    kernel = effect_field.Kernel.dense({"a": [3.0, 4.0], "b": [6.0, 8.0], "c": [-4.0, 3.0]}, kind="embed:test")
+    assert kernel.similarity("a", "b") == pytest.approx(1.0)
+    assert kernel.similarity("a", "c") == pytest.approx(0.0, abs=1e-12)
+    same = effect_field.Kernel.dense({"a": [3.0, 4.0], "b": [6.0, 8.0], "c": [-4.0, 3.0]}, kind="embed:test")
+    other = effect_field.Kernel.dense({"a": [3.0, 4.0], "b": [6.0, 8.0], "c": [4.0, 3.0]}, kind="embed:test")
+    assert kernel.digest() == same.digest() != other.digest()
+
+
+# -- transfer --------------------------------------------------------------------------------------
+
+
+def test_near_duplicate_witnesses_count_as_about_one_and_never_exceed_the_field_variance():
+    tau2, share = 0.01, 0.95
+    one = effect_field._Neighborhood(("a",), (1.0,), ((1.0,),))
+    ids = tuple(f"a{i}" for i in range(10))
+    ten = effect_field._Neighborhood(ids, (1.0,) * 10, tuple((1.0,) * 10 for _ in ids))
+    residual = {m: 0.1 for m in ("a", *ids)}
+    noise = {m: 1e-4 for m in ("a", *ids)}
+    shift1, red1 = effect_field._transfer(one, 1, share, tau2, residual, noise)
+    shift10, red10 = effect_field._transfer(ten, 1, share, tau2, residual, noise)
+    assert red1 < red10 <= share * tau2
+    assert red10 < 1.1 * red1  # independent copies would have cut the variance ten times
+    assert 0.0 < shift1 < shift10 < 0.1
+
+
+def test_the_field_validates_when_effects_follow_content_and_cuts_estimation_error():
+    for seed in range(4):
+        rng = random.Random(seed)
+        texts, effects = corpus(rng)
+        rows = simulate(rng, effects)
+        model = causal_gate.fit(rows, kernel=effect_field.Kernel.lexical(texts))
+        assert model.transfer is not None and model.transfer.validated, model.transfer.summary()
+        assert model.transfer.z is not None and model.transfer.z >= effect_field.VALIDATE_Z
+        assert rmse(model, effects) < rmse(causal_gate.fit(rows), effects)
+
+
+def test_the_field_refuses_to_transfer_when_content_does_not_predict_effects():
+    for seed in range(6):
+        rng = random.Random(100 + seed)
+        texts, effects = corpus(rng, linked=False)
+        rows = simulate(rng, effects)
+        model = causal_gate.fit(rows, kernel=effect_field.Kernel.lexical(texts))
+        assert model.transfer is not None and model.transfer.verdict == effect_field.NOT_VALIDATED
+        plain = causal_gate.fit(rows)
+        assert {m: p.mean for m, p in model.lessons.items()} == {m: p.mean for m, p in plain.lessons.items()}
+        assert causal_gate.rates(model) == causal_gate.rates(plain)
+
+
+def test_too_few_measured_memories_are_insufficient_and_no_kernel_is_the_legacy_gate():
+    rng = random.Random(7)
+    texts, effects = corpus(rng, per=2)
+    rows = simulate(rng, effects, occasions=200)
+    model = causal_gate.fit(rows, kernel=effect_field.Kernel.lexical(texts), candidates=["refund-new"])
+    assert model.transfer is not None and model.transfer.verdict == effect_field.INSUFFICIENT
+    assert model.forecasts == {}
+    legacy = causal_gate.fit(rows).to_dict()
+    assert "field" not in legacy and "forecasts" not in legacy
+    assert {k: v for k, v in model.to_dict().items() if k not in ("field", "forecasts")} == legacy
+
+
+def test_a_new_paraphrase_starts_from_its_family_evidence_and_an_unrelated_memory_does_not():
+    rng = random.Random(3)
+    texts, effects = corpus(rng)
+    rows = simulate(rng, effects)
+    new = {"legacy-new": paraphrase(rng, "legacy"), "refund-new": paraphrase(rng, "refund"), "alien": "zebra quartz"}
+    model = causal_gate.fit(rows, kernel=effect_field.Kernel.lexical({**texts, **new}), candidates=new)
+    assert set(model.forecasts) == {"legacy-new", "refund-new"}
+    assert not set(model.forecasts) & set(model.lessons)
+    lesson_rates, _ = causal_gate.rates(model)
+    assert lesson_rates["legacy-new"] > 0.7 and lesson_rates["refund-new"] < 0.3
+    assert "alien" not in lesson_rates
+    legacy = model.forecasts["legacy-new"]
+    assert legacy.n_injected == legacy.n_withheld == 0 and legacy.raw_effect is None
+    assert model.posterior("legacy-new") == legacy
+
+
+def test_lookalikes_with_opposite_effects_are_flagged_and_agreeing_ones_are_not():
+    kernel = effect_field.Kernel.lexical(
+        {
+            "use-v1": "call the refunds endpoint for every refund",
+            "use-v2": "call the refunds endpoint for every refund now",
+            "a": "rotate keys quarterly",
+            "b": "rotate keys quarterly always",
+        }
+    )
+    estimates = {"use-v1": (-0.2, 0.001), "use-v2": (0.2, 0.001), "a": (0.1, 0.001), "b": (0.12, 0.001)}
+    [pair] = effect_field.lookalikes(estimates, kernel)
+    assert (pair.a, pair.b) == ("use-v1", "use-v2") and pair.q_value < 0.05
+    assert effect_field.lookalikes({**estimates, "use-v2": (0.2, 1.0)}, kernel) == []
+
+
+# -- the store -------------------------------------------------------------------------------------
+
+
+def _write_lesson(root: str, slug: str, text: str, status: str = "active") -> None:
+    from unimem import lesson_io, paths
+
+    path = os.path.join(paths.lessons_dir(root), f"lesson_{slug}.md")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fm = {"name": slug, "description": text, "status": status, "importance": 3, "tags": []}
+    lesson_io.write_lesson(path, fm, text, root=root, actor="test", reason="fixture")
+
+
+def _run(root: str, clock, rng: random.Random, effects: dict[str, float], start: int, n: int) -> None:
+    lessons = sorted(effects)
+    for i in range(start, start + n):
+        offered = rng.sample(lessons, 3)
+        withheld = holdout_io.assign_and_log(root, offered, occasion_id=f"T-{i}", rate=0.5, salt="pinned")
+        p = 0.5 + sum(effects[m] for m in offered if m not in withheld)
+        holdout_io.record_outcome(root, f"T-{i}", rng.random() < min(0.95, max(0.05, p)))
+        clock.now += datetime.timedelta(seconds=30)
+
+
+def test_thompson_field_schedules_forecast_new_lessons_and_the_run_still_audits(tmp_path, clock):
+    root = str(tmp_path)
+    rng = random.Random(21)
+    texts, effects = corpus(rng)
+    for slug, text in texts.items():
+        _write_lesson(root, slug, text)
+    holdout_io.configure(root, rate=0.5, salt="pinned")
+    first = allocation.enable(root, allocation.Policy(era_occasions=200, mode=allocation.MODE_FIELD))
+    clock.now += datetime.timedelta(seconds=10)
+    _run(root, clock, rng, effects, 0, 600)
+
+    _write_lesson(root, "legacy-new", paraphrase(rng, "legacy"))
+    _write_lesson(root, "refund-new", paraphrase(rng, "refund"))
+    _write_lesson(root, "retired", paraphrase(rng, "legacy"), status="retired")
+    second = allocation.plan(root)
+    assert second.previous == first.digest and second.policy["mode"] == "thompson-field"
+    assert second.basis["mode"] == "thompson-field" and second.basis["field"]["verdict"] == "VALIDATED"
+    assert second.basis["field"]["kernel_digest"].startswith("sha256:")
+    assert set(second.basis["forecasts"]) == {"legacy-new", "refund-new"}
+    assert second.rates["legacy-new"] > 0.7 and second.rates["refund-new"] < 0.3
+    assert "retired" not in second.rates
+
+    clock.now += datetime.timedelta(seconds=10)
+    effects.update({"legacy-new": -0.2, "refund-new": 0.2})
+    _run(root, clock, rng, effects, 600, 200)
+    later = [r for r in holdout_io.read_log(root)[0] if r.at >= second.effective_at()]
+    assert later and all(r.rate == second.rate_for(r.lesson) for r in later)
+    assert allocation.verify(root) == []
+    rows, _rate, _ = experiment_cmd._load(root)
+    report = integrity.audit(rows, schedules=allocation.history(root))
+    assert next(f for f in report.findings if f.check == "assignment_drift").severity != (
+        integrity.SEVERITY_INVALIDATES
+    )
+
+    out = causal_gate.report(root)
+    section = out["effect_field"]
+    assert section["used_by_gate"] is True and section["verdict"] == "VALIDATED"
+    assert "field" in out["model"] and section["off_policy"]["eval_occasions"] > 0
+    assert causal_gate.report(root, field=False)["effect_field"]["used_by_gate"] is False
+
+
+def test_legacy_thompson_policies_hash_exactly_as_before():
+    assert asdict(allocation.Policy(mode="thompson")) == {
+        "explore": 0.5,
+        "monitor": 0.05,
+        "era_occasions": 250,
+        "mode": "thompson",
+    }
+    with pytest.raises(ValueError, match="monitor"):
+        allocation.Policy(explore=0.8, monitor=0.6, mode=allocation.MODE_FIELD)
+
+
+def test_the_gate_command_reports_the_field_and_enables_field_mode(tmp_path, clock, capsys):
+    root = str(tmp_path)
+    rng = random.Random(5)
+    texts, effects = corpus(rng)
+    for slug, text in texts.items():
+        _write_lesson(root, slug, text)
+    holdout_io.configure(root, rate=0.5, salt="pinned")
+    _run(root, clock, rng, effects, 0, 600)
+    _write_lesson(root, "legacy-new", paraphrase(rng, "legacy"))
+    assert main(["allocate", "gate", "--dest", root]) == 0
+    text = capsys.readouterr().out
+    assert "effect field (lexical-tfidf-v1): VALIDATED" in text and "diagnostic only" in text
+    assert "forecast legacy-new" in text
+    assert main(["allocate", "gate", "--json", "--dest", root]) == 0
+    doc = json.loads(capsys.readouterr().out)
+    [forecast] = doc["effect_field"]["forecasts"]
+    assert forecast["lesson"] == "legacy-new" and forecast["withhold"] > 0.7 and forecast["witnesses"]
+    assert main(["allocate", "enable", "--mode", "thompson-field", "--dest", root]) == 0
+    assert "unlisted memories: 50% withheld" in capsys.readouterr().out

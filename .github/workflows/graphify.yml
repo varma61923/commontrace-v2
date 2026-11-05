@@ -18,13 +18,13 @@ jobs:
           python-version: '3.12'
       - run: python -m pip install "graphifyy[terraform,sql] @ git+https://github.com/Graphify-Labs/graphify.git@86c57be8204673c2a1b9849a3292a7dd3ab373d8"
       - run: graphify extract . --code-only --max-workers 2 --out "$RUNNER_TEMP/architecture"
-      # pack_demos adds one reviewed runtime module; see architecture-exploration.md.
+      # pack_demos and effect_field each add one reviewed runtime module; see architecture-exploration.md.
       - name: Enforce graph integrity and reviewed surface budgets
         run: >-
           python scripts/graphify_audit.py
           --graph "$RUNNER_TEMP/architecture/graphify-out/graph.json"
           --output "$RUNNER_TEMP/architecture/audit.json"
-          --source-root . --max-modules 398 --max-unreachable 318
+          --source-root . --max-modules 399 --max-unreachable 318
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: graphify-audit

@@ -592,7 +592,7 @@ jobs:
             unimem/retry.py unimem/commands/integration_cmd.py \
             unimem/fact_evidence.py unimem/vector_snapshots.py \
             unimem/sqlite_vector_snapshots.py unimem/postgres_vector_snapshots.py \
-            unimem/evidence_context.py unimem/explorer.py unimem/vector_scoring.py \
+            unimem/evidence_context.py unimem/explorer.py unimem/vector_scoring.py unimem/effect_field.py \
             unimem/fact_index.py unimem/runtime_cache.py unimem/sqlite_pool.py unimem/_jsonl.py \
             benchmarks/memory_contracts.py benchmarks/vector_search.py \
             benchmarks/fact_search.py benchmarks/fact_retrieval.py benchmarks/fact_mutation.py \
