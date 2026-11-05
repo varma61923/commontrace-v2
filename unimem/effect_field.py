@@ -67,7 +67,15 @@ MAX_TEXT_CHARS = 8000
 JITTER = 1e-12
 KERNEL_LEXICAL = "lexical-tfidf-v2"
 MAX_BAG_TERMS = 256
-VALIDATE_Z = NormalDist().inv_cdf(1.0 - ALPHA / (len(POWERS) * len(SHARES)))
+KERNEL_CONTEXT = "context-components-v1"
+
+
+def validate_z(powers: int = len(POWERS)) -> float:
+    """One-sided z a configuration must reach, Bonferroni-corrected over the search grid."""
+    return NormalDist().inv_cdf(1.0 - ALPHA / (powers * len(SHARES)))
+
+
+VALIDATE_Z = validate_z()
 
 VALIDATED = "VALIDATED"
 NOT_VALIDATED = "NOT_VALIDATED"
@@ -129,6 +137,27 @@ class Kernel:
     def lexical(cls, texts: Mapping[str, str]) -> Kernel:
         """Smoothed TF-IDF over `texts` (memory id -> text)."""
         return cls.combined({memory: term_bag(text) for memory, text in texts.items()})
+
+    @classmethod
+    def contexts(cls, cells: Mapping[str, tuple[str, str]]) -> Kernel:
+        """Similarity between one memory's occasion contexts, by shared ``/``-separated components.
+
+        `cells` maps a cell id to (memory, context). Two contexts of the same memory have
+        similarity equal to the share of component positions they agree on, so
+        ``ur5/depot/grasp`` is closer to ``ur5/yard/grasp`` than to ``franka/depot/pour``.
+        Contexts of different memories never compare, and labels without components only
+        match themselves. A sum of categorical indicators is positive semidefinite.
+        """
+        parts = {cell: context.split("/") for cell, (_memory, context) in cells.items()}
+        width: dict[str, int] = defaultdict(int)
+        for cell, (memory, _context) in cells.items():
+            width[memory] = max(width[memory], len(parts[cell]))
+        vectors = {}
+        for cell, (memory, _context) in cells.items():
+            p = width[memory]
+            components = parts[cell] + [f"\x00{cell}"] * (p - len(parts[cell]))  # a pad matches nothing else
+            vectors[cell] = {f"{memory}\x1f{i}\x1f{c}": 1.0 / math.sqrt(p) for i, c in enumerate(components)}
+        return cls(KERNEL_CONTEXT, vectors)
 
     @classmethod
     def from_embeddings(cls, vectors: Mapping[str, Sequence[float]], kind: str = "dense") -> Kernel:
@@ -377,18 +406,27 @@ def fit(
     *,
     candidates: Iterable[str] = (),
     k: int = NEIGHBORS,
+    powers: Sequence[int] = POWERS,
+    baseline: Mapping[str, tuple[float, float]] | None = None,
 ) -> Field:
     """Fit and validate the field over measured `estimates` (memory -> (effect, variance)).
 
     `bases` holds the gate's leave-one-out prior (mean, variance) for every measured
-    memory and every candidate; `tau2` is the gate's between-memory variance.
+    memory and every candidate; `tau2` is the gate's between-memory variance. The
+    validation threshold is Bonferroni-corrected over ``len(powers) * len(SHARES)``.
+    `baseline` is the prior used when the field does not validate, if it differs
+    from `bases`; the field must beat that prior, not merely its own base.
     """
+    reference = bases if baseline is None else baseline
+    threshold = validate_z(len(powers))
     measured = sorted(m for m in estimates if m in bases and kernel.has(m))
     queries = sorted(set(measured) | {c for c in candidates if c in bases and kernel.has(c)})
     hoods = {q: _hood(kernel, nb) for q, nb in kernel.neighbors(queries, measured, k).items()}
     residual = {m: estimates[m][0] - bases[m][0] for m in measured}
     noise = {m: estimates[m][1] for m in measured}
-    out = Field(INSUFFICIENT, kernel.kind, tau2=tau2, _hoods=hoods, _residual=residual, _noise=noise)
+    out = Field(
+        INSUFFICIENT, kernel.kind, tau2=tau2, threshold=threshold, _hoods=hoods, _residual=residual, _noise=noise
+    )
     scored = [m for m in measured if hoods[m].ids]
     out.measured = len(scored)
     if len(scored) < MIN_MEASURED or tau2 <= 0.0:
@@ -402,12 +440,12 @@ def fit(
             shift, reduction = _transfer(hoods[m], power, share, tau2, residual, noise)
             row.append(
                 _log_normal(effect, mean + shift, max(var - reduction, JITTER) + variance)
-                - _log_normal(effect, mean, var + variance)
+                - _log_normal(effect, reference[m][0], reference[m][1] + variance)
             )
         return row
 
     best: tuple[float, int, float, list[float]] | None = None
-    for power in POWERS:
+    for power in powers:
         for share in SHARES:
             row = gains(power, share)
             total = math.fsum(row)
@@ -420,7 +458,7 @@ def fit(
     sd = math.sqrt(math.fsum((d - mean) ** 2 for d in row) / (n - 1))
     z = mean / (sd / math.sqrt(n)) if sd > 0 else (math.inf if mean > 0 else 0.0)
     out.power, out.share, out.lpd_gain, out.z = power, share, mean, z
-    out.verdict = VALIDATED if mean > 0 and z >= VALIDATE_Z else NOT_VALIDATED
+    out.verdict = VALIDATED if mean > 0 and z >= threshold else NOT_VALIDATED
     if not out.validated:
         out.share = 0.0
     return out

@@ -259,6 +259,19 @@ class Model:
     rows: int = 0
     transfer: effect_field.Field | None = None
     forecasts: dict[str, Posterior] = field(default_factory=dict)  # unmeasured memories the field informs
+    context_transfer: dict[str, effect_field.Field] = field(default_factory=dict)  # memory -> its context field
+
+    def context_summary(self) -> dict[str, Any] | None:
+        if not self.context_transfer:
+            return None
+        fields = self.context_transfer
+        return {
+            "kernel": effect_field.KERNEL_CONTEXT,
+            "memories": len(fields),
+            "validated": sorted(m for m, f in fields.items() if f.validated),
+            "insufficient": sum(f.verdict == effect_field.INSUFFICIENT for f in fields.values()),
+            "fields": {m: f.summary() for m, f in sorted(fields.items()) if f.verdict != effect_field.INSUFFICIENT},
+        }
 
     def posterior(self, lesson: str, context: str = "") -> Posterior | None:
         if context and (lesson, context) in self.contexts:
@@ -276,6 +289,8 @@ class Model:
         if self.transfer is not None:
             out["field"] = self.transfer.summary()
             out["forecasts"] = [asdict(p) for p in sorted(self.forecasts.values(), key=lambda p: p.lesson)]
+        if self.context_transfer:
+            out["context_field"] = self.context_summary()
         return out
 
 
@@ -308,12 +323,16 @@ def fit(
     *,
     kernel: effect_field.Kernel | None = None,
     candidates: Iterable[str] = (),
+    context_transfer: bool = False,
 ) -> Model:
     """The hierarchical posterior of every lesson's effect, overall and per context.
 
     With a content `kernel`, an `effect_field` is fitted over the lessons' raw
     effects; if it validates, it replaces each lesson's prior and forecasts the
-    unmeasured `candidates` it has witnesses for.
+    unmeasured `candidates` it has witnesses for. With `context_transfer`, a second
+    field over each lesson's context components (``embodiment/site/skill``,
+    ``model/task``) lets sparse contexts borrow from similar ones, again only once
+    it validates.
     """
     sources = sources or {}
     by_lesson: dict[str, list[Row]] = defaultdict(list)
@@ -403,15 +422,58 @@ def fit(
     )
     tau2_context = max(CONTEXT_TAU_FLOOR**2, tau2_context or 0.0)
     model.tau_context = math.sqrt(tau2_context)
+    cell_base: dict[tuple[str, str], tuple[float, float]] = {}
+    cell_rows_of: dict[tuple[str, str], list[Row]] = {}
     for lesson, by_ctx in cells.items():
         ranked = sorted(by_ctx.items(), key=lambda item: (-len(item[1]), item[0]))[:MAX_CONTEXTS_PER_LESSON]
         for ctx, cell_rows in ranked:
             others = [r for r in by_lesson[lesson] if r.context != ctx]
             base_mean, base_var = _combine(*lesson_prior(lesson), contrast(others))
-            mean, variance = _combine(base_mean, base_var + tau2_context, cell_raw[(lesson, ctx)])
-            model.contexts[(lesson, ctx)] = _posterior(
-                lesson, ctx, source_of[lesson], cell_raw[(lesson, ctx)], _counts(cell_rows), mean, variance
+            cell_base[(lesson, ctx)] = (base_mean, base_var + tau2_context)
+            cell_rows_of[(lesson, ctx)] = cell_rows
+    if context_transfer and cell_base:
+        # Contexts of one memory that share components (embodiment, site, skill, model) share deviations.
+        # Each memory gets its own field and its own validation: one memory's structure must not be
+        # diluted by, or imposed on, another's.
+        by_memory: dict[str, list[tuple[str, str]]] = defaultdict(list)
+        for cell in cell_base:
+            by_memory[cell[0]].append(cell)
+        for lesson, lesson_cells in sorted(by_memory.items()):
+            estimates = {
+                ctx: (est.effect, est.variance)
+                for (_l, ctx) in lesson_cells
+                if (est := cell_raw[(lesson, ctx)]) is not None
+            }
+            own = _dersimonian_laird([list(estimates.values())])
+            tau2_own = max(CONTEXT_TAU_FLOOR**2, own) if own is not None else tau2_context
+            context = effect_field.fit(
+                estimates,
+                {
+                    ctx: (cell_base[(lesson, ctx)][0], cell_base[(lesson, ctx)][1] - tau2_context + tau2_own)
+                    for (_l, ctx) in lesson_cells
+                },
+                tau2_own,
+                effect_field.Kernel.contexts({ctx: (lesson, ctx) for (_l, ctx) in lesson_cells}),
+                candidates=[ctx for (_l, ctx) in lesson_cells if cell_raw[(lesson, ctx)] is None],
+                powers=(1,),  # component overlap has no sharpness to tune
+                baseline={ctx: cell_base[(lesson, ctx)] for (_l, ctx) in lesson_cells},
             )
+            model.context_transfer[lesson] = context
+            if context.validated:
+                for _l, ctx in lesson_cells:
+                    mean, var = cell_base[(lesson, ctx)]
+                    cell_base[(lesson, ctx)] = context.prior(ctx, mean, var - tau2_context + tau2_own)
+    for (lesson, ctx), (prior_mean, prior_var) in cell_base.items():
+        mean, variance = _combine(prior_mean, prior_var, cell_raw[(lesson, ctx)])
+        model.contexts[(lesson, ctx)] = _posterior(
+            lesson,
+            ctx,
+            source_of[lesson],
+            cell_raw[(lesson, ctx)],
+            _counts(cell_rows_of[(lesson, ctx)]),
+            mean,
+            variance,
+        )
 
     for s in sorted(set(source_of.values())):
         members = [lesson for lesson, src in source_of.items() if src == s]
@@ -643,7 +705,9 @@ def evaluate(
     fit_rows = [r for r in rows if r.occasion_id in cut]
     eval_rows = [r for r in rows if r.occasion_id not in cut]
     later = {r.lesson for r in eval_rows} if kernel is not None else set()
-    lesson_rates, context_rates = rates(fit(fit_rows, sources, kernel=kernel, candidates=later), floor)
+    lesson_rates, context_rates = rates(
+        fit(fit_rows, sources, kernel=kernel, candidates=later, context_transfer=kernel is not None), floor
+    )
 
     def rate_for(lesson: str, context: str) -> float:
         if context and context in context_rates.get(lesson, {}):
@@ -703,7 +767,13 @@ def plan_rates(
     gated, resets = forget_before_drift(rows, drift(rows))
     lessons = {r.lesson for r in rows}
     kernel, candidates = store_kernel(root, lessons) if field else (None, [])
-    model = fit(gated, sources_for(root, lessons | set(candidates)), kernel=kernel, candidates=candidates)
+    model = fit(
+        gated,
+        sources_for(root, lessons | set(candidates)),
+        kernel=kernel,
+        candidates=candidates,
+        context_transfer=field,
+    )
     lesson_rates, context_rates = rates(model, floor)
     from unimem import uplift
 
@@ -726,6 +796,9 @@ def plan_rates(
         basis["mode"] = "thompson-field"
         basis["field"] = {**model.transfer.summary(), "kernel_digest": kernel.digest()}
         basis["forecasts"] = {lesson: round(p.p_helps, 4) for lesson, p in sorted(model.forecasts.items())}
+    if model.context_transfer:
+        context_summary = model.context_summary()
+        basis["context_field"] = {k: v for k, v in (context_summary or {}).items() if k != "fields"}
     return lesson_rates, context_rates, basis
 
 
@@ -754,7 +827,7 @@ def report(
     findings = drift(rows, alpha=alpha, min_arm=min_arm, practical=practical)
     gated, resets = forget_before_drift(rows, findings)
     use_field = _field_mode(root) if field is None else field
-    field_model = fit(gated, sources, kernel=kernel, candidates=candidates)
+    field_model = fit(gated, sources, kernel=kernel, candidates=candidates, context_transfer=True)
     model = field_model if use_field else fit(gated, sources)
     lesson_rates, context_rates = rates(model, floor)
     from unimem import attribution
@@ -788,6 +861,7 @@ def report(
                 for lesson, p in sorted(field_model.forecasts.items())
             ],
             "lookalikes": [asdict(x) for x in effect_field.lookalikes(estimates, kernel, practical=practical)],
+            "context_field": field_model.context_summary(),
             "off_policy": asdict(evaluate(rows, sources, floor=floor, kernel=kernel)),
         },
         "note": (
@@ -872,6 +946,14 @@ def _render_field(section: Mapping[str, Any]) -> list[str]:
     lines = [f"  effect field ({section['kernel']}): {section['verdict']} {detail}; {used}"]
     if section["verdict"] == effect_field.VALIDATED:
         lines.append(f"    kernel power {section['power']}, share of between-memory variance {section['share']:.0%}")
+    ctx = section.get("context_field")
+    if ctx:
+        validated = ctx["validated"]
+        lines.append(
+            "    context field (shared embodiment/site/skill or model/task components): validated for "
+            f"{len(validated)} of {ctx['memories'] - ctx['insufficient']} memories with enough contexts"
+            + (f" ({', '.join(validated[:5])})" if validated else "")
+        )
     for f in section.get("forecasts", []):
         witness = ", ".join(f"{m} ({s:.2f})" for m, s in f["witnesses"][:3])
         lines.append(

@@ -32,6 +32,18 @@ Conflicting final outcomes are refused. Calling applications should flush
 is acknowledged the queue restarts its journal with a signed link to the retired
 chain, so a long-lived robot never fills the bounded journal.
 
+A task outcome does not have to be binary. `robot.finish("episode-42",
+reward=0.7)` reports task progress, and `robot.finish("episode-42",
+metrics={"progress": 0.7, "cycle_s": 41, "energy_wh": 12})` reports
+measurements scored by the store's utility (`unimem reward configure`). The
+offline queue keeps graded outcomes, and ROS `/task/end` envelopes accept
+`reward` or `metrics` in place of `succeeded`. See [graded outcomes](rewards.md).
+Memories sent to `start(items=...)` may carry an `embedding` from the robot's
+own encoder (a VLA or vision-language model) with an `embedding_model` label. In
+`thompson-field` mode this lets measured evidence move between similar skills
+and keyframes, and between contexts that share an embodiment, site or skill
+([effect field](effect-field.md)).
+
 After recall, send every proposed memory-derived action through
 `RobotBridge.authorize_action(occasion, action, spec_id=..., trace=..., monitor=...)`.
 The bridge supplies only memory IDs delivered for that same occasion and fails

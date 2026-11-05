@@ -285,3 +285,70 @@ def test_the_gate_command_reports_the_field_and_enables_field_mode(tmp_path, clo
     assert forecast["lesson"] == "legacy-new" and forecast["withhold"] > 0.7 and forecast["witnesses"]
     assert main(["allocate", "enable", "--mode", "thompson-field", "--dest", root]) == 0
     assert "unlisted memories: 50% withheld" in capsys.readouterr().out
+
+
+# -- context field: a robot fleet's embodiments, sites and skills ----------------------------------
+
+EMBODIMENT_EFFECT = {"jaw": 0.25, "suction": -0.25, "dexterous": 0.0}
+SITES = ("depot", "yard", "lab", "dock")
+
+
+def test_context_similarity_is_the_share_of_matching_components_within_one_memory():
+    kernel = effect_field.Kernel.contexts(
+        {
+            "a": ("m", "ur5/depot/grasp"),
+            "b": ("m", "ur5/yard/grasp"),
+            "c": ("m", "franka/depot/pour"),
+            "d": ("m", "code"),
+            "e": ("m", "support"),
+            "f": ("other", "ur5/depot/grasp"),
+        }
+    )
+    assert kernel.similarity("a", "b") == pytest.approx(2 / 3)
+    assert kernel.similarity("a", "c") == pytest.approx(1 / 3)
+    assert kernel.similarity("d", "e") == 0.0  # short labels are padded with pads that match nothing
+    assert kernel.similarity("a", "f") == 0.0  # contexts of different memories never compare
+    assert kernel.similarity("a", "a") == pytest.approx(1.0)
+
+
+def _fleet(seed: int, *, linked: bool, per: int = 30) -> tuple[list[Row], dict[str, float]]:
+    rng = random.Random(seed)
+    contexts = [f"{e}/{s}/pick" for e in EMBODIMENT_EFFECT for s in SITES]
+    truth = {c: EMBODIMENT_EFFECT[c.split("/")[0]] for c in contexts}
+    if not linked:
+        values = list(truth.values())
+        rng.shuffle(values)
+        truth = dict(zip(contexts, values))
+    rows, i = [], 0
+    for c in contexts:
+        for _ in range(per):
+            shown = rng.random() >= 0.5
+            rows.append(Row("gripper-tip", f"o{i}", shown, rng.random() < 0.5 + (truth[c] if shown else 0), 0.5, c))
+            filler = rng.random() >= 0.5
+            rows.append(Row("filler", f"o{i}", filler, rng.random() < 0.5, 0.5, c))
+            i += 1
+    return rows, truth
+
+
+def _context_rmse(model: causal_gate.Model, truth: dict[str, float]) -> float:
+    errors = [(model.contexts[("gripper-tip", c)].mean - t) ** 2 for c, t in truth.items()]
+    return (sum(errors) / len(errors)) ** 0.5
+
+
+def test_sparse_robot_contexts_borrow_from_contexts_sharing_an_embodiment():
+    for seed in (0, 1, 4):
+        rows, truth = _fleet(seed, linked=True)
+        model = causal_gate.fit(rows, context_transfer=True)
+        assert model.context_transfer["gripper-tip"].validated, model.context_transfer["gripper-tip"].summary()
+        assert _context_rmse(model, truth) < 0.8 * _context_rmse(causal_gate.fit(rows), truth)
+        summary = model.to_dict()["context_field"]
+        assert "gripper-tip" in summary["validated"] and summary["kernel"] == "context-components-v1"
+
+
+def test_the_context_field_stays_out_when_components_do_not_predict_effects():
+    for seed in range(5):
+        rows, _truth = _fleet(seed, linked=False)
+        model = causal_gate.fit(rows, context_transfer=True)
+        assert not model.context_transfer["gripper-tip"].validated
+        plain = causal_gate.fit(rows)
+        assert model.contexts[("gripper-tip", "jaw/depot/pick")] == plain.contexts[("gripper-tip", "jaw/depot/pick")]
