@@ -10,7 +10,7 @@ UniMem gives AI agents and robots a complete, governed memory: reusable lessons,
 - **Fast and local-first.** Pure Python with one dependency (PyYAML), offline, no LLM required. On LoCoMo the gateway delivers the gold evidence for 95.8% of 1,540 questions at 152 ms p50 on CPU ([benchmarks](docs/memory-benchmarks.md)).
 - **Agent- and robot-native.** MCP server with 60+ tools, HTTP gateway, framework middleware, one-command installs for coding agents, and a ROS 2 bridge for physical AI.
 
-### See the whole loop in 30 seconds
+### See the whole loop offline
 
 ```bash
 pip install -e .        # Python 3.10+
@@ -18,22 +18,32 @@ unimem demo             # offline, no LLM, no API key
 ```
 
 ```
-1/3 REMEMBER  facts that know when they were true
+1/4 REMEMBER  facts that know when they were true
     Q: How are refunds issued?
     today            → Refunds are issued through the v2 payments API.
     as of 2026-01-02 → Refunds are issued through the v1 refunds endpoint.
 
-2/3 MEASURE   1,000 simulated support tickets; every memory randomly withheld on half
+2/4 MEASURE   1,000 simulated support tickets; every memory randomly withheld on half
     integrity audit: SOUND
     memory                planted  measured   95% interval     verdict
     verify-owner             +20%      +20%   [+4%, +35%]      HELPS
     retry-429                 +0%       +1%   [-15%, +17%]     NO_MEASURABLE_EFFECT
     legacy-refund-api        -20%      -23%   [-38%, -7%]      HURTS
 
-3/3 GOVERN    the evidence changes what the agent sees next
+3/4 GOVERN    the evidence changes what the agent sees next
     withdrawn  (proven harmful, never delivered)  legacy-refund-api
     graduated  (proven helpful, always delivered) verify-owner
     under test (still randomized)                 retry-429
+
+4/4 LEARN     1,000 graded tasks from coding agents, LLM apps and robots in one store
+    reward: agent = share of tests passing · llm = evaluator score · robot = task progress
+    measured (planted)               agent           llm         robot
+    confirm-before-acting      +16% (+15%)   +20% (+15%)   +16% (+15%)
+    move-fast-skip-checks        -7% (+0%)     -4% (+0%)   -11% (-20%)
+    cite-sources                 +2% (+0%)   +11% (+10%)     +1% (+0%)
+    reward audit: SOUND
+    One memory can help one kind of client and hurt another; the store estimates each context
+    separately instead of averaging them together.
 ```
 
 <sub>The agent and its outcomes are simulated with planted effects so the measured effects can be checked against ground truth. The store, randomization, integrity audit, analysis and withdrawal are the real product. `--keep DIR` keeps the store for inspection.</sub>
@@ -42,7 +52,7 @@ unimem demo             # offline, no LLM, no API key
 
 ## Contents
 
-- [See the whole loop in 30 seconds](#see-the-whole-loop-in-30-seconds)
+- [See the whole loop offline](#see-the-whole-loop-offline)
 - [Quickstart](#quickstart)
 - [Prove that memory helps](#prove-that-memory-helps)
 - [Learn where each memory helps: the causal gate](#learn-where-each-memory-helps-the-causal-gate)

@@ -49,6 +49,7 @@ import hashlib
 import importlib
 import json
 import math
+import operator
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -137,27 +138,6 @@ class Kernel:
     def lexical(cls, texts: Mapping[str, str]) -> Kernel:
         """Smoothed TF-IDF over `texts` (memory id -> text)."""
         return cls.combined({memory: term_bag(text) for memory, text in texts.items()})
-
-    @classmethod
-    def contexts(cls, cells: Mapping[str, tuple[str, str]]) -> Kernel:
-        """Similarity between one memory's occasion contexts, by shared ``/``-separated components.
-
-        `cells` maps a cell id to (memory, context). Two contexts of the same memory have
-        similarity equal to the share of component positions they agree on, so
-        ``ur5/depot/grasp`` is closer to ``ur5/yard/grasp`` than to ``franka/depot/pour``.
-        Contexts of different memories never compare, and labels without components only
-        match themselves. A sum of categorical indicators is positive semidefinite.
-        """
-        parts = {cell: context.split("/") for cell, (_memory, context) in cells.items()}
-        width: dict[str, int] = defaultdict(int)
-        for cell, (memory, _context) in cells.items():
-            width[memory] = max(width[memory], len(parts[cell]))
-        vectors = {}
-        for cell, (memory, _context) in cells.items():
-            p = width[memory]
-            components = parts[cell] + [f"\x00{cell}"] * (p - len(parts[cell]))  # a pad matches nothing else
-            vectors[cell] = {f"{memory}\x1f{i}\x1f{c}": 1.0 / math.sqrt(p) for i, c in enumerate(components)}
-        return cls(KERNEL_CONTEXT, vectors)
 
     @classmethod
     def from_embeddings(cls, vectors: Mapping[str, Sequence[float]], kind: str = "dense") -> Kernel:
@@ -293,6 +273,11 @@ class CellKernel:
     content: Kernel | None
     cells: Mapping[str, tuple[str, str]]  # cell id -> (memory, context)
     width: int = 1
+    _cache: dict[frozenset[str], tuple[dict[str, list[str]], dict[str, Neighbors]]] = field(
+        default_factory=dict, compare=False, repr=False
+    )
+    _sims: dict[tuple[str, str], float] = field(default_factory=dict, compare=False, repr=False)
+    _shared: dict[tuple[str, str], float] = field(default_factory=dict, compare=False, repr=False)
 
     @classmethod
     def build(cls, content: Kernel | None, cells: Mapping[str, tuple[str, str]]) -> CellKernel:
@@ -309,27 +294,45 @@ class CellKernel:
     def _context(self, a: str, b: str) -> float:
         if a == b:
             return 1.0
-        pa, pb = a.split("/"), b.split("/")
-        return sum(1 for i in range(min(len(pa), len(pb))) if pa[i] == pb[i]) / self.width
+        if (a, b) not in self._shared:
+            pa, pb = a.split("/"), b.split("/")
+            self._shared[a, b] = sum(1 for i in range(min(len(pa), len(pb))) if pa[i] == pb[i]) / self.width
+        return self._shared[a, b]
 
     def _memory(self, a: str, b: str) -> float:
         if a == b:
             return 1.0
-        return self.content.similarity(a, b) if self.content is not None else 0.0
+        if self.content is None:
+            return 0.0
+        if (a, b) not in self._sims:
+            self._sims[a, b] = self.content.similarity(a, b)
+        return self._sims[a, b]
 
     def similarity(self, a: str, b: str) -> float:
         (ma, ca), (mb, cb) = self.cells[a], self.cells[b]
         return self._memory(ma, mb) * self._context(ca, cb)
 
+    def _pool(self, pool: Iterable[str], memories: Iterable[str]) -> tuple[dict[str, list[str]], dict[str, Neighbors]]:
+        """The pool's cells by memory, and each memory's content neighbours among the pool's memories."""
+        members = frozenset(pool)
+        if members not in self._cache:
+            by_memory: dict[str, list[str]] = defaultdict(list)
+            for cell in sorted(members):
+                by_memory[self.cells[cell][0]].append(cell)
+            roster = sorted(by_memory)
+            near = self.content.neighbors(roster, roster, NEIGHBORS) if self.content is not None else {}
+            self._cache[members] = (by_memory, near)
+        by_memory, near = self._cache[members]
+        missing = sorted({m for m in memories if m not in near})
+        if missing and self.content is not None:
+            near.update(self.content.neighbors(missing, sorted(by_memory), NEIGHBORS))
+        return by_memory, near
+
     def neighbors(self, queries: Iterable[str], pool: Iterable[str], k: int = NEIGHBORS) -> dict[str, Neighbors]:
         """Each query cell's `k` most similar pool cells: its own memory's other contexts and its
         content neighbours' contexts."""
-        by_memory: dict[str, list[str]] = defaultdict(list)
-        for cell in sorted(set(pool)):
-            by_memory[self.cells[cell][0]].append(cell)
         queries = list(queries)
-        memories = sorted({self.cells[q][0] for q in queries})
-        near = self.content.neighbors(memories, sorted(by_memory), NEIGHBORS) if self.content is not None else {}
+        by_memory, near = self._pool(pool, (self.cells[q][0] for q in queries))
         out: dict[str, Neighbors] = {}
         for q in queries:
             memory, context = self.cells[q]
@@ -352,7 +355,7 @@ def _cholesky(a: list[list[float]]) -> list[list[float]] | None:
     low = [[0.0] * n for _ in range(n)]
     for i in range(n):
         for j in range(i + 1):
-            s = a[i][j] - math.fsum(low[i][k] * low[j][k] for k in range(j))
+            s = a[i][j] - math.fsum(map(operator.mul, low[i][:j], low[j][:j]))
             if i == j:
                 if s <= 0.0:
                     return None
@@ -365,7 +368,7 @@ def _cholesky(a: list[list[float]]) -> list[list[float]] | None:
 def _forward(low: list[list[float]], b: Sequence[float]) -> list[float]:
     x: list[float] = []
     for i, row in enumerate(low):
-        x.append((b[i] - math.fsum(row[k] * x[k] for k in range(i))) / row[i])
+        x.append((b[i] - math.fsum(map(operator.mul, row[:i], x))) / row[i])
     return x
 
 

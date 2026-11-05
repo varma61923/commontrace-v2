@@ -295,7 +295,8 @@ SITES = ("depot", "yard", "lab", "dock")
 
 
 def test_context_similarity_is_the_share_of_matching_components_within_one_memory():
-    kernel = effect_field.Kernel.contexts(
+    kernel = effect_field.CellKernel.build(
+        None,
         {
             "a": ("m", "ur5/depot/grasp"),
             "b": ("m", "ur5/yard/grasp"),
@@ -303,12 +304,13 @@ def test_context_similarity_is_the_share_of_matching_components_within_one_memor
             "d": ("m", "code"),
             "e": ("m", "support"),
             "f": ("other", "ur5/depot/grasp"),
-        }
+        },
     )
+    assert kernel.kind == "identity*context-components-v1"
     assert kernel.similarity("a", "b") == pytest.approx(2 / 3)
     assert kernel.similarity("a", "c") == pytest.approx(1 / 3)
     assert kernel.similarity("d", "e") == 0.0  # short labels are padded with pads that match nothing
-    assert kernel.similarity("a", "f") == 0.0  # contexts of different memories never compare
+    assert kernel.similarity("a", "f") == 0.0  # without a content kernel, different memories never compare
     assert kernel.similarity("a", "a") == pytest.approx(1.0)
 
 
