@@ -4,10 +4,22 @@ from __future__ import annotations
 
 import json
 from typing import Any, Callable, Protocol
+from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from unimem import frontier_protocol as fp
+
+REFUSALS = (400, 409, 413, 422)
+
+
+class GatewayRefused(ValueError):
+    """The gateway definitively refused a request (one of `REFUSALS`): invalid, or conflicting with
+    recorded state. Resending the same body can never succeed, so it must not stay queued."""
+
+    def __init__(self, status: int, code: str = "") -> None:
+        super().__init__(f"gateway refused the request with HTTP {status}" + (f" ({code})" if code else ""))
+        self.status, self.code = status, code
 
 
 class GatewayTransport(Protocol):
@@ -55,8 +67,20 @@ class HTTPGateway:
             if not isinstance(value, dict):
                 raise ValueError("gateway returned a non-object")
             return value
+        except HTTPError as exc:
+            if exc.code in REFUSALS:
+                raise GatewayRefused(exc.code, _error_code(exc)) from None
+            raise ConnectionError("robot gateway request failed; outcome remains queued for retry") from None
         except Exception:
             raise ConnectionError("robot gateway request failed; outcome remains queued for retry") from None
+
+
+def _error_code(exc: HTTPError) -> str:
+    try:
+        error = json.loads(exc.read(4096)).get("error", {})
+        return fp.text(str(error.get("code", "")), "gateway error code", 64) if isinstance(error, dict) else ""
+    except Exception:
+        return ""
 
 
 class RobotBridge:
@@ -186,6 +210,10 @@ class RobotBridge:
             if self.queue is None:
                 raise
             return {"queued": True, "occasion_id": occasion}
+        except GatewayRefused as exc:
+            if self.queue is not None:
+                self.queue.reject(occasion, exc.status, exc.code)
+            raise
         if self.queue is not None:
             self.queue.acknowledge(occasion)
         self._recalls.pop(occasion, None)

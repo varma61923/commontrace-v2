@@ -140,9 +140,37 @@ class OutcomeQueue:
         self.root = root
 
     def pending(self) -> list[dict[str, Any]]:
-        rows = [r for r in fp.journal(self.root, "edge-outcomes.jsonl") if r.get("kind") in ("enqueue", "ack")]
-        acknowledged = {r["occasion_id"] for r in rows if r["kind"] == "ack"}
-        return [r["body"] for r in rows if r["kind"] == "enqueue" and r["occasion_id"] not in acknowledged]
+        rows = [
+            r for r in fp.journal(self.root, "edge-outcomes.jsonl") if r.get("kind") in ("enqueue", "ack", "reject")
+        ]
+        settled = {r["occasion_id"] for r in rows if r["kind"] in ("ack", "reject")}
+        return [r["body"] for r in rows if r["kind"] == "enqueue" and r["occasion_id"] not in settled]
+
+    def rejected(self) -> list[dict[str, Any]]:
+        """Outcomes the gateway definitively refused, with its status and error code, for an operator."""
+        rows = fp.journal(self.root, "edge-outcomes.jsonl")
+        bodies = {r["occasion_id"]: r["body"] for r in rows if r.get("kind") == "enqueue"}
+        return [
+            {
+                "occasion_id": r["occasion_id"],
+                "status": r["status"],
+                "code": r["code"],
+                "body": bodies.get(r["occasion_id"]),
+            }
+            for r in rows
+            if r.get("kind") == "reject"
+        ]
+
+    def reject(self, occasion: str, status: int, code: str = "") -> None:
+        """Settle a pending outcome the gateway refused, so it never blocks the outcomes queued after it."""
+        fp.text(occasion)
+        with _jsonl.locked(fp.filename(self.root, "edge-outcomes.jsonl")):
+            if any(r["occasion_id"] == occasion for r in self.pending()):
+                fp.append(
+                    self.root,
+                    "edge-outcomes.jsonl",
+                    {"kind": "reject", "occasion_id": occasion, "status": int(status), "code": str(code)},
+                )
 
     def enqueue(self, body: dict[str, Any]) -> None:
         identity = fp.text(body["occasion_id"])
@@ -173,9 +201,20 @@ class OutcomeQueue:
                 fp.rotate(self.root, "edge-outcomes.jsonl", [])
 
     def flush(self, post: Callable[[str, dict[str, Any]], Any]) -> int:
+        """Send every pending outcome in order; returns how many the gateway accepted.
+
+        A definitive refusal (`bridge.GatewayRefused`) is settled as rejected and the flush
+        continues. A transport failure stops the flush and leaves the rest queued, in order.
+        """
+        from unimem.robotics.bridge import GatewayRefused
+
         sent = 0
         for body in self.pending():
-            post("/v1/outcome", body)
+            try:
+                post("/v1/outcome", body)
+            except GatewayRefused as exc:
+                self.reject(body["occasion_id"], exc.status, exc.code)
+                continue
             self.acknowledge(body["occasion_id"])
             sent += 1
         return sent

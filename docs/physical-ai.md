@@ -28,7 +28,10 @@ fits; labels must not contain `/`). `/v1/recall` and `/v1/outcome` retain the
 existing gateway contract and authentication. If an outcome request fails, the
 signed durable queue survives restart and retries with the same occasion id.
 Conflicting final outcomes are refused. Calling applications should flush
-`OutcomeQueue.flush(transport.post)` after reconnecting. Once every queued outcome
+`OutcomeQueue.flush(transport.post)` after reconnecting. Only outages are
+retried: a definitive refusal (HTTP 400, 409, 413 or 422) raises
+`GatewayRefused` from `finish`, is settled in the queue and listed by
+`OutcomeQueue.rejected()`, and never blocks the outcomes queued after it. Once every queued outcome
 is acknowledged the queue restarts its journal with a signed link to the retired
 chain, so a long-lived robot never fills the bounded journal.
 
