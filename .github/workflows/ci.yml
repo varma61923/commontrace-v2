@@ -313,8 +313,11 @@ jobs:
       - name: Build and run the test suite
         run: npm test
 
-      - name: Install pinned native TypeScript framework factories outside the checkout
-        run: npm install --prefix "$RUNNER_TEMP/unimem-frameworks" --no-audit --no-fund ai@7.0.136 @mastra/core@1.75.0 zod@4.6.5
+      - name: Install pinned native TypeScript framework factories outside the checkout (transitive releases at least a week old)
+        run: >-
+          npm install --prefix "$RUNNER_TEMP/unimem-frameworks" --no-audit --no-fund
+          --before "$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)"
+          ai@7.0.136 @mastra/core@1.75.0 zod@4.6.5
 
       - name: Exercise real Vercel and Mastra tools without model calls
         env:
