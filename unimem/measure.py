@@ -217,6 +217,7 @@ class CausalMemory:
         assignments: list[dict] = []
         if ids and config.running:
             if record:
+                self._observe_signatures(keyed, revisions)
                 withheld = holdout_io.assign_and_log(
                     self._root,
                     ids,
@@ -254,9 +255,50 @@ class CausalMemory:
             },
         )
 
+    def _observe_signatures(self, keyed: list[tuple[str, Any]], revisions: dict[str, str | None]) -> None:
+        """Record content signatures of the randomized memories while the effect field is in use."""
+        from unimem import memory_signatures
+
+        if not memory_signatures.enabled(self._root):
+            return
+        rows = []
+        for item_id, item in keyed:
+            if item_id not in revisions:
+                continue
+            emb = None
+            if isinstance(item, dict) and item.get("embedding") is not None:
+                try:
+                    emb = memory_signatures.embedding(item["embedding"], item.get("embedding_model"))
+                except ValueError:
+                    emb = None  # a malformed vector never fails recall; the text signature still counts
+            rows.append((item_id, self._text(item), revisions[item_id], emb))
+        memory_signatures.observe(self._root, rows, durable=self._durable)
+
     def record_outcome(
-        self, occasion_id: str, *, succeeded: bool, secondary_metrics: dict[str, float | bool] | None = None
+        self,
+        occasion_id: str,
+        *,
+        succeeded: bool | None = None,
+        reward: float | None = None,
+        metrics: dict[str, float] | None = None,
+        secondary_metrics: dict[str, float | bool] | None = None,
     ) -> bool:
+        """Record how the occasion went: `succeeded`, a graded `reward` in [0, 1], or utility `metrics`.
+
+        A reward or metrics are realized by `rewards` randomized rounding, so every effect
+        estimate becomes an unbiased effect on expected reward.
+        """
+        if sum(v is not None for v in (succeeded, reward, metrics)) != 1:
+            raise ValueError("give exactly one of succeeded, reward or metrics")
+        if succeeded is None:
+            from unimem import rewards
+
+            if secondary_metrics is not None:
+                from unimem import sycophancy_io
+
+                sycophancy_io.record_metrics(self._root, occasion_id, secondary_metrics)
+            out = rewards.record(self._root, occasion_id, reward=reward, metrics=metrics, durable=self._durable)
+            return bool(out["recorded"])
         return holdout_io.record_outcome(
             self._root, occasion_id, succeeded, self._durable, secondary_metrics=secondary_metrics
         )

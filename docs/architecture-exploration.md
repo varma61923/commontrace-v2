@@ -55,7 +55,7 @@ Wait for extraction to complete before consuming its output:
 python scripts/graphify_audit.py \
   --graph ../unimem-architecture/graphify-out/graph.json \
   --output ../unimem-architecture/audit.json \
-  --source-root . --max-modules 399 --max-unreachable 318
+  --source-root . --max-modules 402 --max-unreachable 318
 
 graphify diagnose multigraph --json \
   --graph ../unimem-architecture/graphify-out/graph.json

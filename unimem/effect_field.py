@@ -46,6 +46,7 @@ HELPS or HURTS, never withdraws or graduates anything, and never enters
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import math
 from collections import Counter, defaultdict
@@ -64,7 +65,8 @@ MIN_MEASURED = 10  # measured memories with a witness, before a field may valida
 LOOKALIKE_SIMILARITY = 0.6
 MAX_TEXT_CHARS = 8000
 JITTER = 1e-12
-KERNEL_LEXICAL = "lexical-tfidf-v1"
+KERNEL_LEXICAL = "lexical-tfidf-v2"
+MAX_BAG_TERMS = 256
 VALIDATE_Z = NormalDist().inv_cdf(1.0 - ALPHA / (len(POWERS) * len(SHARES)))
 
 VALIDATED = "VALIDATED"
@@ -88,65 +90,162 @@ def tokens(text: str) -> list[str]:
     return out
 
 
-def _unit(weights: Mapping[str, float]) -> Vector:
+def term_hash(term: str) -> str:
+    """A 48-bit keyed digest of a term: signatures keep counts of these, not words (still erasable data)."""
+    return hashlib.blake2b(term.encode("utf-8"), digest_size=6, person=b"unimem-terms-v1").hexdigest()
+
+
+def term_bag(text: str) -> dict[str, int]:
+    """Hashed content-term counts of `text`, at most MAX_BAG_TERMS of the most frequent."""
+    counts = Counter(term_hash(t) for t in tokens(text))
+    return dict(sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:MAX_BAG_TERMS])
+
+
+def _unit(weights: Mapping[str, float], scale: float = 1.0) -> Vector:
     norm = math.sqrt(math.fsum(w * w for w in weights.values()))
-    return {k: w / norm for k, w in sorted(weights.items()) if w} if norm > 0 else {}
+    return {k: scale * w / norm for k, w in sorted(weights.items()) if w} if norm > 0 else {}
+
+
+def _dense_unit(values: Sequence[float], scale: float) -> tuple[float, ...]:
+    norm = math.sqrt(math.fsum(float(x) * float(x) for x in values))
+    return tuple(scale * float(x) / norm for x in values) if norm > 0 else ()
 
 
 @dataclass(frozen=True)
 class Kernel:
-    """Cosine similarity between memories' unit vectors."""
+    """Cosine similarity between memories, over hashed content terms and any number of embedding spaces.
+
+    A memory present in several spaces is the concatenation of its unit vectors, each
+    scaled by ``1/sqrt(spaces)``, so the similarity of two memories is the mean of their
+    per-space cosines over the spaces they share, and the Gram matrix stays positive
+    semidefinite.
+    """
 
     kind: str
     vectors: Mapping[str, Vector]
+    dense: Mapping[str, Mapping[str, tuple[float, ...]]] = field(default_factory=dict)  # model -> memory -> vector
 
     @classmethod
     def lexical(cls, texts: Mapping[str, str]) -> Kernel:
         """Smoothed TF-IDF over `texts` (memory id -> text)."""
-        bags = {memory: Counter(tokens(text)) for memory, text in texts.items()}
+        return cls.combined({memory: term_bag(text) for memory, text in texts.items()})
+
+    @classmethod
+    def from_embeddings(cls, vectors: Mapping[str, Sequence[float]], kind: str = "dense") -> Kernel:
+        """Caller-supplied embeddings (memory id -> vector) in one space named `kind`."""
+        return cls.combined({}, {m: (kind, v) for m, v in vectors.items()})
+
+    @classmethod
+    def combined(
+        cls,
+        bags: Mapping[str, Mapping[str, int]],
+        embeddings: Mapping[str, tuple[str, Sequence[float]]] | None = None,
+    ) -> Kernel:
+        """TF-IDF over hashed term `bags`, joined with `embeddings` (memory -> (model, vector))."""
+        embeddings = embeddings or {}
         df = Counter(term for bag in bags.values() for term in bag)
         n = len(bags)
         idf = {term: math.log((1.0 + n) / (1.0 + d)) + 1.0 for term, d in df.items()}
-        return cls(
-            KERNEL_LEXICAL,
-            {m: _unit({t: (1.0 + math.log(c)) * idf[t] for t, c in bag.items()}) for m, bag in bags.items()},
-        )
-
-    @classmethod
-    def dense(cls, vectors: Mapping[str, Sequence[float]], kind: str = "dense") -> Kernel:
-        """Caller-supplied embeddings (memory id -> vector), normalized here."""
-        return cls(kind, {m: _unit({str(i): float(x) for i, x in enumerate(v)}) for m, v in vectors.items()})
+        spaces = Counter({m: 1 for m, bag in bags.items() if bag})
+        for m, (_model, vector) in embeddings.items():
+            if vector:
+                spaces[m] += 1
+        vectors = {
+            m: _unit({t: (1.0 + math.log(c)) * idf[t] for t, c in bag.items() if c > 0}, 1.0 / math.sqrt(spaces[m]))
+            for m, bag in bags.items()
+            if bag
+        }
+        dense: dict[str, dict[str, tuple[float, ...]]] = defaultdict(dict)
+        for m, (model, vector) in embeddings.items():
+            unit = _dense_unit(vector, 1.0 / math.sqrt(spaces[m])) if vector else ()
+            if unit:
+                dense[model][m] = unit
+        kind = KERNEL_LEXICAL + "".join(f"+{model}" for model in sorted(dense))
+        return cls(kind, vectors, dict(dense))
 
     def similarity(self, a: str, b: str) -> float:
+        total = 0.0
         va, vb = self.vectors.get(a), self.vectors.get(b)
-        if not va or not vb:
-            return 0.0
-        if len(va) > len(vb):
-            va, vb = vb, va
-        return max(-1.0, min(1.0, math.fsum(w * vb.get(t, 0.0) for t, w in va.items())))
+        if va and vb:
+            if len(va) > len(vb):
+                va, vb = vb, va
+            total += math.fsum(w * vb.get(t, 0.0) for t, w in va.items())
+        for space in self.dense.values():
+            da, db = space.get(a), space.get(b)
+            if da and db and len(da) == len(db):
+                total += math.fsum(x * y for x, y in zip(da, db))
+        return max(-1.0, min(1.0, total))
+
+    def has(self, memory: str) -> bool:
+        return bool(self.vectors.get(memory)) or any(memory in space for space in self.dense.values())
 
     def neighbors(self, queries: Iterable[str], pool: Iterable[str], k: int = NEIGHBORS) -> dict[str, Neighbors]:
-        """Each query's `k` most similar pool members (never itself), through an inverted index."""
+        """Each query's `k` most similar pool members (never itself).
+
+        Term similarity goes through an inverted index; embedding similarity is a
+        dense product, through numpy when it is installed.
+        """
+        members = sorted(set(pool))
+        queries = list(queries)
         postings: dict[str, list[tuple[str, float]]] = defaultdict(list)
-        for memory in sorted(set(pool)):
+        for memory in members:
             for term, w in self.vectors.get(memory, {}).items():
                 postings[term].append((memory, w))
-        out: dict[str, Neighbors] = {}
+        scores: dict[str, dict[str, float]] = {q: defaultdict(float) for q in queries}
         for q in queries:
-            scores: dict[str, float] = defaultdict(float)
             for term, w in self.vectors.get(q, {}).items():
                 for memory, wm in postings.get(term, ()):
-                    if memory != q:
-                        scores[memory] += w * wm
-            ranked = sorted(((m, s) for m, s in scores.items() if s > 1e-9), key=lambda item: (-item[1], item[0]))
+                    scores[q][memory] += w * wm
+        for space in self.dense.values():
+            _dense_scores(space, queries, members, scores)
+        out: dict[str, Neighbors] = {}
+        for q in queries:
+            ranked = sorted(
+                ((m, s) for m, s in scores[q].items() if s > 1e-9 and m != q), key=lambda item: (-item[1], item[0])
+            )
             out[q] = tuple((m, round(min(1.0, s), 12)) for m, s in ranked[:k])
         return out
 
     def digest(self) -> str:
         """Commitment to the kernel's inputs, for a schedule's basis."""
-        body = {m: {t: round(w, 9) for t, w in v.items()} for m, v in sorted(self.vectors.items())}
-        payload = json.dumps({"kind": self.kind, "vectors": body}, sort_keys=True, ensure_ascii=False)
+        body = {
+            "kind": self.kind,
+            "vectors": {m: {t: round(w, 9) for t, w in v.items()} for m, v in sorted(self.vectors.items())},
+            "dense": {
+                model: {m: [round(x, 9) for x in v] for m, v in sorted(space.items())}
+                for model, space in sorted(self.dense.items())
+            },
+        }
+        payload = json.dumps(body, sort_keys=True, ensure_ascii=False)
         return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _dense_scores(
+    space: Mapping[str, tuple[float, ...]],
+    queries: Sequence[str],
+    members: Sequence[str],
+    scores: dict[str, dict[str, float]],
+) -> None:
+    qs = [q for q in queries if q in space]
+    ms = [m for m in members if m in space]
+    if not qs or not ms:
+        return
+    width = len(space[qs[0]])
+    qs = [q for q in qs if len(space[q]) == width]
+    ms = [m for m in ms if len(space[m]) == width]
+    try:
+        np: Any = importlib.import_module("numpy")
+    except ImportError:
+        for q in qs:
+            vq = space[q]
+            for m in ms:
+                scores[q][m] += math.fsum(x * y for x, y in zip(vq, space[m]))
+        return
+    product = np.asarray([space[q] for q in qs], dtype=float) @ np.asarray([space[m] for m in ms], dtype=float).T
+    for i, q in enumerate(qs):
+        row = product[i]
+        for j in np.flatnonzero(row > 1e-9):
+            scores[q][ms[j]] += float(row[j])
 
 
 # -- Gaussian-process transfer -------------------------------------------------------------------
@@ -284,8 +383,8 @@ def fit(
     `bases` holds the gate's leave-one-out prior (mean, variance) for every measured
     memory and every candidate; `tau2` is the gate's between-memory variance.
     """
-    measured = sorted(m for m in estimates if m in bases and kernel.vectors.get(m))
-    queries = sorted(set(measured) | {c for c in candidates if c in bases and kernel.vectors.get(c)})
+    measured = sorted(m for m in estimates if m in bases and kernel.has(m))
+    queries = sorted(set(measured) | {c for c in candidates if c in bases and kernel.has(c)})
     hoods = {q: _hood(kernel, nb) for q, nb in kernel.neighbors(queries, measured, k).items()}
     residual = {m: estimates[m][0] - bases[m][0] for m in measured}
     noise = {m: estimates[m][1] for m in measured}
@@ -352,7 +451,7 @@ def lookalikes(
     """Similar memory pairs whose randomized effects differ in sign, at false-discovery rate `alpha`."""
     from unimem.causal_gate import _benjamini_hochberg
 
-    ids = sorted(m for m in estimates if kernel.vectors.get(m))
+    ids = sorted(m for m in estimates if kernel.has(m))
     pairs: dict[tuple[str, str], float] = {}
     for a, row in kernel.neighbors(ids, ids).items():
         for b, s in row:

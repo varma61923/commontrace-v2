@@ -25,10 +25,14 @@ it to the gate's per-memory Hajek effects:
 
 - `base_i` is the causal gate's leave-one-out global or source prior.
 - `tau^2` is the gate's DerSimonian-Laird between-memory variance.
-- The kernel is cosine similarity on smoothed TF-IDF vectors of the lesson text
-  (name, description, applies/does-not-apply fields and body). It is pure
-  Python, offline and deterministic. Library callers can pass embeddings with
-  `Kernel.dense`.
+- The kernel is cosine similarity on smoothed TF-IDF vectors of hashed content
+  terms. For lessons these come from the lesson text (name, description,
+  applies/does-not-apply fields and body); for other memories they come from
+  recorded signatures (below). It is pure Python, offline and deterministic.
+- Memories with embeddings are compared in each embedding space as well. A
+  memory in several spaces is the concatenation of its unit vectors, each scaled
+  by `1/sqrt(spaces)`, so similarity is the mean cosine over the spaces two
+  memories share. Different embedding models never compare.
 - Integer powers of a cosine Gram matrix are positive semidefinite.
 
 Each memory's prior is the GP's best linear prediction from its 12 nearest
@@ -36,6 +40,39 @@ measured neighbours. Its own data is never used. The solve uses the full
 covariance between neighbours, so ten near-duplicates add about as much as one
 witness, and the variance reduction can never exceed `share * tau^2`. With
 `share = 0` the prior is exactly the gate's.
+
+## Memories from any agent, model or robot
+
+Most memories reach UniMem as an id, a revision and content that passes
+through: gateway candidates, items behind framework middleware, or skills and
+keyframes behind a robot bridge. While a `thompson-field` schedule is in force,
+or after `memory_signatures.set_recording(root, True)`, recall stores a
+signature for each randomized memory whose revision or embedding changed. A
+signature is:
+
+- hashed term counts of the text, at most 256 terms, never the words;
+- an optional embedding and its model label, from any encoder: a sentence model
+  for an LLM tip, a vision-language encoder for a robot keyframe, or a policy
+  embedding for a motion primitive.
+
+The gateway accepts these on each recall item:
+
+```json
+{"id": "regrasp-7", "embedding": [0.12, -0.08, ...], "embedding_model": "vla-skill-v1"}
+```
+
+Vectors are never echoed back in `deliver`. Python callers put `embedding` and
+`embedding_model` on dict items passed to `CausalMemory`.
+
+Signatures are derived from memory content. The canonical erasure cascade
+removes them and lists each one in its receipt as `memory-signatures`. Hashed
+terms are not encryption: anyone holding a vocabulary can test whether a word
+occurred.
+
+Memories whose signature was recorded in the last 30 days and that have no
+resolved assignment yet are forecast at the next plan, like unmeasured active
+lessons. Recording costs about 1 ms per recall for eight 384-dimension items.
+It happens only in field mode.
 
 ## Validation
 
@@ -106,10 +143,14 @@ In the placebo run the field never validated, and the result is identical to
   never withdraw or graduate a memory, and never enter `experiment.analyze`,
   billing, valuation or release evidence.
 - The lexical kernel sees shared words, not shared meaning. Paraphrases in
-  different vocabulary need embeddings (`Kernel.dense`). Opposite instructions
-  that share vocabulary are what `lookalikes` exists to surface.
-- The store kernel covers lesson files. Gateway memories identified only by
-  content hash have no text and keep the plain gate prior.
+  different vocabulary need embeddings. Opposite instructions that share
+  vocabulary are what `lookalikes` exists to surface.
+- Signatures exist only for memories recalled with a recording store. Memories
+  seen before field mode was enabled join once they are recalled again.
+- Embedding similarity uses numpy when it is installed. Without numpy it is
+  pure Python and costs O(memories^2 x dimensions) per plan.
+- A brand-new memory is forecast from the next plan onward. Within the era it
+  first appears in, it keeps the schedule's default explore rate.
 - Neighbour residuals use the gate's leave-one-out base, which still includes
   the target memory's evidence at about 1/n weight. The leak is small and biases
   toward the base, not away from it.

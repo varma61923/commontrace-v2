@@ -1002,11 +1002,25 @@
             "description": "must equal the store's environment when it has one; simulation and reality are never pooled",
             "type": "string"
           },
+          "metrics": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "description": "named measurements scored into a reward by the configured utility",
+            "maxProperties": 64,
+            "type": "object"
+          },
           "occasion_id": {
             "description": "1-128 characters, no control characters or surrounding whitespace",
             "maxLength": 128,
             "minLength": 1,
             "type": "string"
+          },
+          "reward": {
+            "description": "graded outcome; recorded as succeeded with probability equal to the reward (audited randomized rounding), so effects are effects on expected reward",
+            "maximum": 1,
+            "minimum": 0,
+            "type": "number"
           },
           "secondary_metrics": {
             "additionalProperties": true,
@@ -1052,7 +1066,7 @@
             "type": "array"
           },
           "succeeded": {
-            "description": "give this or signals, not both",
+            "description": "give exactly one of succeeded, signals, reward or metrics",
             "type": "boolean"
           }
         },
@@ -1075,6 +1089,9 @@
           },
           "recorded": {
             "type": "boolean"
+          },
+          "reward": {
+            "type": "number"
           },
           "succeeded": {
             "type": "boolean"
@@ -1336,6 +1353,20 @@
       "RecallItem": {
         "additionalProperties": true,
         "properties": {
+          "embedding": {
+            "description": "optional vector from any encoder (text, vision-language, policy); lets the effect field carry measured evidence between similar memories; never echoed back",
+            "items": {
+              "type": "number"
+            },
+            "maxItems": 4096,
+            "minItems": 1,
+            "type": "array"
+          },
+          "embedding_model": {
+            "description": "the encoder's label; memories are compared only within one label",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,63}$",
+            "type": "string"
+          },
           "id": {
             "description": "1-128 characters, no control characters or surrounding whitespace",
             "maxLength": 128,

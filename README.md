@@ -139,6 +139,12 @@ unimem experiment --dest ./mem
 
 <sub>Output from a synthetic 400-occasion run. The real report also includes an integrity audit, power projections and the exact text revision each effect describes.</sub>
 
+Outcomes do not have to be pass/fail. A robot's task progress and energy, an evaluator's score, or a patch's test-pass fraction can be recorded as a reward in [0, 1], or as metrics scored by a declared utility. Audited randomized rounding turns each reward into the canonical outcome, so every effect becomes an unbiased effect on expected reward ([graded outcomes](docs/rewards.md)):
+
+```python
+memory.record_outcome("ticket-1042", reward=0.8)  # or metrics={"progress": 0.7, "energy_wh": 30}
+```
+
 The integrity audit runs before any effect is shown. It checks for differential attrition between the arms, arm-balance (sample-ratio) mismatch, a reshuffled randomization, scorer drift, a memory edited mid-run, and censoring. If the run is compromised, UniMem says so instead of printing a confident wrong number.
 
 To act on the evidence automatically:
@@ -309,6 +315,8 @@ UniMem is pre-1.0 software under active development.
 
 | Area | Status |
 |---|---|
+| G32 Graded outcomes | Rewards and utility-scored metrics on the gateway, Python API, client SDK, LangGraph/Pydantic AI and the robot bridge, realized by reproducible randomized rounding with a recomputing audit; [estimand and limits](docs/rewards.md). |
+| G33 Memory signatures | Hashed-term and embedding signatures (any encoder, per-model spaces) let the effect field transfer evidence between gateway, agent and robot memories without stored text; erased by the canonical cascade; [privacy and cost](docs/effect-field.md#memories-from-any-agent-model-or-robot). |
 | G31 Effect field | Validated Gaussian-process transfer of randomized effects between similar lessons, forecasts for unmeasured lessons in `thompson-field` schedules, and opposite-effect look-alike detection; [model, validation and limits](docs/effect-field.md). |
 | G6 Delegated capabilities | Pinned holders, monotone HMAC/Ed25519 chains, request proofs, scoped retrieval, recipient handoffs and revocation quarantine; [workflow and limits](docs/capabilities.md). |
 | G7 Team isolation | Scoped point-read snapshots, commit-time stale-generation guards, fenced work leases and reviewable semantic merges; [guarantees and limits](docs/team-isolation.md). |

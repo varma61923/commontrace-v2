@@ -351,12 +351,23 @@ def _items(value) -> list[dict]:
         meta = raw.get("meta")
         if meta is not None and (not isinstance(meta, dict) or len(json.dumps(meta)) > 4096):
             raise _bad(f"items[{n}].meta must be a small object")
+        emb = None
+        if raw.get("embedding") is not None or raw.get("embedding_model") is not None:
+            from unimem import memory_signatures
+
+            try:
+                emb = memory_signatures.embedding(raw.get("embedding"), raw.get("embedding_model"))
+            except ValueError as exc:
+                raise _bad(f"items[{n}]: {exc}") from None
+            if emb is None:
+                raise _bad(f"items[{n}].embedding_model needs an embedding")
         out.append(
             {
                 "id": item_id,
                 "text": _text(raw.get("text"), f"items[{n}].text", limit=MAX_TEXT_CHARS, required=False),
                 "protected": protected,
                 **({"meta": meta} if meta else {}),
+                **({"embedding": list(emb[1]), "embedding_model": emb[0]} if emb else {}),
             }
         )
     return out
@@ -646,7 +657,9 @@ class Gateway:
             request={
                 "occasion_id": "string",
                 "succeeded": "boolean, or",
-                "signals": "list of {detector, args} evaluated three-valued; with `combine`: all|any",
+                "signals": "list of {detector, args} evaluated three-valued; with `combine`: all|any, or",
+                "reward": "graded outcome in [0, 1], realized by audited randomized rounding, or",
+                "metrics": "{name: number} scored by the configured utility (unimem reward configure)",
                 "agent_id": "optional string",
             },
             summary="How the occasion went. Records nothing while the signals are undecided.",
@@ -2360,6 +2373,9 @@ class Gateway:
         out_ids = {i["id"] for i in delivered}
         from unimem import memory_ifc
 
+        for item in delivered:  # the caller has its vectors; echoing them back only costs bandwidth
+            item.pop("embedding", None)
+            item.pop("embedding_model", None)
         delivered = [memory_ifc.safe_label(self.root, item) for item in delivered]
         withheld = [i["id"] for i in clean if i["id"] not in out_ids and i["id"] not in withdrawn]
         response = {
@@ -2461,8 +2477,11 @@ class Gateway:
         occasion = _ident(req.get("occasion_id"), "occasion_id")
         agent = _agent(req)
         self._check_env(req)
-        if "succeeded" in req and "signals" in req:
-            raise _bad("give `succeeded` or `signals`, not both")
+        given = [k for k in ("succeeded", "signals", "reward", "metrics") if k in req]
+        if len(given) > 1:
+            raise _bad("give one of `succeeded`, `signals`, `reward` or `metrics`")
+        if given and given[0] in ("reward", "metrics"):
+            return self._graded_outcome(req, occasion, agent)
         if "succeeded" in req:
             succeeded = req["succeeded"]
             if not isinstance(succeeded, bool):
@@ -2478,7 +2497,7 @@ class Gateway:
                     "reason": "the signals do not settle this occasion yet; nothing was recorded",
                 }
         else:
-            raise _bad("give `succeeded` (a boolean) or `signals`")
+            raise _bad("give `succeeded` (a boolean), `signals`, `reward` (0..1) or `metrics`")
         try:
             written = holdout_io.record_outcome(
                 self.root, occasion, succeeded, self.durable, secondary_metrics=req.get("secondary_metrics")
@@ -2491,6 +2510,32 @@ class Gateway:
             "recorded": written,
             "succeeded": succeeded,
             **({} if written else {"note": "the same answer was already on record"}),
+        }
+
+    def _graded_outcome(self, req: dict, occasion: str, agent) -> dict:
+        from unimem import rewards
+
+        metrics = req.get("metrics")
+        if metrics is not None and not isinstance(metrics, dict):
+            raise _bad("metrics must be an object of numbers")
+        try:
+            out = rewards.record(self.root, occasion, reward=req.get("reward"), metrics=metrics, durable=self.durable)
+        except holdout_io.ConflictingOutcome as exc:
+            raise ApiError(409, "conflicting_outcome", str(exc)) from None
+        except (TypeError, ValueError) as exc:
+            raise _bad(str(exc)) from None
+        self._log_event(
+            {
+                "kind": "outcome",
+                "occasion_id": occasion,
+                "agent_id": agent,
+                "succeeded": out["succeeded"],
+                "reward": out["reward"],
+            }
+        )
+        return {
+            **out,
+            **({} if out["recorded"] else {"note": "the same reward was already on record"}),
         }
 
     def _data_key(self) -> tuple:

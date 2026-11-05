@@ -677,11 +677,11 @@ def current_rows(root: str) -> list[Row]:
 
 
 def store_kernel(root: str, measured: Iterable[str]) -> tuple[effect_field.Kernel, list[str]]:
-    """A lexical kernel over the store's lesson texts, and the active lessons with no evidence yet."""
+    """A kernel over lesson texts and recorded memory signatures, and the unmeasured memories to forecast."""
+    from unimem import memory_signatures
+
     texts, active = effect_field.lesson_texts(root)
-    measured = set(measured)
-    kernel = effect_field.Kernel.lexical({s: t for s, t in texts.items() if s in measured or s in active})
-    return kernel, sorted(active - measured)
+    return memory_signatures.kernel(root, texts, measured, active)
 
 
 def _field_mode(root: str) -> bool:

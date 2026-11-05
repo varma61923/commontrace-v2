@@ -214,6 +214,17 @@ SCHEMAS: dict[str, dict] = {
             "text": string(maxLength=20000),
             "protected": boolean("always delivered, never randomized"),
             "meta": obj({}, description="a small object (at most 4 KiB as JSON) echoed back"),
+            "embedding": array(
+                number(),
+                "optional vector from any encoder (text, vision-language, policy); lets the effect field "
+                "carry measured evidence between similar memories; never echoed back",
+                minItems=1,
+                maxItems=4096,
+            ),
+            "embedding_model": string(
+                "the encoder's label; memories are compared only within one label",
+                pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,63}$",
+            ),
         },
         ("id",),
     ),
@@ -765,9 +776,21 @@ OPERATIONS: dict[tuple[str, str], Operation] = {
         obj(
             {
                 "occasion_id": IDENT,
-                "succeeded": boolean("give this or signals, not both"),
+                "succeeded": boolean("give exactly one of succeeded, signals, reward or metrics"),
                 "signals": array(ref("Signal"), "evaluated three-valued", minItems=1, maxItems=16),
                 "combine": string(enum=["all", "any"]),
+                "reward": number(
+                    "graded outcome; recorded as succeeded with probability equal to the reward "
+                    "(audited randomized rounding), so effects are effects on expected reward",
+                    minimum=0,
+                    maximum=1,
+                ),
+                "metrics": {
+                    "type": "object",
+                    "description": "named measurements scored into a reward by the configured utility",
+                    "additionalProperties": number(),
+                    "maxProperties": 64,
+                },
                 "agent_id": AGENT_ID,
                 "env": ENV,
                 "secondary_metrics": obj(
@@ -782,6 +805,7 @@ OPERATIONS: dict[tuple[str, str], Operation] = {
                 "occasion_id": string(),
                 "recorded": boolean(),
                 "succeeded": boolean(),
+                "reward": number(),
                 "undecided": boolean(),
                 "reason": string(),
                 "note": string(),

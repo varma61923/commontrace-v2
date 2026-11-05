@@ -146,8 +146,12 @@ class OutcomeQueue:
 
     def enqueue(self, body: dict[str, Any]) -> None:
         identity = fp.text(body["occasion_id"])
-        if type(body.get("succeeded")) is not bool or len(fp.wire(body)) > 4096:
-            raise ValueError("outcome queue requires a bounded binary outcome")
+        kinds = [k for k in ("succeeded", "reward", "metrics") if k in body]
+        binary = kinds == ["succeeded"] and type(body["succeeded"]) is bool
+        graded = kinds == ["reward"] and type(body["reward"]) in (int, float) and 0 <= body["reward"] <= 1
+        measured = kinds == ["metrics"] and isinstance(body["metrics"], dict)
+        if not (binary or graded or measured) or len(fp.wire(body)) > 4096:
+            raise ValueError("outcome queue requires one bounded outcome: succeeded, reward or metrics")
         with _jsonl.locked(fp.filename(self.root, "edge-outcomes.jsonl")):
             rows = fp.journal(self.root, "edge-outcomes.jsonl")
             prior = next((r for r in rows if r.get("kind") == "enqueue" and r["occasion_id"] == identity), None)

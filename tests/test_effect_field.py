@@ -99,11 +99,13 @@ def test_lexical_similarity_is_cosine_on_tfidf_and_neighbors_exclude_the_query()
 
 
 def test_dense_kernels_normalize_and_the_digest_commits_to_the_inputs():
-    kernel = effect_field.Kernel.dense({"a": [3.0, 4.0], "b": [6.0, 8.0], "c": [-4.0, 3.0]}, kind="embed:test")
+    kernel = effect_field.Kernel.from_embeddings(
+        {"a": [3.0, 4.0], "b": [6.0, 8.0], "c": [-4.0, 3.0]}, kind="embed:test"
+    )
     assert kernel.similarity("a", "b") == pytest.approx(1.0)
     assert kernel.similarity("a", "c") == pytest.approx(0.0, abs=1e-12)
-    same = effect_field.Kernel.dense({"a": [3.0, 4.0], "b": [6.0, 8.0], "c": [-4.0, 3.0]}, kind="embed:test")
-    other = effect_field.Kernel.dense({"a": [3.0, 4.0], "b": [6.0, 8.0], "c": [4.0, 3.0]}, kind="embed:test")
+    same = effect_field.Kernel.from_embeddings({"a": [3.0, 4.0], "b": [6.0, 8.0], "c": [-4.0, 3.0]}, kind="embed:test")
+    other = effect_field.Kernel.from_embeddings({"a": [3.0, 4.0], "b": [6.0, 8.0], "c": [4.0, 3.0]}, kind="embed:test")
     assert kernel.digest() == same.digest() != other.digest()
 
 
@@ -275,7 +277,7 @@ def test_the_gate_command_reports_the_field_and_enables_field_mode(tmp_path, clo
     _write_lesson(root, "legacy-new", paraphrase(rng, "legacy"))
     assert main(["allocate", "gate", "--dest", root]) == 0
     text = capsys.readouterr().out
-    assert "effect field (lexical-tfidf-v1): VALIDATED" in text and "diagnostic only" in text
+    assert "effect field (lexical-tfidf-v2): VALIDATED" in text and "diagnostic only" in text
     assert "forecast legacy-new" in text
     assert main(["allocate", "gate", "--json", "--dest", root]) == 0
     doc = json.loads(capsys.readouterr().out)
