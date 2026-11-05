@@ -515,11 +515,9 @@ class MemoryClient:
             raise ValueError("graded outcomes on a remote client go to POST /v1/outcome with `reward` or `metrics`")
         from unimem import causal_policy, policy, rewards
 
-        if secondary_metrics is not None:
-            from unimem import sycophancy_io
-
-            sycophancy_io.record_metrics(self.root, occasion_id, secondary_metrics)
-        out = rewards.record(self.root, occasion_id, reward=reward, metrics=metrics)
+        out = rewards.record(
+            self.root, occasion_id, reward=reward, metrics=metrics, secondary_metrics=secondary_metrics
+        )
         policy.outcome(self.root, occasion_id, out["reward"])
         exploration = causal_policy.record_outcome(self.root, occasion_id, out["reward"])
         return bool(out["recorded"]) or exploration

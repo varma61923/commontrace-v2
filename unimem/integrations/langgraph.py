@@ -223,6 +223,4 @@ def record_outcome(
         )
     except (ValueError, TypeError, KeyError):
         return False
-    if reward is not None:
-        return memory.record_outcome(occasion_id, reward=reward)
-    return memory.record_outcome(occasion_id, succeeded=succeeded)
+    return memory.record_outcome(occasion_id, succeeded=succeeded, reward=reward)

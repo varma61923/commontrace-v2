@@ -245,6 +245,45 @@ async def test_an_unreachable_database_leaves_the_listener_off_and_retrying(_lis
     assert len(attempts) >= 2 and auth._AUTH_CACHE_LISTENER_LIVE is False
 
 
+async def test_a_dead_connections_late_termination_does_not_drop_its_successor(_listener_off_afterwards):
+    import asyncio
+
+    from hub import auth_invalidation
+
+    class Conn:
+        def __init__(self):
+            self.on_lost = None
+
+        def add_termination_listener(self, callback):
+            self.on_lost = callback
+
+        async def add_listener(self, _channel, _callback):
+            return None
+
+        async def close(self):
+            return None
+
+    conns = []
+
+    async def connect(_dsn):
+        conns.append(Conn())
+        return conns[-1]
+
+    auth.configure_auth_cache(30, require_listener=True)
+    stop = asyncio.Event()
+    task = asyncio.create_task(auth_invalidation.listen("postgresql+asyncpg://x/y", stop, connect=connect))
+    try:
+        assert await _until(lambda: len(conns) == 1 and auth._AUTH_CACHE_LISTENER_LIVE)
+        conns[0].on_lost(conns[0])
+        assert await _until(lambda: len(conns) == 2 and auth._AUTH_CACHE_LISTENER_LIVE)
+        conns[0].on_lost(conns[0])  # the first connection's listener fires again, late
+        await asyncio.sleep(0.1)
+        assert len(conns) == 2 and auth._AUTH_CACHE_LISTENER_LIVE
+    finally:
+        stop.set()
+        await task
+
+
 async def test_a_key_is_never_served_past_its_own_expiry(session_factory, config, _listener_off_afterwards):
     from datetime import datetime, timedelta, timezone
 

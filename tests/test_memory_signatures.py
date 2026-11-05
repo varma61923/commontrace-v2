@@ -56,7 +56,8 @@ def test_signatures_are_recorded_once_per_revision_and_forgotten_from_disk(tmp_p
     assert memory_signatures.observe(root, [("a", "re-verify the grasp pose twice", "r2", emb)]) == 1
     sig = memory_signatures.load(root)["a"]
     assert sig.key.startswith("r2|siglip2:") and sig.model == "siglip2" and sig.vector == (0.1, 0.2, 0.3)
-    assert "grasp" not in open(memory_signatures.signatures_path(root), encoding="utf-8").read()
+    with open(memory_signatures.signatures_path(root), encoding="utf-8") as fh:
+        assert "grasp" not in fh.read()
     assert memory_signatures.forget(root, ["a", "zzz"]) == ["a"]
     assert memory_signatures.load(root) == {} and memory_signatures.forget(root, ["a"]) == []
 

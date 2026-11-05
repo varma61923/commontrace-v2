@@ -293,11 +293,14 @@ class CausalMemory:
         if succeeded is None:
             from unimem import rewards
 
-            if secondary_metrics is not None:
-                from unimem import sycophancy_io
-
-                sycophancy_io.record_metrics(self._root, occasion_id, secondary_metrics)
-            out = rewards.record(self._root, occasion_id, reward=reward, metrics=metrics, durable=self._durable)
+            out = rewards.record(
+                self._root,
+                occasion_id,
+                reward=reward,
+                metrics=metrics,
+                durable=self._durable,
+                secondary_metrics=secondary_metrics,
+            )
             return bool(out["recorded"])
         return holdout_io.record_outcome(
             self._root, occasion_id, succeeded, self._durable, secondary_metrics=secondary_metrics

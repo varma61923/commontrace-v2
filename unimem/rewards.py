@@ -146,23 +146,28 @@ def _canonical(terms: Mapping[str, Term]) -> dict[str, Any]:
     }
 
 
-def score(terms: Mapping[str, Term], metrics: Mapping[str, Any]) -> float:
-    """The weighted reward in ``[0, 1]``; every term must be measured."""
+def _metrics(metrics: Mapping[str, Any]) -> dict[str, float]:
+    """Every metric as a finite float under a name of 1 to 64 characters; booleans count as 0 or 1."""
     if not isinstance(metrics, Mapping) or len(metrics) > MAX_METRICS:
         raise ValueError(f"metrics must be an object of at most {MAX_METRICS} numbers")
-    missing = sorted(set(terms) - set(metrics))
+    out = {}
+    for name, value in metrics.items():
+        if not isinstance(name, str) or not 1 <= len(name) <= 64:
+            raise ValueError("metric names must be strings of 1 to 64 characters")
+        if not isinstance(value, (bool, int, float)) or not math.isfinite(value):
+            raise ValueError(f"metric {name!r} must be a finite number")
+        out[name] = float(value)
+    return out
+
+
+def score(terms: Mapping[str, Term], metrics: Mapping[str, Any]) -> float:
+    """The weighted reward in ``[0, 1]``; every term must be measured and every metric numeric."""
+    values = _metrics(metrics)
+    missing = sorted(set(terms) - set(values))
     if missing:
         raise ValueError("metrics are missing utility terms: " + ", ".join(missing))
     total = math.fsum(t.weight for t in terms.values())
-    parts = []
-    for name, term in terms.items():
-        value = metrics[name]
-        if isinstance(value, bool):
-            value = float(value)
-        if not isinstance(value, (int, float)) or not math.isfinite(value):
-            raise ValueError(f"metric {name!r} must be a finite number")
-        parts.append(term.weight * term.scale(float(value)))
-    return min(1.0, max(0.0, math.fsum(parts) / total))
+    return min(1.0, max(0.0, math.fsum(t.weight * t.scale(values[n]) for n, t in terms.items()) / total))
 
 
 def configure(root: str, spec: Mapping[str, Any]) -> dict[str, Any]:
@@ -228,8 +233,12 @@ def record(
     reward: float | None = None,
     metrics: Mapping[str, Any] | None = None,
     durable: bool = True,
+    secondary_metrics: dict[str, float | bool] | None = None,
 ) -> dict[str, Any]:
-    """Record a graded outcome (`reward`, or `metrics` scored by the utility) for `occasion_id`."""
+    """Record a graded outcome (`reward`, or `metrics` scored by the utility) for `occasion_id`.
+
+    `secondary_metrics` are passed to the outcomes log exactly as for a binary outcome.
+    """
     if (reward is None) == (metrics is None):
         raise ValueError("give a reward or metrics, not both")
     if not isinstance(occasion_id, str) or not occasion_id.strip():
@@ -267,7 +276,7 @@ def record(
             raise holdout_io.ConflictingOutcome(
                 f"occasion {occasion_id!r} already has a binary outcome; a reward cannot be attached afterwards"
             )
-        if not holdout_io.record_outcome(root, occasion_id, succeeded, durable):
+        if not holdout_io.record_outcome(root, occasion_id, succeeded, durable, secondary_metrics=secondary_metrics):
             raise holdout_io.ConflictingOutcome(
                 f"occasion {occasion_id!r} received a binary outcome concurrently; the reward was not attached"
             )
@@ -280,7 +289,7 @@ def record(
             "at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         }
         if metrics is not None:
-            row["metrics"] = {k: float(v) for k, v in sorted(metrics.items())}
+            row["metrics"] = dict(sorted(_metrics(metrics).items()))
             row["utility_digest"] = utility_digest
         _jsonl.append_row(path, row, fsync=durable)
     return {"occasion_id": occasion_id, "reward": reward, "succeeded": succeeded, "recorded": True}
@@ -301,10 +310,11 @@ def verify(root: str) -> list[str]:
             continue
         try:
             expected = realize(salt, occasion, row["reward"])
-        except (KeyError, ValueError):
+            recorded_draw = float(row["draw"])
+        except (KeyError, TypeError, ValueError):
             problems.append(f"{occasion}: unreadable reward")
             continue
-        if bool(row.get("succeeded")) != expected or abs(float(row.get("draw", -1.0)) - draw(salt, occasion)) > 1e-12:
+        if bool(row.get("succeeded")) != expected or abs(recorded_draw - draw(salt, occasion)) > 1e-12:
             problems.append(f"{occasion}: recorded bit is not the rounding of its reward")
         if outcomes.get(occasion) != expected:
             problems.append(f"{occasion}: outcomes log disagrees with the rounded reward")

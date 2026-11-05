@@ -2519,7 +2519,14 @@ class Gateway:
         if metrics is not None and not isinstance(metrics, dict):
             raise _bad("metrics must be an object of numbers")
         try:
-            out = rewards.record(self.root, occasion, reward=req.get("reward"), metrics=metrics, durable=self.durable)
+            out = rewards.record(
+                self.root,
+                occasion,
+                reward=req.get("reward"),
+                metrics=metrics,
+                durable=self.durable,
+                secondary_metrics=req.get("secondary_metrics"),
+            )
         except holdout_io.ConflictingOutcome as exc:
             raise ApiError(409, "conflicting_outcome", str(exc)) from None
         except (TypeError, ValueError) as exc:

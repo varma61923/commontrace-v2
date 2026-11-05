@@ -167,12 +167,38 @@ def test_metrics_are_scored_by_the_configured_utility_and_the_audit_catches_tamp
     rewards.record(root, "o99", metrics={"score": 0.1, "tokens": 100})
     assert any("different utilities" in p for p in rewards.verify(root))
 
-    rows = [json.loads(line) for line in open(rewards.rewards_path(root), encoding="utf-8")]
+    with open(rewards.rewards_path(root), encoding="utf-8") as fh:
+        rows = [json.loads(line) for line in fh]
     victim = next(r for r in rows if r["occasion_id"] != "o99" and not r["succeeded"])
     victim["succeeded"] = True
     with open(rewards.rewards_path(root), "w", encoding="utf-8") as fh:
         fh.writelines(json.dumps(r) + "\n" for r in rows)
     assert any(victim["occasion_id"] in p and "not the rounding" in p for p in rewards.verify(root))
+
+
+@pytest.mark.parametrize(
+    "extra", [{"note": "fine"}, {"force": float("nan")}, {"pose": [1, 2]}, {"": 1.0}, {"x" * 65: 1.0}]
+)
+def test_a_bad_metric_is_refused_before_anything_is_recorded(tmp_path, extra):
+    root = str(tmp_path)
+    holdout_io.configure(root, rate=0.5, salt="atomic")
+    rewards.configure(root, {"terms": {"progress": {}}})
+    with pytest.raises(ValueError):
+        rewards.record(root, "o1", metrics={"progress": 0.5, **extra})
+    assert "o1" not in holdout_io.read_outcomes(root) and rewards.load(root) == {}
+    assert rewards.record(root, "o1", metrics={"progress": 0.5, "energy (Wh)": 12.0, "stalled": False})["recorded"]
+
+
+def test_the_audit_reports_a_malformed_reward_row_instead_of_crashing(tmp_path):
+    root = str(tmp_path)
+    holdout_io.configure(root, rate=0.5, salt="malformed")
+    rewards.record(root, "o1", reward=0.4)
+    with open(rewards.rewards_path(root), encoding="utf-8") as fh:
+        rows = [json.loads(line) for line in fh]
+    rows[0]["draw"] = None
+    with open(rewards.rewards_path(root), "w", encoding="utf-8") as fh:
+        fh.writelines(json.dumps(r) + "\n" for r in rows)
+    assert rewards.verify(root) == ["o1: unreadable reward"]
 
 
 def test_the_python_api_takes_exactly_one_outcome(tmp_path):
@@ -217,6 +243,20 @@ def test_the_gateway_takes_a_reward_or_metrics_and_refuses_ambiguity(gw):
     rewards.configure(root, {"terms": {"progress": {}}})
     status, body = call(g, "POST", "/v1/outcome", {"occasion_id": "o3", "metrics": {"progress": 0.25}})
     assert status == 200 and body["reward"] == 0.25
+
+
+def test_a_graded_outcome_keeps_its_secondary_metrics(gw, monkeypatch):
+    from unimem import sycophancy_io
+
+    g, _root = gw
+    seen = []
+    monkeypatch.setattr(
+        sycophancy_io, "record_metrics", lambda _root, occasion, values: seen.append((occasion, values))
+    )
+    recall(g, "o1", MEMORIES)
+    body = {"occasion_id": "o1", "reward": 0.6, "secondary_metrics": {"accuracy": 0.9, "agreement": False}}
+    assert call(g, "POST", "/v1/outcome", body)[0] == 200
+    assert seen == [("o1", {"accuracy": 0.9, "agreement": False})]
 
 
 def test_the_gateway_contract_documents_graded_outcomes(gw):
@@ -308,6 +348,25 @@ def test_the_client_sdk_and_framework_integrations_report_graded_outcomes(tmp_pa
     assert pydantic_ai.record_outcome(Memory(), Result(), reward=0.4)
     assert pydantic_ai.record_outcome(Memory(), Result(), succeeded=False)
     assert calls == [("run-7", {"reward": 0.4}), ("run-7", {"succeeded": False})]
+    for ambiguous in ({}, {"succeeded": True, "reward": 0.4}):
+        with pytest.raises(ValueError, match="exactly one"):
+            pydantic_ai.record_outcome(Memory(), Result(), **ambiguous)
+    assert len(calls) == 2
+
+
+def test_a_refused_graded_outcome_leaves_no_secondary_metrics(tmp_path, monkeypatch):
+    from unimem import sycophancy_io
+
+    root = str(tmp_path)
+    holdout_io.configure(root, rate=0.5, salt="order")
+    seen = []
+    monkeypatch.setattr(sycophancy_io, "record_metrics", lambda _root, occasion, values: seen.append(occasion))
+    memory = CausalMemory(lambda _q, **_: MEMORIES, root=root, key=lambda m: m["id"], text=lambda m: m["text"])
+    with pytest.raises(ValueError):
+        memory.record_outcome("o1", reward=1.5, secondary_metrics={"accuracy": 1.0})
+    assert seen == []
+    assert memory.record_outcome("o1", reward=0.5, secondary_metrics={"accuracy": 1.0})
+    assert seen == ["o1"]
 
 
 def test_an_mcp_agent_reports_a_graded_outcome(tmp_path):

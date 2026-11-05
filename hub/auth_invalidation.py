@@ -36,7 +36,7 @@ async def listen(database_url: str, stop_event: asyncio.Event, *, connect=None) 
         lost = asyncio.Event()
         try:
             conn = await connect(dsn)
-            conn.add_termination_listener(lambda *_a: lost.set())
+            conn.add_termination_listener(lambda *_a, lost=lost: lost.set())
             await conn.add_listener(auth.AUTH_INVALIDATION_CHANNEL, on_notify)
             auth.set_auth_listener_live(True)
             backoff = _MIN_BACKOFF
