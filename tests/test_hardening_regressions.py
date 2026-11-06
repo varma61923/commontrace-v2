@@ -70,8 +70,10 @@ def test_a_damaged_catalog_file_is_skipped(tmp_path):
 def test_release_publishes_only_from_a_version_tag():
     with open(os.path.join(REPO, ".github", "workflows", "release.yml"), encoding="utf-8") as fh:
         text = fh.read()
-    conditions = [line.strip() for line in text.splitlines() if line.strip().startswith("if:") and "tags" in line]
-    publish = [c for c in conditions if "dry_run" in c]
+    import yaml
+
+    jobs = yaml.safe_load(text)["jobs"]
+    publish = ["if: " + jobs[name]["if"] for name in ("publish-pypi", "publish-npm")]
     assert len(publish) == 2
     for condition in publish:
         assert condition.startswith("if: startsWith(github.ref, 'refs/tags/v') &&"), condition

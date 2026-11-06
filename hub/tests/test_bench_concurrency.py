@@ -67,3 +67,61 @@ class TestArgumentParsing:
     def test_an_unknown_backend_is_refused(self):
         with pytest.raises(SystemExit):
             bench_concurrency.main(["--backend", "redis"])
+
+    @pytest.mark.parametrize(
+        "arguments", [["--clients", "0"], ["--clients", "-1"], ["--requests", "0"], ["--requests", "-1"]]
+    )
+    def test_nonpositive_load_is_refused_before_connecting(self, capsys, arguments):
+        assert bench_concurrency.main(arguments) == 2
+        assert "must be positive" in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("clients,requests", [(3, 10), (8, 2), (1, 1)])
+async def test_timed_load_matches_the_exact_requested_count(clients, requests):
+    from starlette.applications import Starlette
+    from starlette.responses import PlainTextResponse
+    from starlette.routing import Route
+
+    calls = []
+
+    async def handler(_request):
+        calls.append(True)
+        return PlainTextResponse("ok")
+
+    app = Starlette(routes=[Route("/mcp", handler)])
+    result = await bench_concurrency._drive(app, "fixture-key", clients, requests)
+    assert result["completed"] == requests and result["failures"] == 0
+    assert len(calls) == clients + requests  # Separate, untimed warm-up per client.
+
+
+@pytest.mark.asyncio
+async def test_cleanup_does_not_reset_another_benchmarks_rate_limit_state(session_factory, monkeypatch):
+    from sqlalchemy import text
+
+    from hub.abuse import _RATE_LIMIT_DDL
+    from hub.db import session_scope
+
+    async with session_scope(session_factory) as session:
+        await session.execute(text(_RATE_LIMIT_DDL))
+        await session.execute(
+            text(
+                "INSERT INTO hub_rate_limit_buckets(limiter_name,bucket_key,tokens,last_refill) "
+                "VALUES('bench-unrelated-run','fixture',1,now()) ON CONFLICT DO NOTHING"
+            )
+        )
+
+    async def drive(*_):
+        return {"rps": 1}
+
+    monkeypatch.setenv("HUB_DATABASE_URL", str(session_factory.kw["bind"].url.render_as_string(hide_password=False)))
+    monkeypatch.setattr(bench_concurrency, "_drive", drive)
+    await bench_concurrency.run([1], 1, ["memory"], True)
+    async with session_scope(session_factory) as session:
+        rows = (
+            await session.execute(
+                text("SELECT count(*) FROM hub_rate_limit_buckets WHERE limiter_name='bench-unrelated-run'")
+            )
+        ).scalar()
+        await session.execute(text("DELETE FROM hub_rate_limit_buckets WHERE limiter_name='bench-unrelated-run'"))
+    assert rows == 1

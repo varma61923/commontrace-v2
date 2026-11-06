@@ -85,6 +85,11 @@ class TestChart:
             (["--set", "existingSecret="], "existingSecret is required"),
             (["--set", "config.HUB_RATE_LIMIT_BACKEND=memory"], "HUB_RATE_LIMIT_BACKEND=postgres"),
             (["--set", "postgres.maxConnections=30"], "exceeds postgres.maxConnections"),
+            (["--set", "terminationGracePeriodSeconds=30"], "must exceed"),
+            (["--set", "config.HUB_READYZ_TIMEOUT_SECONDS=3"], "below the 3s"),
+            (["--set", "image.digest=sha256:invalid"], "64 lowercase hex"),
+            (["--set", "config.HUB_DATABASE_URL=postgresql://fixture"], "existingSecret, not a ConfigMap"),
+            (["--set", "config.HUB_API_KEY_PEPPER=fixture"], "existingSecret, not a ConfigMap"),
         ],
     )
     def test_it_refuses_unsafe_combinations(self, flag, message):
@@ -102,6 +107,107 @@ class TestChart:
         assert container["securityContext"]["readOnlyRootFilesystem"] is True
         assert container["livenessProbe"]["httpGet"]["path"] == "/healthz"
         assert container["readinessProbe"]["httpGet"]["path"] == "/readyz"
+        assert container["startupProbe"]["httpGet"]["path"] == "/healthz"
+        assert spec["terminationGracePeriodSeconds"] > 30
+
+    def test_immutable_image_digest_can_replace_the_tag(self):
+        digest = "sha256:" + "a" * 64
+        result = self._template("--set", "image.tag=", "--set", f"image.digest={digest}")
+        assert result.returncode == 0, result.stderr
+        docs = [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+        deployment = next(doc for doc in docs if doc["kind"] == "Deployment")
+        assert deployment["spec"]["template"]["spec"]["containers"][0]["image"] == f"r.example/hub@{digest}"
+
+    def test_custom_metrics_secret_protects_the_server_and_authenticates_the_monitor(self):
+        result = self._template("--set", "metrics.serviceMonitor=true", "--set", "metrics.tokenSecretKey=metrics-token")
+        assert result.returncode == 0, result.stderr
+        docs = [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+        deployment = next(doc for doc in docs if doc["kind"] == "Deployment")
+        monitor = next(doc for doc in docs if doc["kind"] == "ServiceMonitor")
+        env = deployment["spec"]["template"]["spec"]["containers"][0]["env"]
+        server_key = next(item["valueFrom"]["secretKeyRef"] for item in env if item["name"] == "HUB_METRICS_TOKEN")
+        assert server_key == {"name": "s", "key": "metrics-token"}
+        assert monitor["spec"]["endpoints"][0]["authorization"]["credentials"] == server_key
+
+
+def test_standalone_autoscaling_uses_shared_rate_limits():
+    config = yaml.safe_load(Path(ROOT, "deploy/k8s/configmap.yaml").read_text())
+    hpa = yaml.safe_load(Path(ROOT, "deploy/k8s/hpa.yaml").read_text())
+    assert hpa["spec"]["maxReplicas"] > 1
+    assert config["data"]["HUB_RATE_LIMIT_BACKEND"] == "postgres"
+
+
+def test_compose_forwards_operator_security_configuration_to_the_hub():
+    compose = yaml.safe_load(Path(ROOT, "docker-compose.yml").read_text())
+    environment = compose["services"]["hub"]["environment"]
+    for name in (
+        "HUB_API_KEY_PEPPER",
+        "HUB_ENCRYPTION_KEY",
+        "HUB_LEDGER_SIGNING_KEY",
+        "HUB_ADMIN_TOKEN",
+        "HUB_METRICS_TOKEN",
+    ):
+        assert environment[name] == "${" + name + ":-}"
+    assert environment["HUB_REQUIRE_API_KEY_PEPPER"] == "${HUB_REQUIRE_API_KEY_PEPPER:-false}"
+
+
+@pytest.mark.skipif(shutil.which("promtool") is None, reason="promtool not installed")
+@pytest.mark.parametrize("business_traffic", [False, True, None])
+def test_slo_rules_evaluate_user_traffic_without_probe_dilution_or_idle_latency_alerts(tmp_path, business_traffic):
+    groups = yaml.safe_load(Path(CHART, "files/slo-alerts.yaml").read_text())
+    rules = tmp_path / "rules.yaml"
+    rules.write_text(yaml.safe_dump({"groups": groups}))
+    series = [
+        {"series": 'unimem_hub_requests_total{path="/healthz",status="200"}', "values": "0+100x120"},
+        {"series": 'unimem_hub_request_duration_ms_count{path="/healthz"}', "values": "0+100x120"},
+        {"series": 'unimem_hub_request_duration_ms_bucket{path="/healthz",le="250"}', "values": "0+100x120"},
+    ]
+    if business_traffic is None:
+        for sample in series:
+            sample["values"] = "0+0x120"
+    if business_traffic is not False:
+        increments = "0+1x120" if business_traffic else "0+0x120"
+        series.extend(
+            [
+                {"series": 'unimem_hub_requests_total{path="/mcp",status="500"}', "values": increments},
+                {"series": 'unimem_hub_request_duration_ms_count{path="/mcp"}', "values": increments},
+                {"series": 'unimem_hub_request_duration_ms_bucket{path="/mcp",le="250"}', "values": "0+0x120"},
+            ]
+        )
+    expected = int(business_traffic is True)
+    checks = [
+        {
+            "expr": name,
+            "eval_time": "65m",
+            "exp_samples": [{"labels": name, "value": expected}],
+        }
+        for name in ("unimem_hub:error_ratio:rate5m", "unimem_hub:slow_ratio:rate5m", "unimem_hub:slow_ratio:rate1h")
+    ]
+    traffic_alert = _rules()["HubNoTraffic"]
+    tests = {
+        "rule_files": [str(rules)],
+        "evaluation_interval": "1m",
+        "tests": [
+            {
+                "interval": "1m",
+                "input_series": series,
+                "promql_expr_test": checks,
+                "alert_rule_test": [
+                    {
+                        "eval_time": "65m",
+                        "alertname": "HubNoTraffic",
+                        "exp_alerts": []
+                        if business_traffic
+                        else [{"exp_labels": traffic_alert["labels"], "exp_annotations": traffic_alert["annotations"]}],
+                    }
+                ],
+            }
+        ],
+    }
+    fixture = tmp_path / "tests.yaml"
+    fixture.write_text(yaml.safe_dump(tests))
+    result = subprocess.run(["promtool", "test", "rules", str(fixture)], capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.mark.skipif(shutil.which("terraform") is None, reason="terraform not installed")

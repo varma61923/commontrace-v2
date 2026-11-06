@@ -135,6 +135,7 @@ class HubConfig:
 
     readyz_rate_limit_per_minute: int = 120
     readyz_rate_limit_burst: int = 30
+    readyz_timeout_seconds: int = 2
 
     trusted_proxy_hops: int = 0
 
@@ -303,6 +304,7 @@ class HubConfig:
             auth_attempts_burst=_env_int_in_range("HUB_AUTH_ATTEMPTS_BURST", 20, 0, 1_000_000),
             readyz_rate_limit_per_minute=_env_int_in_range("HUB_READYZ_RATE_LIMIT_PER_MINUTE", 120, 0, 10_000_000),
             readyz_rate_limit_burst=_env_int_in_range("HUB_READYZ_RATE_LIMIT_BURST", 30, 0, 1_000_000),
+            readyz_timeout_seconds=_env_int_in_range("HUB_READYZ_TIMEOUT_SECONDS", 2, 1, 60),
             trusted_proxy_hops=_env_int_in_range("HUB_TRUSTED_PROXY_HOPS", 0, 0, 16),
             ip_allowlist=_env_cidr_list("HUB_IP_ALLOWLIST"),
             allow_insecure_http=_env_bool("HUB_ALLOW_INSECURE_HTTP", False),

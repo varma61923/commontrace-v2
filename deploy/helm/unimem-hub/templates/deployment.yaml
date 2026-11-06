@@ -32,10 +32,23 @@ spec:
           envFrom:
             - configMapRef: { name: {{ include "hub.name" . }}-config }
             - secretRef: { name: {{ include "hub.secret" . }} }
+          {{- if .Values.metrics.tokenSecretKey }}
+          env:
+            - name: HUB_METRICS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "hub.secret" . }}
+                  key: {{ .Values.metrics.tokenSecretKey | quote }}
+          {{- end }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities: { drop: ["ALL"] }
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 36
           # Liveness never touches the database (a Postgres blip must not restart every replica);
           # readiness does, so a replica that cannot reach it leaves the Service instead.
           livenessProbe:
@@ -53,7 +66,7 @@ spec:
           resources: {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
             - { name: tmp, mountPath: /tmp }
-      terminationGracePeriodSeconds: 35
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       volumes:
         - { name: tmp, emptyDir: {} }
       {{- with .Values.nodeSelector }}

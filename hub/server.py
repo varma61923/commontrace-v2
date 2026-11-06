@@ -563,7 +563,7 @@ async def _join_background_tasks(tasks: list[asyncio.Task], grace_seconds: float
     """
     if not tasks:
         return
-    _done, pending = await asyncio.wait(tasks, timeout=grace_seconds if grace_seconds > 0 else None)
+    _done, pending = await asyncio.wait(tasks, timeout=max(0, grace_seconds))
     for task in pending:
         logger.warning("background task %s did not stop within %ss; cancelling it", task.get_name(), grace_seconds)
         task.cancel()
@@ -1750,6 +1750,7 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
         ),
         trusted_proxy_hops=config.trusted_proxy_hops,
         metrics_token=config.metrics_token,
+        readiness_timeout_seconds=config.readyz_timeout_seconds,
     )
     add_disclosure_route(inner_app, config)
     add_openapi_route(inner_app)
@@ -1768,12 +1769,12 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
     @contextlib.asynccontextmanager
     async def _lifespan_with_rls_check(app):
         async with _previous_lifespan(app):
-            await check_row_level_security(
-                session_factory,
-                allow_bypass=config.allow_rls_bypass,
-                require=config.require_rls,
-            )
             try:
+                await check_row_level_security(
+                    session_factory,
+                    allow_bypass=config.allow_rls_bypass,
+                    require=config.require_rls,
+                )
                 yield
             finally:
                 factory = getattr(app.state, "memory_projection_factory", None)

@@ -22,6 +22,23 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  verify-ci:
+    if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || !inputs.dry_run)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: "3.12"
+      - name: Require successful CI for the exact release commit
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python scripts/check_release_ci.py --sha "$(git rev-parse HEAD)"
+
   build:
     runs-on: ubuntu-latest
     steps:
@@ -47,6 +64,7 @@ jobs:
           /tmp/wheel-env/bin/unimem --version
           /tmp/wheel-env/bin/unimem init --dest /tmp/smoke-store
           /tmp/wheel-env/bin/unimem --offline doctor --dest /tmp/smoke-store
+          PATH="/tmp/wheel-env/bin:$PATH" /tmp/wheel-env/bin/python "$GITHUB_WORKSPACE/scripts/first_recall_smoke.py" --timeout 60
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: python-dist
@@ -98,7 +116,7 @@ jobs:
           if-no-files-found: error
 
   publish-pypi:
-    needs: [build, build-typescript]
+    needs: [verify-ci, build, build-typescript]
     # A tag ref only: a manual run publishes when started from a vX.Y.Z tag, never from a branch.
     if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || !inputs.dry_run)
     runs-on: ubuntu-latest
@@ -113,7 +131,7 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
 
   publish-npm:
-    needs: [build, build-typescript]
+    needs: [verify-ci, build, build-typescript]
     # A tag ref only: a manual run publishes when started from a vX.Y.Z tag, never from a branch.
     if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || !inputs.dry_run)
     runs-on: ubuntu-latest

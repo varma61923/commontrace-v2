@@ -280,6 +280,10 @@ Deployment assets: a pinned Docker image, `docker-compose.yml` (database, migrat
 docker compose up    # set POSTGRES_PASSWORD and HUB_CONSOLE_SECRET for anything beyond a local trial
 ```
 
+For production rollout, secret provisioning, health checks, database connection
+budgets, monitoring, backup/restore and release verification, use the
+[production readiness and operations guide](docs/production-readiness.md).
+
 ## Architecture
 
 ```mermaid
@@ -321,7 +325,9 @@ legacy hashes and defaults.
 
 ## Project status
 
-UniMem is pre-1.0 software under active development.
+UniMem is under active development. The feature statuses below distinguish
+supported paths, experimental capabilities and deployment-specific integrations.
+The [production guide](docs/production-readiness.md) defines rollout and verification criteria.
 
 | Area | Status |
 |---|---|
@@ -414,6 +420,7 @@ To check the Hub and generated API contracts:
 python scripts/dev.py test --hub -q  # requires HUB_TEST_DATABASE_URL: disposable PostgreSQL 16
 python scripts/export_openapi.py --check
 python scripts/export_hub_openapi.py --check
+make check-hub                      # both contracts; requires the Hub dependencies
 ```
 
 Run the focused governance boundary regressions with

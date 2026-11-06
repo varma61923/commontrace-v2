@@ -31,8 +31,10 @@ def build_server_app():
 
     @contextlib.asynccontextmanager
     async def chained(_app):
-        async with previous_lifespan(_app):
-            async with lifespan(_app):
+        # Own the engine before application startup, so a failed RLS check or
+        # inner teardown cannot bypass pool disposal.
+        async with lifespan(_app):
+            async with previous_lifespan(_app):
                 yield
 
     app.router.lifespan_context = chained

@@ -615,6 +615,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: "3.12"
 
       - name: Install pinned helm and terraform
         run: |
@@ -624,6 +627,15 @@ jobs:
           curl --connect-timeout 10 --max-time 120 -sSfL -o tf.zip https://releases.hashicorp.com/terraform/1.9.8/terraform_1.9.8_linux_amd64.zip
           echo "186e0145f5e5f2eb97cbd785bc78f21bae4ef15119349f6ad4fa535b83b10df8  tf.zip" | sha256sum -c -
           unzip -q tf.zip && sudo mv terraform /usr/local/bin/terraform
+
+      - name: Verify native Prometheus rules and deployment safety contracts
+        run: |
+          curl --connect-timeout 10 --max-time 120 -sSfL -o prometheus.tgz https://github.com/prometheus/prometheus/releases/download/v3.0.1/prometheus-3.0.1.linux-amd64.tar.gz
+          echo "43f6f228ef59e0c2f6994e489c5c76c6671553eaa99ded0aea1cd31366222916  prometheus.tgz" | sha256sum -c -
+          tar xzf prometheus.tgz prometheus-3.0.1.linux-amd64/promtool
+          sudo mv prometheus-3.0.1.linux-amd64/promtool /usr/local/bin/promtool
+          python -m pip install "pytest>=9.2.0,<10.0" "PyYAML>=6.0,<7.0"
+          python -m pytest tests/test_deploy_assets.py -q
 
       - name: Lint and render the chart (defaults, and every optional template on)
         run: |
