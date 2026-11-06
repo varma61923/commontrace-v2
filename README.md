@@ -401,7 +401,12 @@ python -m pip install -e ".[dev]"
 make lint        # ruff
 make test        # tests and e2e_tests
 make coverage    # with the 80% gate
+make clean       # ignored build outputs and caches; preserves dependencies and local stores
 ```
+
+Preview cleanup with `python -B scripts/dev.py clean --dry-run`. Cleanup keeps
+tracked files, virtual environments, installed dependencies, editable-install
+metadata, credentials, and local memory stores.
 
 To check the Hub and generated API contracts:
 
