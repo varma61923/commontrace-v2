@@ -364,3 +364,106 @@ The temporary tools directory supplied Helm and promtool for native deployment
 checks. Generated source-tree artifacts, the installed-wheel smoke directory,
 and the disposable baseline worktree were removed after verification. No
 benchmark fixtures or additional audit files were committed.
+
+## Anticipation and worker-context follow-up (2026-11-06)
+
+Starting commit: `6a57613`. This pass traced anticipation from the conversation
+CLI and idle hook, plus the shared parallel helper used by cross-space MCP
+retrieval and embedding ingestion. New regressions reproduced **13 failures**
+against the baseline, with 19 passes; one test for the new iterator API was
+deselected because that API does not exist in the baseline.
+
+### Confirmed findings and changes
+
+- **[SECURITY, BUG] `unimem/parallel.py::bounded_map` and
+  `unimem/conversation/anticipate.py::expand`:** worker threads lost the caller's
+  ContextVar bindings. Restricted writers became the default local operator,
+  task-local offline policy disappeared, and anticipation bypassed the active
+  LLM runtime budget. Each submitted operation now receives its own copied
+  context. A regression checks the actual runtime call limit and verifies that
+  worker changes to context bindings do not leak to the caller or later jobs.
+- **[PERF, EDGE CASE] `anticipate.expand`:** every prompt was rendered before
+  dispatch, and `ThreadPoolExecutor.map` eagerly queued the entire pass. An early
+  storage failure still drained all queued model calls. The new closeable
+  `parallel.bounded_imap` yields ordered results with a default backlog of twice
+  the worker count, cancels unstarted jobs on early exit, and drains accepted
+  operations. Prompt rendering and SQLite access remain in the caller; provider
+  calls remain in workers, including with one worker. `bounded_map` retains its
+  list result, ordering and historical sequential fast path.
+- **[BUG, SECURITY] `anticipate._write`:** an ignored duplicate `anticipated`
+  insertion still appended another generated unit and FTS row. Deletion during
+  inference raised a foreign-key error and aborted valid surviving work. Worse,
+  SQLite could recycle the deleted turn ID, attaching erased source text's
+  generated keys to an unrelated replacement. Rendering now captures the
+  existing `Turn.evidence_hash`; the write lock protects a fresh batch read,
+  fingerprint comparison and insert-or-ignore claim before indexing. Only live,
+  unchanged, newly claimed turns receive generated units. Current turns are
+  fetched once per batch, avoiding a query per fingerprint check. The Store lock
+  also protects shared-connection operations; SQLite serializes separate handles.
+- **[EDGE CASE] `anticipate.pending` and `_parse`:** negative limits selected
+  everything, while booleans, strings and fractions were coerced into limits.
+  Invalid limits now fail before dispatch; zero remains a valid empty pass.
+  Deeply nested model JSON now leaves the batch pending instead of propagating a
+  decoder recursion failure.
+
+The shared iterator is used by both existing parallel-map callers and
+anticipation. The local executor import, eager prompt lists and duplicate
+submission implementation were removed. No module, public integration or
+framework callback was deleted based solely on static reachability.
+
+These changes follow the documented Python 3.12 behavior:
+[Executor.map eagerly consumes inputs](https://docs.python.org/3.12/library/concurrent.futures.html#concurrent.futures.Executor.map),
+and [copy_context captures bindings in O(1) time](https://docs.python.org/3.12/library/contextvars.html#contextvars.copy_context).
+Context copying is shallow; arbitrary mutable objects stored in a ContextVar
+retain their existing ownership contracts.
+
+### Measurements and tradeoffs
+
+Baseline and candidate ran serially in separate Python 3.12 processes without
+concurrent tests or scanners. A fixture contained 6,000 distinct turns of about
+700 characters, indexed in batches of 12 with two workers. Each trial used a fresh
+copy of the same source database. Setup/copy time and output hashing were
+excluded. One warm-up preceded five timed passes; peak allocation came from a
+separate tracemalloc pass. The deterministic provider stub returned immediately.
+Both versions made exactly 500 model calls per trial and produced identical
+reports and generated-unit digests
+(`52bef51b608097399af06b822a3a5b8ce59d9ac607b3c60b1ab96c514c544e3e`).
+
+| Metric | Baseline | Candidate |
+| --- | ---: | ---: |
+| First provider dispatch, median | 92.556 ms | 6.198 ms |
+| Complete pass, median | 398.927 ms | 621.934 ms |
+| Complete pass, range | 364.522–434.620 ms | 601.276–695.370 ms |
+| Peak traced Python allocation | 13,228,284 bytes | 356,527 bytes |
+
+This fixture shows about 37 times less peak allocation and 15 times faster first
+dispatch, with approximately 56% more total time for an instant-response stub.
+Source revalidation and bounded scheduling add work; the checks prevent indexing
+stale or erased evidence. This is not a universal throughput improvement or a
+measurement of a live provider. Pending turn IDs still occupy O(N) memory; prompt
+and submission backlog are bounded by batch size and worker count. Store caches,
+individual source sizes and the caller's chosen concurrency also affect memory.
+
+### Verification
+
+| Check | Result |
+| --- | --- |
+| Complete core and end-to-end suite for this follow-up | **9,307 passed, 138 skipped** in 791.84 seconds; two workers, warnings treated as errors. |
+| Focused anticipation, parallel backpressure and LLM accounting tests | 45 passed, warnings treated as errors. |
+| Repeated overlap probe | 50 synchronized two-pass races, alternating shared and separate Store connections; each 12-turn batch had exactly one indexing winner. |
+| Types | Full 637-file check and strict checks for both changed modules with `--follow-imports=silent` passed. |
+| Ruff | Repository lint and configured formatting passed. |
+| Graphify | 28,336 nodes, 94,742 edges; 402 modules, 291 possible unreachable candidates, zero missing endpoints; integrity/budget gates passed. |
+| Bandit | Zero medium/high findings in production Python. |
+| API and packaging | Gateway/Hub OpenAPI checks passed; wheel and source distribution built; isolated installed-wheel context and recycled-identity checks passed. |
+
+No dependency, SQL schema, SDK or deployment implementation changed. Hosted CI,
+live provider behavior and production-scale load remain unverified in this pass;
+earlier service integration results remain historical.
+
+The complete suite used the same two-worker, work-stealing command and temporary
+Helm/promtool path shown in the preceding follow-up. Generated source-tree build
+and cache artifacts, the installed-wheel smoke directory, and the disposable
+baseline worktree were removed after verification. Benchmark data and graphs
+were kept outside the source tree; no additional production module or audit file
+was added.
