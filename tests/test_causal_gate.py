@@ -71,6 +71,35 @@ def simulate(rng, n, lessons, *, rate_for, effect_for, base_for=lambda ctx: 0.5,
 # -- estimation -----------------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("seed", range(8))
+def test_grouped_leave_context_out_matches_original_weighted_contrast(seed):
+    rng = random.Random(seed)
+    grouped = {
+        f"c{c}": [
+            Row("memory", f"{c}-{i}", rng.random() < 0.5, rng.random() < 0.7, rng.uniform(0.01, 0.99), f"c{c}")
+            for i in range(c * 3 + 1)
+        ]
+        for c in range(40)
+    }
+    grouped[""] = [Row("memory", "unlabelled", True, False, 0.7)]
+    targets = ["c0", "c1", "c17", "c39"]
+    actual = causal_gate._context_contrasts(grouped, targets)
+    for ctx in targets:
+        expected = causal_gate.contrast([r for key, rows in grouped.items() if key != ctx for r in rows])
+        assert expected is not None and actual[ctx] is not None
+        assert actual[ctx].effect == pytest.approx(expected.effect, abs=1e-12)
+        assert actual[ctx].variance == pytest.approx(expected.variance, abs=1e-12)
+        assert (actual[ctx].n_injected, actual[ctx].n_withheld) == (expected.n_injected, expected.n_withheld)
+
+
+def test_grouped_contexts_keep_unidentified_arms_and_nonbinary_legacy_behavior():
+    grouped = {"a": [Row("m", "1", True, True, 0.5)], "b": [Row("m", "2", True, False, 0.5)]}
+    assert causal_gate._context_contrasts(grouped, ["a", "b"]) == {"a": None, "b": None}
+    grouped["c"] = [Row("m", "3", False, 0.3, 0.5)]
+    actual = causal_gate._context_contrasts(grouped, ["a"])
+    assert actual["a"] == causal_gate.contrast([*grouped["b"], *grouped["c"]])
+
+
 def test_the_contrast_is_unbiased_when_the_holdout_rate_depends_on_the_context():
     # Easy coding occasions are mostly shown the memory, hard support ones mostly not:
     # a raw difference in means credits the memory with the context's easiness.

@@ -197,6 +197,57 @@ def contrast(rows: Sequence[Row]) -> Contrast | None:
     return Contrast(injected[0] - withheld[0], injected[1] + withheld[1], injected[2], withheld[2])
 
 
+def _context_contrasts(by_context: Mapping[str, Sequence[Row]], targets: Iterable[str]) -> dict[str, Contrast | None]:
+    """Leave-one-context-out binary contrasts without rescanning every other row.
+
+    Positive weighted success/failure moments avoid subtracting nearly equal
+    totals. Recombine the other context groups with fsum, retaining the original
+    Jeffreys floor and effective sample size. Nonbinary legacy inputs use the
+    original general scorer.
+    """
+    if any(type(row.succeeded) is not bool for rows in by_context.values() for row in rows):
+        return {
+            ctx: contrast([r for other, rows in by_context.items() if other != ctx for r in rows]) for ctx in targets
+        }
+    moments: dict[str, dict[bool, tuple[float, float, float, float, int]]] = {}
+    for ctx, rows in by_context.items():
+        arms: dict[bool, list[list[float]]] = {True: [[], []], False: [[], []]}
+        for row in rows:
+            arms[row.injected][int(row.succeeded)].append(1.0 / row.propensity)
+        moments[ctx] = {}
+        for arm, (failed_weights, success_weights) in arms.items():
+            moments[ctx][arm] = (
+                math.fsum(failed_weights),
+                math.fsum(success_weights),
+                math.fsum(w * w for w in failed_weights),
+                math.fsum(w * w for w in success_weights),
+                len(failed_weights) + len(success_weights),
+            )
+    result: dict[str, Contrast | None] = {}
+    for ctx in targets:
+        estimates = []
+        for arm in (True, False):
+            others = [value[arm] for key, value in moments.items() if key != ctx]
+            n = sum(value[4] for value in others)
+            if not n:
+                break
+            failed, succeeded, failed2, succeeded2 = (math.fsum(value[i] for value in others) for i in range(4))
+            total = math.fsum((failed, succeeded))
+            mean = succeeded / total
+            variance = (failed2 * mean**2 + succeeded2 * (1.0 - mean) ** 2) / total**2
+            effective = total**2 / math.fsum((failed2, succeeded2))
+            smoothed = (mean * effective + 0.5) / (effective + 1.0)
+            estimates.append((mean, max(variance, smoothed * (1.0 - smoothed) / (effective + 1.0)), n))
+        result[ctx] = (
+            Contrast(
+                estimates[0][0] - estimates[1][0], estimates[0][1] + estimates[1][1], estimates[0][2], estimates[1][2]
+            )
+            if len(estimates) == 2
+            else None
+        )
+    return result
+
+
 def _dersimonian_laird(groups: Sequence[Sequence[tuple[float, float]]]) -> float | None:
     """Between-unit variance of estimates (effect, variance), each group around its own mean."""
     q = df = s1 = s2 = 0.0
@@ -464,21 +515,24 @@ def fit(
     cell_raw = {
         (lesson, ctx): contrast(cell_rows) for lesson, by_ctx in cells.items() for ctx, cell_rows in by_ctx.items()
     }
-    tau2_context = _dersimonian_laird(
-        [
-            [(c.effect, c.variance) for (lesson, _ctx), c in cell_raw.items() if lesson == name and c is not None]
-            for name in cells
-        ]
-    )
+    context_groups: dict[str, list[tuple[float, float]]] = defaultdict(list)
+    for (lesson, _ctx), estimate in cell_raw.items():
+        if estimate is not None:
+            context_groups[lesson].append((estimate.effect, estimate.variance))
+    tau2_context = _dersimonian_laird(list(context_groups.values()))
     tau2_context = max(CONTEXT_TAU_FLOOR**2, tau2_context or 0.0)
     model.tau_context = math.sqrt(tau2_context)
     cell_base: dict[tuple[str, str], tuple[float, float]] = {}
     cell_rows_of: dict[tuple[str, str], list[Row]] = {}
     for lesson, by_ctx in cells.items():
         ranked = sorted(by_ctx.items(), key=lambda item: (-len(item[1]), item[0]))[:MAX_CONTEXTS_PER_LESSON]
+        grouped = dict(by_ctx)
+        unlabelled = [row for row in by_lesson[lesson] if not row.context]
+        if unlabelled:
+            grouped[""] = unlabelled
+        rest = _context_contrasts(grouped, (ctx for ctx, _ in ranked))
         for ctx, cell_rows in ranked:
-            others = [r for r in by_lesson[lesson] if r.context != ctx]
-            base_mean, base_var = _combine(*lesson_prior(lesson), contrast(others))
+            base_mean, base_var = _combine(*lesson_prior(lesson), rest[ctx])
             cell_base[(lesson, ctx)] = (base_mean, base_var + tau2_context)
             cell_rows_of[(lesson, ctx)] = cell_rows
     if context_transfer and cell_base:

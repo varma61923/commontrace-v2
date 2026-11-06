@@ -52,7 +52,7 @@ import json
 import math
 import operator
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from numbers import Real
 from statistics import NormalDist
@@ -70,6 +70,7 @@ MAX_TEXT_CHARS = 8000
 JITTER = 1e-12
 KERNEL_LEXICAL = "lexical-tfidf-v2"
 MAX_BAG_TERMS = 256
+MAX_SIMILARITY_CACHE = 65_536
 KERNEL_CONTEXT = "context-components-v1"
 
 
@@ -443,6 +444,65 @@ def _transfer(
     return math.fsum(x * y for x, y in zip(lc, ly)), min(share * scale * scale, math.fsum(x * x for x in lc))
 
 
+def _transfer_engine(
+    hoods: Mapping[str, _Neighborhood],
+    scales: Mapping[str, float],
+    residual: Mapping[str, float],
+    noise: Mapping[str, float],
+) -> Callable[[int, float], dict[str, tuple[float, float]]]:
+    """Prepare bounded batches once for the search grid; preserve the stdlib oracle."""
+
+    def scalar(power: int, share: float) -> dict[str, tuple[float, float]]:
+        return {q: _transfer(hood, power, share, scales[q], scales, residual, noise) for q, hood in hoods.items()}
+
+    if len(hoods) < 32:
+        return scalar
+    try:
+        np: Any = importlib.import_module("numpy")
+    except ImportError:
+        return scalar
+    by_size: dict[int, list[str]] = defaultdict(list)
+    for q, hood in hoods.items():
+        if hood.ids:
+            by_size[len(hood.ids)].append(q)
+    batches = []
+    for size, names in by_size.items():
+        batch_size = max(1, min(256, 65_536 // (size * size)))
+        for start in range(0, len(names), batch_size):
+            qs = names[start : start + batch_size]
+            sd = np.asarray([[scales[m] for m in hoods[q].ids] for q in qs], dtype=float)
+            diagonal = sd * sd + np.asarray([[noise[m] for m in hoods[q].ids] for q in qs]) + JITTER
+            among = np.asarray([hoods[q].among for q in qs], dtype=float)
+            to_query = np.asarray([hoods[q].to_query for q in qs], dtype=float)
+            ys = np.asarray([[residual[m] for m in hoods[q].ids] for q in qs], dtype=float)
+            scale = np.asarray([scales[q] for q in qs], dtype=float)
+            batches.append((qs, sd, diagonal, among, to_query, ys, scale))
+
+    def solve(power: int, share: float) -> dict[str, tuple[float, float]]:
+        output = {q: (0.0, 0.0) for q in hoods}
+        if share <= 0:
+            return output
+        for qs, sd, diagonal, among, to_query, ys, scale in batches:
+            covariance = share * sd[:, :, None] * sd[:, None, :] * among**power
+            index = np.arange(sd.shape[1])
+            covariance[:, index, index] = diagonal
+            rhs = np.stack((share * scale[:, None] * sd * to_query**power, ys), axis=-1)
+            try:
+                low = np.linalg.cholesky(covariance)
+                solved = np.linalg.solve(low, rhs)
+            except np.linalg.LinAlgError:
+                # A single ill-conditioned neighborhood must not disable the
+                # other queries or change the existing failed-factor behavior.
+                output.update({q: _transfer(hoods[q], power, share, scales[q], scales, residual, noise) for q in qs})
+                continue
+            shifts = np.sum(solved[:, :, 0] * solved[:, :, 1], axis=1)
+            reductions = np.minimum(share * scale * scale, np.sum(solved[:, :, 0] ** 2, axis=1))
+            output.update((q, (float(shifts[i]), float(reductions[i]))) for i, q in enumerate(qs))
+        return output
+
+    return solve
+
+
 def _log_normal(x: float, mean: float, variance: float) -> float:
     return -0.5 * (math.log(2.0 * math.pi * variance) + (x - mean) ** 2 / variance)
 
@@ -464,6 +524,8 @@ class Field:
     _residual: dict[str, float] = field(default_factory=dict, repr=False)
     _noise: dict[str, float] = field(default_factory=dict, repr=False)
     _scales: dict[str, float] = field(default_factory=dict, repr=False)
+    _predictions: dict[str, tuple[float, float]] = field(default_factory=dict, repr=False)
+    _prediction_key: tuple[int, float, float] | None = field(default=None, repr=False)
 
     def _scale(self, memory: str) -> float:
         return self._scales.get(memory, math.sqrt(self.tau2))
@@ -484,14 +546,19 @@ class Field:
         """`memory`'s prior (mean, variance): the base prior moved by its witnesses' evidence."""
         if not self.validated:
             return base_mean, base_var
-        shift, reduction = _transfer(
-            self._hoods.get(memory, _EMPTY),
-            self.power,
-            self.share,
-            self._scale(memory),
-            self._scales,
-            self._residual,
-            self._noise,
+        cached = self._predictions.get(memory) if self._prediction_key == (self.power, self.share, self.tau2) else None
+        shift, reduction = (
+            cached
+            if cached is not None
+            else _transfer(
+                self._hoods.get(memory, _EMPTY),
+                self.power,
+                self.share,
+                self._scale(memory),
+                self._scales,
+                self._residual,
+                self._noise,
+            )
         )
         return base_mean + shift, max(base_var - reduction, JITTER)
 
@@ -511,9 +578,108 @@ class Field:
 _EMPTY = _Neighborhood((), (), ())
 
 
-def _hood(kernel: Kernel | CellKernel, neighbors: Neighbors) -> _Neighborhood:
+@dataclass
+class _KernelGram:
+    index: dict[str, int]
+    values: Any
+    margin: float
+    np: Any
+    lexical: Any
+    terms: dict[str, int]
+
+    def neighbors(self, kernel: Kernel, queries: Sequence[str], members: Sequence[str], k: int) -> dict[str, Neighbors]:
+        """Use a conservative shortlist, then the original scalar ranking/ties."""
+        result = {}
+        columns = self.np.asarray([self.index[m] for m in members], dtype=int)
+        positions = {m: i for i, m in enumerate(members)}
+        for q in queries:
+            row = self.values[self.index[q], columns].copy()
+            if q in positions:
+                row[positions[q]] = -self.np.inf
+            count = min(k, len(members))
+            cutoff = float(self.np.partition(row, len(row) - count)[len(row) - count]) if count else self.np.inf
+            selected = self.np.flatnonzero(row >= max(1e-9 - self.margin, cutoff - self.margin))
+            # add.accumulate preserves the public inverted-index left-to-right
+            # additions. Pairwise sum/fsum would reorder last-bit ties.
+            terms = self.np.asarray([self.terms[t] for t in kernel.vectors.get(q, {})], dtype=int)
+            if len(terms) and len(selected):
+                products = self.lexical[columns[selected, None], terms[None, :]] * self.lexical[self.index[q], terms]
+                scores = self.np.add.accumulate(products, axis=1)[:, -1]
+                exact = [(members[i], float(s)) for i, s in zip(selected, scores)]
+            else:
+                exact = []
+            result[q] = tuple(
+                (m, round(min(1.0, s), 12))
+                for m, s in heapq.nsmallest(
+                    k, ((m, s) for m, s in exact if s > 1e-9), key=lambda item: (-item[1], item[0])
+                )
+            )
+        return result
+
+
+def _kernel_gram(kernel: Kernel | CellKernel, names: Sequence[str]) -> _KernelGram | None:
+    """Request-local Gram matrix under explicit dimension and allocation budgets."""
+    if not isinstance(kernel, Kernel) or not 32 <= len(names) <= 1024:
+        return None
+    terms = sorted({term for m in names for term in kernel.vectors.get(m, {})})
+    spaces: dict[tuple[str, int], list[str]] = defaultdict(list)
+    for model, vectors in kernel.dense.items():
+        for m in names:
+            if m in vectors:
+                spaces[model, len(vectors[m])].append(m)
+    width = len(terms) + sum(size for _model, size in spaces)
+    if len(names) * width > 2_000_000:
+        return None
+    try:
+        np: Any = importlib.import_module("numpy")
+    except ImportError:
+        return None
+    index = {m: i for i, m in enumerate(names)}
+    gram = np.zeros((len(names), len(names)), dtype=float)
+    columns = {t: j for j, t in enumerate(terms)}
+    lexical = None
+    if terms:
+        matrix = np.zeros((len(names), len(terms)), dtype=float)
+        for m, i in index.items():
+            for t, w in kernel.vectors.get(m, {}).items():
+                matrix[i, columns[t]] = w
+        gram += matrix @ matrix.T
+        lexical = matrix
+    for (model, _size), members in spaces.items():
+        matrix = np.asarray([kernel.dense[model][m] for m in members], dtype=float)
+        selected = np.asarray([index[m] for m in members], dtype=int)
+        gram[np.ix_(selected, selected)] += matrix @ matrix.T
+    return _KernelGram(
+        index, np.clip(gram, -1.0, 1.0), 64 * (width + 1) * float(np.finfo(float).eps), np, lexical, columns
+    )
+
+
+def _hood(
+    kernel: Kernel | CellKernel,
+    neighbors: Neighbors,
+    cache: dict[tuple[str, str], float] | None = None,
+    gram: _KernelGram | None = None,
+) -> _Neighborhood:
     ids = tuple(m for m, _s in neighbors)
-    among = tuple(tuple(1.0 if a == b else kernel.similarity(a, b) for b in ids) for a in ids)
+    if gram is not None and ids:
+        indices = [gram.index[m] for m in ids]
+        values = gram.values[gram.np.ix_(indices, indices)]
+        gram.np.fill_diagonal(values, 1.0)
+        return _Neighborhood(ids, tuple(s for _m, s in neighbors), tuple(map(tuple, values.tolist())))
+    memo = {} if cache is None else cache
+
+    def similarity(a: str, b: str) -> float:
+        if a == b:
+            return 1.0
+        key = (a, b) if a < b else (b, a)
+        if key not in memo:
+            value = kernel.similarity(a, b)
+            if len(memo) >= MAX_SIMILARITY_CACHE:
+                return value
+            memo[key] = value
+        return memo[key]
+
+    among = tuple(tuple(similarity(a, b) for b in ids) for a in ids)
     return _Neighborhood(ids, tuple(s for _m, s in neighbors), among)
 
 
@@ -541,12 +707,23 @@ def fit(
     `targets` restricts which measured items are scored and given priors (default: all);
     every measured item still serves as a witness.
     """
+    if type(k) is not int or k < 0:
+        raise ValueError("neighbor count must be a non-negative integer")
     reference = bases if baseline is None else baseline
     threshold = validate_z(len(powers))
     measured = sorted(m for m in estimates if m in bases and kernel.has(m))
     wanted = set(measured) if targets is None else set(targets) & set(measured)
     queries = sorted(wanted | {c for c in candidates if c in bases and kernel.has(c)})
-    hoods = {q: _hood(kernel, nb) for q, nb in kernel.neighbors(queries, measured, k).items()}
+    similarities: dict[tuple[str, str], float] = {}
+    gram = (
+        _kernel_gram(kernel, sorted(set(queries) | set(measured))) if len(wanted) >= MIN_MEASURED and tau2 > 0 else None
+    )
+    near = (
+        gram.neighbors(kernel, queries, measured, k)
+        if gram is not None and isinstance(kernel, Kernel) and not kernel.dense
+        else kernel.neighbors(queries, measured, k)
+    )
+    hoods = {q: _hood(kernel, nb, similarities, gram) for q, nb in near.items()}
     residual = {m: estimates[m][0] - bases[m][0] for m in measured}
     noise = {m: estimates[m][1] for m in measured}
     default = math.sqrt(max(tau2, 0.0))
@@ -565,17 +742,17 @@ def fit(
     out.measured = len(scored)
     if len(scored) < MIN_MEASURED or tau2 <= 0.0 or min(scale.values(), default=0.0) <= 0.0:
         return out
+    transfers = _transfer_engine({q: hoods[q] for q in scored}, scale, residual, noise)
+    baseline_lpd = {m: _log_normal(estimates[m][0], reference[m][0], reference[m][1] + estimates[m][1]) for m in scored}
 
     def gains(power: int, share: float) -> list[float]:
         row = []
+        predictions = transfers(power, share)
         for m in scored:
             effect, variance = estimates[m]
             mean, var = bases[m]
-            shift, reduction = _transfer(hoods[m], power, share, scale[m], scale, residual, noise)
-            row.append(
-                _log_normal(effect, mean + shift, max(var - reduction, JITTER) + variance)
-                - _log_normal(effect, reference[m][0], reference[m][1] + variance)
-            )
+            shift, reduction = predictions[m]
+            row.append(_log_normal(effect, mean + shift, max(var - reduction, JITTER) + variance) - baseline_lpd[m])
         return row
 
     best: tuple[float, int, float, list[float]] | None = None
@@ -595,6 +772,9 @@ def fit(
     out.verdict = VALIDATED if mean > 0 and z >= threshold else NOT_VALIDATED
     if not out.validated:
         out.share = 0.0
+    else:
+        out._predictions = _transfer_engine(hoods, scale, residual, noise)(power, share)
+        out._prediction_key = (power, share, tau2)
     return out
 
 

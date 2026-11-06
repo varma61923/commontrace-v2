@@ -285,6 +285,7 @@ def _snapshot_bytes(_key: Hashable, snapshot: _Snapshot) -> int:
 def _retained_bytes(value: object) -> int:
     """Account immutable Python objects, including Unicode string allocation."""
     size, seen, pending = 1024, set(), [value]
+    names: dict[type, tuple[str, ...]] = {}
     while pending:
         item = pending.pop()
         identity = id(item)
@@ -292,6 +293,10 @@ def _retained_bytes(value: object) -> int:
             continue
         seen.add(identity)
         size += sys.getsizeof(item)
+        # Most retained objects are leaves. Avoid ABC/dataclass introspection
+        # on every term, timestamp and scalar in a large immutable generation.
+        if isinstance(item, (str, bytes, int, float, datetime, type(None))):
+            continue
         if isinstance(item, _FrozenMap):
             size += item._table_bytes + sys.getsizeof(item._data) + sys.getsizeof(item._table_bytes)
             pending.extend(item.keys())
@@ -306,7 +311,10 @@ def _retained_bytes(value: object) -> int:
         elif isinstance(item, (tuple, frozenset)):
             pending.extend(item)
         elif is_dataclass(item) and not isinstance(item, type):
-            pending.extend(getattr(item, field.name) for field in fields(item))
+            kind = type(item)
+            if kind not in names:
+                names[kind] = tuple(field.name for field in fields(item))
+            pending.extend(getattr(item, name) for name in names[kind])
     return size
 
 

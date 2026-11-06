@@ -200,3 +200,43 @@ def test_nonstandard_float_configuration_forces_original_scorer(field, value, mo
 def test_unaudited_future_interpreter_forces_original_scorer(monkeypatch):
     monkeypatch.setattr(vector_scoring.sys, "version_info", (3, 15, 0))
     assert vector_scoring._native_dot() is None
+
+
+@pytest.mark.parametrize("dimension", [32, 384, 2000])
+def test_blocked_native_scan_matches_exact_oracle_across_pages_and_ties(dimension):
+    pytest.importorskip("numpy")
+    rng = random.Random(101 + dimension)
+    query = quantize([rng.uniform(-1, 1) for _ in range(dimension)])
+    rows = [(f"{i:04}", blob([rng.uniform(-1, 1) for _ in range(dimension)])) for i in range(1050)]
+    rows.extend([(key, blob(query)) for key in ("tie-z", "tie-b", "tie-a")])
+    for top_k in (1, 10, 200):
+        assert vector_scoring.cosine_topk(iter(rows), query, dimension=dimension, top_k=top_k) == oracle(
+            rows, query, top_k
+        )
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        blob([0.0] * 64),
+        blob([float("nan")] + [0.0] * 63),
+        b"truncated",
+        struct.pack("<I", 0x7FA00001) + blob([0.0] * 63),
+    ],
+)
+def test_late_pruned_pages_still_validate_corrupt_rows(invalid):
+    pytest.importorskip("numpy")
+    query = quantize([1.0] + [0.0] * 63)
+    rows = [(str(i), blob(query)) for i in range(1100)] + [("invalid", invalid)]
+    with pytest.raises(ValueError, match="corrupt"):
+        vector_scoring.cosine_topk(iter(rows), query, dimension=64, top_k=1)
+
+
+def test_blocked_full_exponent_float32_cancellation_and_request_isolation():
+    pytest.importorskip("numpy")
+    tiny, huge = 2**-149, (2 - 2**-23) * 2**127
+    vectors = [[huge, tiny, -huge, tiny] * 16, [tiny, huge, tiny, -huge] * 16, [tiny] * 64, [-tiny] * 64, [huge] * 64]
+    rows = [(f"{i:04}", blob(vectors[i % len(vectors)])) for i in range(1100)]
+    for vector in (vectors[0], vectors[1], vectors[2]):
+        query = quantize(vector)
+        assert vector_scoring.cosine_topk(rows, query, dimension=64, top_k=10) == oracle(rows, query, 10)

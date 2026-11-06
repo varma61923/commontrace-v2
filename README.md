@@ -392,6 +392,10 @@ Benchmark harnesses for LoCoMo, LongMemEval and BEAM (100K to 10M) are included,
 
 ## Development
 
+For optional numerical acceleration, install `unimem[performance]`. See the
+[research, paired performance measurements, and reproduction commands](docs/performance-research.md)
+for measured gains, first-call costs, correctness checks, and limits of a 10x target.
+
 ```bash
 python -m pip install -e ".[dev]"
 make lint        # ruff

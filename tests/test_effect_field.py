@@ -150,6 +150,63 @@ def test_dense_kernel_accepts_native_encoder_float32_vectors():
     assert kernel.similarity("a", "b") == pytest.approx(1.0)
 
 
+@pytest.mark.parametrize("seed", range(4))
+def test_batched_fit_preserves_scalar_grid_witnesses_and_priors(seed, monkeypatch):
+    pytest.importorskip("numpy")
+    rng = random.Random(seed)
+    texts, effects = corpus(rng, per=16)
+    kernel = effect_field.Kernel.lexical(texts)
+    estimates = {m: (e + rng.uniform(-0.01, 0.01), rng.uniform(0.0001, 0.002)) for m, e in effects.items()}
+    bases = {m: (0.0, 0.04) for m in texts}
+    accelerated = effect_field.fit(estimates, bases, 0.04, kernel)
+
+    def scalar_engine(hoods, scales, residual, noise):
+        return lambda power, share: {
+            q: effect_field._transfer(h, power, share, scales[q], scales, residual, noise) for q, h in hoods.items()
+        }
+
+    monkeypatch.setattr(effect_field, "_transfer_engine", scalar_engine)
+    monkeypatch.setattr(effect_field, "_kernel_gram", lambda *_: None)
+    reference = effect_field.fit(estimates, bases, 0.04, kernel)
+    assert (accelerated.verdict, accelerated.power, accelerated.share) == (
+        reference.verdict,
+        reference.power,
+        reference.share,
+    )
+    assert accelerated.lpd_gain == pytest.approx(reference.lpd_gain, abs=1e-10)
+    assert accelerated.z == pytest.approx(reference.z, abs=1e-8)
+    for m in texts:
+        assert accelerated.witnesses(m) == reference.witnesses(m)
+        assert accelerated.prior(m, *bases[m]) == pytest.approx(reference.prior(m, *bases[m]), abs=1e-10)
+
+
+def test_native_factorization_failure_uses_the_scalar_reference_per_query(monkeypatch):
+    np = pytest.importorskip("numpy")
+    hood = effect_field._Neighborhood(("w",), (0.8,), ((1.0,),))
+    hoods = {f"q{i}": hood for i in range(40)}
+    scales = {m: 0.2 for m in [*hoods, "w"]}
+    engine = effect_field._transfer_engine(hoods, scales, {"w": 0.3}, {"w": 0.001})
+
+    def fail(_matrix):
+        raise np.linalg.LinAlgError("simulated backend failure")
+
+    monkeypatch.setattr(np.linalg, "cholesky", fail)
+    expected = effect_field._transfer(hood, 2, 0.8, 0.2, scales, {"w": 0.3}, {"w": 0.001})
+    assert engine(2, 0.8) == {m: expected for m in hoods}
+
+
+def test_insufficient_evidence_does_not_build_a_native_gram_matrix(monkeypatch):
+    texts = {f"m{i}": "refund ledger invoice" for i in range(80)}
+    kernel = effect_field.Kernel.lexical(texts)
+
+    def unexpected(*_args):
+        raise AssertionError("insufficient evidence must not initialize the accelerator")
+
+    monkeypatch.setattr(effect_field, "_kernel_gram", unexpected)
+    field = effect_field.fit({"m0": (0.2, 0.001)}, {m: (0.0, 0.04) for m in texts}, 0.04, kernel, candidates=texts)
+    assert field.verdict == effect_field.INSUFFICIENT
+
+
 def test_dense_neighbor_batches_preserve_exact_topk_across_both_boundaries():
     rng = random.Random(71)
     queries = [f"q{i}" for i in range(129)]
