@@ -102,6 +102,34 @@ class BuildLocalImageTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "symlinks are not allowed"):
                 copy_allowlisted_context(str(checkout), str(context))
 
+    def test_nested_allowlisted_file_rejects_symlinked_ancestors(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_root:
+            root = Path(temporary_root)
+            checkout = root / "checkout"
+            checkout.mkdir()
+            make_checkout(checkout)
+            outside = root / "private"
+            (checkout / "deploy" / "docker").rename(outside)
+            (outside / "local-entrypoint.sh").write_text("outside confidential fixture", encoding="utf-8")
+            (checkout / "deploy" / "docker").symlink_to(outside, target_is_directory=True)
+            context = root / "context"
+            with self.assertRaisesRegex(ValueError, "symlinks are not allowed"):
+                copy_allowlisted_context(str(checkout), str(context))
+            self.assertFalse((context / "deploy" / "docker" / "local-entrypoint.sh").exists())
+
+    def test_symlinked_checkout_cannot_hide_a_context_inside_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_root:
+            root = Path(temporary_root)
+            checkout = root / "checkout"
+            checkout.mkdir()
+            make_checkout(checkout)
+            alias = root / "alias"
+            alias.symlink_to(checkout, target_is_directory=True)
+            context = checkout / "unimem" / "context"
+            with self.assertRaisesRegex(ValueError, "outside the source checkout"):
+                copy_allowlisted_context(str(alias), str(context))
+            self.assertFalse(context.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

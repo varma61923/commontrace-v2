@@ -106,9 +106,9 @@ def _connect(path: str, *, create: bool = False) -> _Connection:
         os.makedirs(os.path.dirname(path), exist_ok=True)
     # Exclusive checkout serializes use of each handle across threads.
     connection = sqlite3.connect(path, timeout=30, isolation_level=None, check_same_thread=False, factory=_Connection)
-    connection.execute("PRAGMA busy_timeout=30000")
-    connection.execute("PRAGMA synchronous=FULL")
     try:
+        connection.execute("PRAGMA busy_timeout=30000")
+        connection.execute("PRAGMA synchronous=FULL")
         if create:
             connection.execute("PRAGMA journal_mode=WAL")
             connection.executescript(_SCHEMA)
@@ -147,8 +147,12 @@ def _connect(path: str, *, create: bool = False) -> _Connection:
             # while migrate() bulk-imports the authoritative event ledger.
             connection.execute("CREATE INDEX IF NOT EXISTS event_fact_seq ON events(fact_id,seq)")
     except BaseException:
-        connection.rollback()
-        connection.close()
+        # Setup includes the first PRAGMA. Cleanup must still close the handle
+        # when rollback fails, and must not replace the original setup error.
+        with contextlib.suppress(sqlite3.Error):
+            connection.rollback()
+        with contextlib.suppress(sqlite3.Error):
+            connection.close()
         raise
     return connection
 

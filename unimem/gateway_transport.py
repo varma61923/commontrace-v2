@@ -68,6 +68,10 @@ def make_http_server(
         def parse_request(self) -> bool:
             if not super().parse_request():
                 return False
+            for name in ("Host", "Authorization", "Origin"):
+                if len(self.headers.get_all(name, [])) > 1:
+                    self._fail(400, "ambiguous_header", f"send at most one {name} header")
+                    return False
             # A persistent stream must have one unambiguous framing rule.
             # Reject unsupported encodings even when they omit 'chunked'.
             if self.headers.get_all("Transfer-Encoding"):
@@ -91,21 +95,21 @@ def make_http_server(
             return True
 
         def _send(self, response: Response) -> None:
-            self.send_response(response.status)
-            self.send_header("Content-Type", response.content_type)
-            if response.stream is None:
-                self.send_header("Content-Length", str(len(response.body)))
-            else:
-                self.send_header("Transfer-Encoding", "chunked")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("X-Content-Type-Options", "nosniff")
-            for key, value in response.headers.items():
-                self.send_header(key, value)
-            self.end_headers()
-            if response.stream is None:
-                self.wfile.write(response.body)
-                return
             try:
+                self.send_response(response.status)
+                self.send_header("Content-Type", response.content_type)
+                if response.stream is None:
+                    self.send_header("Content-Length", str(len(response.body)))
+                else:
+                    self.send_header("Transfer-Encoding", "chunked")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                for key, value in response.headers.items():
+                    self.send_header(key, value)
+                self.end_headers()
+                if response.stream is None:
+                    self.wfile.write(response.body)
+                    return
                 for chunk in response.stream:
                     if chunk:
                         self.wfile.write(f"{len(chunk):x}\r\n".encode() + chunk + b"\r\n")
@@ -115,6 +119,10 @@ def make_http_server(
                 # Once headers are sent, aborting the transfer is safer than
                 # emitting a fabricated successful completion after erasure.
                 self.close_connection = True
+            finally:
+                close = getattr(response.stream, "close", None)
+                if close is not None:
+                    close()
 
         def _fail(self, status: int, code: str, message: str) -> None:
             self._send(_json(status, {"error": {"code": code, "message": message}}))
@@ -136,8 +144,14 @@ def make_http_server(
             if ctype != "application/json":
                 return self._fail(415, "unsupported_media_type", "Content-Type must be application/json")
             origin, host_header = self.headers.get("Origin"), self.headers.get("Host", "")
-            if origin and urlsplit(origin).netloc != host_header:
-                return self._fail(403, "bad_origin", "cross-origin requests are not accepted")
+            if origin:
+                try:
+                    parsed_origin = urlsplit(origin)
+                    valid_origin = parsed_origin.scheme in ("http", "https") and parsed_origin.netloc == host_header
+                except ValueError:
+                    valid_origin = False
+                if not valid_origin:
+                    return self._fail(403, "bad_origin", "cross-origin requests are not accepted")
             body = self.rfile.read(length)
             if len(body) != length:
                 return self._fail(400, "incomplete_body", "body is shorter than Content-Length")

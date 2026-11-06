@@ -93,6 +93,28 @@ def test_get_body_cannot_be_reinterpreted_as_a_pipelined_request(server):
     assert_health_available(server)
 
 
+@pytest.mark.parametrize("name", [b"Host", b"Authorization", b"Origin"])
+def test_duplicate_security_headers_are_rejected_before_dispatch(server, name):
+    value = b"localhost" if name == b"Host" else b"Bearer invalid" if name == b"Authorization" else b"http://localhost"
+    headers = name + b": " + value + b"\r\n" + name.lower() + b": " + value + b"\r\n"
+    with connect(server) as client:
+        client.sendall(b"GET /v1/health HTTP/1.1\r\n" + headers + b"\r\n")
+        assert b" 400 " in client.recv(4096).split(b"\r\n")[0]
+    assert_health_available(server)
+
+
+@pytest.mark.parametrize("origin", [b"http://[", b"file://localhost", b"null"])
+def test_malformed_or_non_http_origin_gets_an_error_response(server, origin):
+    with connect(server) as client:
+        client.sendall(
+            b"POST /v1/recall HTTP/1.1\r\nHost: localhost\r\nOrigin: "
+            + origin
+            + b"\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}"
+        )
+        assert b" 403 " in client.recv(4096).split(b"\r\n")[0]
+    assert_health_available(server)
+
+
 def test_zero_padded_length_preserves_valid_http_requests(server):
     with connect(server) as client:
         client.sendall(

@@ -547,8 +547,10 @@ class AsyncStore:
                     self._admission.release()
                     self._queue.task_done()
         finally:
-            await self._loop.run_in_executor(self._executor, self._store.close)
-            self._executor.shutdown(wait=False)
+            try:
+                await self._loop.run_in_executor(self._executor, self._store.close)
+            finally:
+                self._executor.shutdown(wait=False)
 
     async def _drain(self) -> None:
         await self._queue.put(None)

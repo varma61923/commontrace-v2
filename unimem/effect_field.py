@@ -76,6 +76,8 @@ KERNEL_CONTEXT = "context-components-v1"
 
 def validate_z(powers: int = len(POWERS)) -> float:
     """One-sided z a configuration must reach, Bonferroni-corrected over the search grid."""
+    if type(powers) is not int or powers <= 0:
+        raise ValueError("power count must be a positive integer")
     return NormalDist().inv_cdf(1.0 - ALPHA / (powers * len(SHARES)))
 
 
@@ -709,6 +711,8 @@ def fit(
     """
     if type(k) is not int or k < 0:
         raise ValueError("neighbor count must be a non-negative integer")
+    if not powers or any(type(power) is not int or power <= 0 for power in powers):
+        raise ValueError("kernel powers must be a nonempty sequence of positive integers")
     reference = bases if baseline is None else baseline
     threshold = validate_z(len(powers))
     measured = sorted(m for m in estimates if m in bases and kernel.has(m))

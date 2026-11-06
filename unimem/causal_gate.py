@@ -51,6 +51,7 @@ allocation weight, not a proof. Billing and release decisions keep using
 from __future__ import annotations
 
 import math
+import sys
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
@@ -69,6 +70,7 @@ RESET_ALPHA = 0.01  # evidence is only forgotten on stronger proof of drift than
 MIN_OVERLAP_ESS = 30.0
 MAX_LOG_WEIGHT = 50.0  # importance weights beyond e**50 are treated as unbounded
 UNKNOWN_SOURCE = "local"
+_WEIGHT_ROOT_MAX = math.sqrt(sys.float_info.max) / 2.0
 
 
 # -- inputs --------------------------------------------------------------------------------------
@@ -179,7 +181,15 @@ def _arm(rows: Sequence[Row]) -> tuple[float, float, int] | None:
     """Self-normalized mean, its linearized variance (floored by a Jeffreys term), and the count."""
     if not rows:
         return None
-    weights = [1.0 / r.propensity for r in rows]
+    propensities = [r.propensity for r in rows]
+    if any(not 0.0 < row.rate < 1.0 for row in rows):
+        raise ValueError("arm propensities require finite randomization rates strictly between zero and one")
+    smallest = min(propensities)
+    # Hajek means, variance and ESS are invariant under a common weight scale.
+    # Normalize only when the unscaled total's square could overflow; preserve
+    # the usual arithmetic for ordinary randomized-assignment probabilities.
+    normalizer = smallest if smallest < len(rows) / _WEIGHT_ROOT_MAX else 1.0
+    weights = [normalizer / p for p in propensities]
     total = math.fsum(weights)
     mean = math.fsum(w * r.succeeded for w, r in zip(weights, rows)) / total
     variance = math.fsum((w * (r.succeeded - mean)) ** 2 for w, r in zip(weights, rows)) / total**2
@@ -205,7 +215,15 @@ def _context_contrasts(by_context: Mapping[str, Sequence[Row]], targets: Iterabl
     Jeffreys floor and effective sample size. Nonbinary legacy inputs use the
     original general scorer.
     """
-    if any(type(row.succeeded) is not bool for rows in by_context.values() for row in rows):
+    minimum = sum(map(len, by_context.values())) / _WEIGHT_ROOT_MAX
+    if any(
+        type(row.succeeded) is not bool or not 0.0 < row.rate < 1.0 or not minimum <= row.propensity <= 1.0
+        for rows in by_context.values()
+        for row in rows
+    ):
+        # Scale each retained arm independently for extreme probabilities. A
+        # common normalization across contexts would erase small weights when
+        # the context holding the largest weight is itself left out.
         return {
             ctx: contrast([r for other, rows in by_context.items() if other != ctx for r in rows]) for ctx in targets
         }

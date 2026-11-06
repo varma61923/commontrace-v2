@@ -20,6 +20,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -445,22 +446,38 @@ class Response:
         """Bind deferred egress to the authorization context that created it."""
         context = contextvars.copy_context()
 
-        def bounded() -> Iterator[bytes]:
-            size = count = 0
-            while True:
+        class Bounded(Iterator[bytes]):
+            def __init__(self) -> None:
+                self.size = self.count = 0
+                self.closed = False
+
+            def __next__(self) -> bytes:
+                if self.closed:
+                    raise StopIteration
                 try:
                     chunk = context.run(next, chunks)
-                except StopIteration:
-                    return
-                count += 1
-                if not isinstance(chunk, bytes):
-                    raise ValueError("UniMem stream chunks must be bytes")
-                size += len(chunk)
-                if count > 4096 or len(chunk) > 256 * 1024 or size > 32 * 1024 * 1024:
-                    raise ValueError("UniMem stream exceeds its bounded transfer budget")
-                yield chunk
+                    self.count += 1
+                    if not isinstance(chunk, bytes):
+                        raise ValueError("UniMem stream chunks must be bytes")
+                    self.size += len(chunk)
+                    if self.count > 4096 or len(chunk) > 256 * 1024 or self.size > 32 * 1024 * 1024:
+                        raise ValueError("UniMem stream exceeds its bounded transfer budget")
+                    return chunk
+                except BaseException:
+                    self.close()
+                    raise
 
-        return cls(status, b"", content_type, headers or {}, bounded())
+            def close(self) -> None:
+                # A generator's close() before first next() skips its finally.
+                # Explicit ownership also releases an already-open file source.
+                if self.closed:
+                    return
+                self.closed = True
+                close = getattr(chunks, "close", None)
+                if close is not None:
+                    context.run(close)
+
+        return cls(status, b"", content_type, headers or {}, Bounded())
 
 
 def _json(status: int, payload) -> Response:
@@ -907,14 +924,14 @@ class Gateway:
                 lowered = {k.lower(): v for k, v in headers.items()}
                 request_origin = lowered.get("origin")
                 host = lowered.get("host", "").lower()
-                if (
-                    lowered.get("sec-fetch-site") == "cross-site"
-                    or request_origin
-                    and (
-                        urlsplit(request_origin).scheme not in ("http", "https")
-                        or urlsplit(request_origin).netloc.lower() != host
-                    )
-                ):
+                origin_ok = True
+                if request_origin:
+                    try:
+                        origin = urlsplit(request_origin)
+                        origin_ok = origin.scheme in ("http", "https") and origin.netloc.lower() == host
+                    except ValueError:
+                        origin_ok = False
+                if lowered.get("sec-fetch-site") == "cross-site" or not origin_ok:
                     raise ApiError(403, "bad_origin", "cross-origin memory operations are refused")
             if method == "GET" and path in (
                 "/benchmarks",
@@ -1187,7 +1204,15 @@ class Gateway:
             def reject_constant(_value):
                 raise ValueError("non-finite JSON number")
 
-            payload = json.loads(body, object_pairs_hook=unique_object, parse_constant=reject_constant)
+            def finite_float(value):
+                number = float(value)
+                if not math.isfinite(number):
+                    raise ValueError("non-finite JSON number")
+                return number
+
+            payload = json.loads(
+                body, object_pairs_hook=unique_object, parse_constant=reject_constant, parse_float=finite_float
+            )
         except (ValueError, UnicodeDecodeError, RecursionError):
             raise _bad("body is not valid JSON") from None
         if not isinstance(payload, dict):

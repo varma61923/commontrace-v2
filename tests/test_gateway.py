@@ -191,6 +191,22 @@ def test_non_object_or_non_json_bodies_are_400(gw, raw):
     assert gw.handle("POST", "/v1/recall", AUTH, raw).status == 400
 
 
+@pytest.mark.parametrize("number", [b"1e400", b"-1e400", b"1e9999"])
+def test_overflowed_json_numbers_are_rejected_before_dispatch(gw, number):
+    raw = b'{"occasion_id":"overflow","items":[],"pad":{"nested":[' + number + b"]}}"
+    assert gw.handle("POST", "/v1/recall", AUTH, raw).status == 400
+
+
+def test_finite_extreme_json_numbers_keep_their_standard_float_representation():
+    assert gateway.Gateway._parse_body(b'{"large":1e308,"tiny":5e-324}') == {"large": 1e308, "tiny": 5e-324}
+
+
+def test_malformed_origin_is_refused_by_the_gateway_dispatcher(gw):
+    response = gw.handle("POST", "/v1/memory/search", {**AUTH, "Origin": "http://["}, b"{}")
+    assert response.status == 403
+    assert json.loads(response.body)["error"]["code"] == "bad_origin"
+
+
 def test_an_oversized_body_is_413(gw):
     big = b'{"occasion_id":"o","items":[],"pad":"' + b"x" * gateway.MAX_BODY_BYTES + b'"}'
     assert gw.handle("POST", "/v1/recall", AUTH, big).status == 413

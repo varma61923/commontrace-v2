@@ -173,30 +173,31 @@ def connect(path: str, setup: str = "", *, read_only: bool = False) -> sqlite3.C
             raise ConversationError(f"no such store file: {path}")
         uri = "file:" + urllib.parse.quote(os.path.abspath(path)) + "?mode=ro"
         db = sqlite3.connect(uri, uri=True, timeout=BUSY_SECONDS, check_same_thread=False, isolation_level=None)
-        db.execute("PRAGMA query_only=ON")
-        # Connection-local scratch/page-cache limits apply to readers too.
-        # Large FTS sorts must not regress to file-backed scratch work merely
-        # because the service correctly opened its source read-only.
+    else:
+        db = sqlite3.connect(path, timeout=BUSY_SECONDS, check_same_thread=False, isolation_level=None)
+    try:
+        if read_only:
+            db.execute("PRAGMA query_only=ON")
+        else:
+            deadline = time.monotonic() + BUSY_SECONDS
+            _retry_locked(lambda: db.execute("PRAGMA journal_mode=WAL"), deadline)
+            db.execute("PRAGMA synchronous=NORMAL")
+        # Bound connection-local scratch/page-cache allocation for readers too.
         db.execute("PRAGMA temp_store=MEMORY")
         db.execute("PRAGMA cache_size=-8192")
+        if setup and not read_only:
+
+            def _setup():
+                with write_txn(db):
+                    for statement in filter(str.strip, setup.split(";")):
+                        db.execute(statement)
+
+            _retry_locked(_setup, deadline)
         return db
-    db = sqlite3.connect(path, timeout=BUSY_SECONDS, check_same_thread=False, isolation_level=None)
-    deadline = time.monotonic() + BUSY_SECONDS
-    _retry_locked(lambda: db.execute("PRAGMA journal_mode=WAL"), deadline)
-    db.execute("PRAGMA synchronous=NORMAL")
-    # EverOS engine pattern: scratch tables in memory, an 8MB page cache bound
-    # so one pathological session cannot balloon process RSS.
-    db.execute("PRAGMA temp_store=MEMORY")
-    db.execute("PRAGMA cache_size=-8192")
-    if setup:
-
-        def _setup():
-            with write_txn(db):
-                for statement in filter(str.strip, setup.split(";")):
-                    db.execute(statement)
-
-        _retry_locked(_setup, deadline)
-    return db
+    except BaseException:
+        with contextlib.suppress(sqlite3.Error):
+            db.close()
+        raise
 
 
 @contextlib.contextmanager
@@ -207,14 +208,23 @@ def write_txn(db: sqlite3.Connection):
     db.execute("SAVEPOINT unimem_write" if nested else "BEGIN IMMEDIATE")
     try:
         yield db
+        db.execute("RELEASE unimem_write" if nested else "COMMIT")
     except BaseException:
-        if nested:
-            db.execute("ROLLBACK TO unimem_write")
-            db.execute("RELEASE unimem_write")
-        else:
-            db.execute("ROLLBACK")
+        try:
+            # COMMIT can fail (for example, a deferred constraint); SQLite
+            # leaves that transaction active. Some I/O failures auto-rollback.
+            if db.in_transaction:
+                if nested:
+                    db.execute("ROLLBACK TO unimem_write")
+                    db.execute("RELEASE unimem_write")
+                else:
+                    db.execute("ROLLBACK")
+        except sqlite3.Error:
+            # A failed rollback makes the handle unsafe to reuse. Preserve the
+            # original operation error, but discard its remaining transaction.
+            with contextlib.suppress(sqlite3.Error):
+                db.close()
         raise
-    db.execute("RELEASE unimem_write" if nested else "COMMIT")
 
 
 @dataclass(frozen=True)
@@ -383,25 +393,30 @@ class Store:
         if read_only:
             # frozen memory: recall works, every write raises sqlite3.OperationalError
             self.db = connect(self.path, read_only=True)
+        else:
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+            fts = (
+                "CREATE VIRTUAL TABLE IF NOT EXISTS units_fts USING fts5(body, tokenize='porter unicode61');"
+                if FTS5
+                else ""
+            )
+            self.db = connect(
+                self.path, _SCHEMA + fts + f"INSERT OR IGNORE INTO meta VALUES ('schema', '{SCHEMA_VERSION}')"
+            )
+        try:
             self.db.row_factory = sqlite3.Row
             self.db.execute("PRAGMA foreign_keys=ON")
-            with self.read_snapshot():
+            if read_only:
+                with self.read_snapshot():
+                    self._inspect_schema()
+            else:
+                self._migrate()
+                self._init_unit_journal()
                 self._inspect_schema()
-            return
-        os.makedirs(os.path.dirname(self.path), exist_ok=True)
-        fts = (
-            "CREATE VIRTUAL TABLE IF NOT EXISTS units_fts USING fts5(body, tokenize='porter unicode61');"
-            if FTS5
-            else ""
-        )
-        self.db = connect(
-            self.path, _SCHEMA + fts + f"INSERT OR IGNORE INTO meta VALUES ('schema', '{SCHEMA_VERSION}')"
-        )
-        self.db.row_factory = sqlite3.Row
-        self.db.execute("PRAGMA foreign_keys=ON")
-        self._migrate()
-        self._init_unit_journal()
-        self._inspect_schema()
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                self.db.close()
+            raise
 
     def _inspect_schema(self) -> None:
         self._schema_version = self.db.execute("PRAGMA schema_version").fetchone()[0]
@@ -631,15 +646,17 @@ class Store:
     def close(self) -> None:
         from unimem.conversation import embed, search
 
-        with self._lock:
-            embed.release_store(self)
-            search.forget_store(self)
+        with self._lock, contextlib.ExitStack() as cleanup:
+            # One provider's close failure must not leak the other providers or
+            # the SQLite handle. ExitStack still propagates cleanup failures.
+            cleanup.callback(self.db.close)
+            cleanup.callback(self._turn_cache.clear)
+            cleanup.callback(self._embedders.clear)
             for embedder in self._embedders.values():
-                embedder.close()
-            self._embedders.clear()
-            self._turn_cache.clear()
+                cleanup.callback(embedder.close)
+            cleanup.callback(search.forget_store, self)
+            cleanup.callback(embed.release_store, self)
             self._turn_cache_bytes = 0
-            self.db.close()
 
     def __enter__(self):
         return self

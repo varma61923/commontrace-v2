@@ -81,6 +81,18 @@ def rmse(model: causal_gate.Model, effects: dict[str, float]) -> float:
 # -- kernel ----------------------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("powers", [(), (0,), (-1,), (0.5,), (True,)])
+def test_fit_rejects_empty_or_invalid_kernel_power_grids(powers):
+    with pytest.raises(ValueError, match="kernel powers"):
+        effect_field.fit({}, {}, 0.04, effect_field.Kernel.lexical({}), powers=powers)
+
+
+@pytest.mark.parametrize("count", [0, -1, True, 1.5])
+def test_validation_threshold_requires_a_positive_integer_power_count(count):
+    with pytest.raises(ValueError, match="power count"):
+        effect_field.validate_z(count)
+
+
 def test_tokens_keep_content_words_and_cjk_bigrams():
     assert effect_field.tokens("The 429 retry is in THE queue") == ["retry", "queue"]
     assert effect_field.tokens("退款流程") == ["退款", "款流", "流程"]

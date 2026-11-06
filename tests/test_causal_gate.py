@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import math
 import os
 import random
 import types
@@ -69,6 +70,67 @@ def simulate(rng, n, lessons, *, rate_for, effect_for, base_for=lambda ctx: 0.5,
 
 
 # -- estimation -----------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("probability", [1e-160, 1e-200, math.ulp(0.0)])
+def test_extreme_valid_propensities_keep_scale_invariant_contrasts_and_posteriors(probability):
+    def rows(rate):
+        return [
+            Row("m", "withheld-success", False, True, rate, "a"),
+            Row("m", "withheld-failure", False, False, rate * 2, "a"),
+            Row("m", "injected-success", True, True, 0.5, "a"),
+            Row("m", "injected-failure", True, False, 0.5, "a"),
+        ]
+
+    actual = causal_gate.contrast(rows(probability))
+    expected = causal_gate.contrast(rows(0.1))
+    assert actual is not None and expected is not None
+    assert actual.effect == pytest.approx(expected.effect, abs=1e-14)
+    assert actual.variance == pytest.approx(expected.variance, abs=1e-14)
+    model = causal_gate.fit(rows(probability))
+    assert math.isfinite(model.lessons["m"].mean)
+    assert math.isfinite(model.lessons["m"].sd)
+
+
+def test_leaving_out_an_extreme_context_recomputes_the_retained_weight_scale():
+    grouped = {
+        ctx: [
+            Row("m", f"{ctx}-1", False, True, probability, ctx),
+            Row("m", f"{ctx}-2", False, False, probability * 2, ctx),
+            Row("m", f"{ctx}-3", True, True, 0.5, ctx),
+            Row("m", f"{ctx}-4", True, False, 0.5, ctx),
+        ]
+        for ctx, probability in (("extreme", math.ulp(0.0)), ("regular", 0.1), ("other", 0.2))
+    }
+    actual = causal_gate._context_contrasts(grouped, grouped)
+    for ctx in grouped:
+        assert actual[ctx] == causal_gate.contrast([r for key, rows in grouped.items() if key != ctx for r in rows])
+
+
+@pytest.mark.parametrize("rate", [1e-200, math.ulp(0.0)])
+def test_tiny_valid_rates_allow_injected_propensities_rounded_to_one(rate):
+    grouped = {
+        context: [
+            Row("m", f"{context}-{i}", injected, succeeded, rate, context)
+            for i, (injected, succeeded) in enumerate(((False, True), (False, False), (True, True), (True, False)))
+        ]
+        for context in ("a", "b")
+    }
+    rows = [row for group in grouped.values() for row in group]
+    assert rows[2].propensity == 1.0
+    contrast = causal_gate.contrast(rows)
+    assert contrast is not None and contrast.effect == 0.0 and math.isfinite(contrast.variance)
+    assert causal_gate._context_contrasts(grouped, grouped) == {
+        context: causal_gate.contrast(grouped["b" if context == "a" else "a"]) for context in grouped
+    }
+    model = causal_gate.fit(rows)
+    assert math.isfinite(model.lessons["m"].mean) and math.isfinite(model.lessons["m"].sd)
+
+
+@pytest.mark.parametrize("rate", [0.0, 1.0, -0.1, 1.1, float("nan"), float("inf")])
+def test_contrast_rejects_invalid_randomization_probabilities(rate):
+    with pytest.raises(ValueError, match="propensities"):
+        causal_gate.contrast([Row("m", "invalid", False, True, rate), Row("m", "other", True, False, 0.5)])
 
 
 @pytest.mark.parametrize("seed", range(8))

@@ -114,3 +114,86 @@ remain separate files; the common lock serializes cooperating writers, while
 arbitrary process loss across all downstream projections is not a distributed
 transaction. Cache invalidation supports append-only writes and atomic replacement;
 external tools must not rewrite earlier bytes while also appending to a live file.
+
+## Follow-up audit: 2026-11-06
+
+Starting commit: `e35fcaf`. This pass reviewed the recent numerical accelerators
+and cleanup tooling, then traced gateway parsing/streaming, SQLite transactions
+and handle ownership, download/build boundaries, and session accounting. It
+combines parallel source review with reproduced failures, targeted regressions,
+Graphify, static checks and the combined test suite. It does not claim that
+every line or every optional external integration has been verified.
+
+Graphify traced `conversation.store.write_txn` to conversation writes, vector
+storage, snapshots and jobs. A two-hop `estimate_cost` caller query reached the
+ledger CLI, MCP tool and LLM runtime, confirming that the accounting fix serves
+the product entry points rather than an unused helper.
+
+### Additional fixed findings
+
+| ID | Severity | Defect and resulting behavior |
+| --- | --- | --- |
+| FA01 | High | A deferred SQLite constraint can fail at COMMIT while leaving rejected conversation writes in an active transaction. Commit now runs inside the rollback boundary; automatic rollback preserves the original exception, and rollback failure discards the unsafe handle. |
+| FA02 | Medium | Failed connection PRAGMAs, setup, migrations and schema inspection leaked conversation/fact SQLite handles. Setup is protected from the first PRAGMA; cleanup closes handles and preserves the original setup error. |
+| FA03 | Medium | An embedder's close exception skipped other providers, the database and async executor shutdown. Cleanup now attempts every owned resource before propagating failure. |
+| FA04 | Medium | Gateway parsing rejected literal Infinity but admitted overflowing JSON exponents such as `1e400`. Parsed floats must now be finite, including nested values. |
+| FA05 | Medium | Duplicate Host/Authorization/Origin headers were collapsed ambiguously; malformed origins could produce uncaught parsing errors or a 500. Duplicate headers are rejected before dispatch and malformed origins receive a controlled refusal. |
+| FA06 | Medium | Aborted or rejected streams did not explicitly release their source iterators. Explicit iterator ownership and transport cleanup close the source in its captured authorization context, including closure before consumption and failure while sending headers. |
+| FA07 | Medium | Dataset/SDK downloads shared temporary names, causing concurrent collisions and following precreated symlinks that overwrote unrelated files. Each invocation now owns a private sibling directory and atomically installs only verified content; failures remove only its own temporary state. Cached SDK generator hashing also streams under the existing 64 MiB limit. |
+| FA08 | Medium | Docker context copying followed symlinked entrypoint ancestors, and lexical containment checks missed aliased checkouts. Ancestors are checked and containment uses canonical paths before copying. |
+| FA09 | Medium | Tiny valid randomization rates overflowed inverse-propensity weights or their squares. Extreme arms use scale-invariant weights; leaving out an extreme context recomputes the retained scale. Validation checks original rates and permits derived probabilities rounded to one. Ordinary arithmetic remains unchanged. |
+| FA10 | Medium | Empty, nonpositive, Boolean or fractional power grids reached division errors or invalid kernel operations. Grid/count validation now rejects them before numerical work. |
+| FA11 | Medium | Broad model substrings priced `gpt-4o-mini` at `gpt-4o` rates. Specific families and bounded provider/version aliases now determine the estimate; ambiguous partial identifiers use the documented fallback. |
+| FA12 | Medium | Invalid financial costs could enter session journals and propagate into summaries. New costs and consumed historical cost metadata must be finite and nonnegative. Corrupt stored token/cost fields and overflowing aggregates raise explicit errors without modifying history. |
+
+The conversation regressions reproduce eleven failures against the original
+implementations; all pass after the fixes. Fact connection regressions reproduce
+five setup/rollback failures. Both original download implementations overwrite a
+protected fixture through their shared temporary-name symlink. Tests exercise
+concurrent downloads, interrupted transfers, deferred constraints, cleanup
+failures, context-bound stream cleanup, malformed HTTP input, extreme numerical
+inputs and ledger attribution.
+
+### Unwired and dead-code disposition
+
+No supported public integration was enabled or deleted solely because its name
+was absent from a static call graph. The new cleanup command remains wired
+through Makefile and the development CLI. Framework fixtures, ABC hooks, SDK
+exports and optional callbacks remain intentional. Unsafe shared download paths,
+whole-file generator hashing and cleanup paths that skipped resources were
+replaced by the validated implementations above. Ruff checks unused imports
+and undefined names across the repository.
+
+### Follow-up verification
+
+| Check | Result |
+| --- | --- |
+| Combined core and end-to-end suite | **9,190 passed, 145 skipped** in 12m38s, with warnings treated as errors. |
+| Focused conversation/async/journal suite | 654 passed, 20 skipped, warnings treated as errors. |
+| Focused gateway/HTTP/TLS/stream/export suite | 155 passed, warnings treated as errors. |
+| Numerical boundary regressions | 153 passed, warnings treated as errors. |
+| Fact-store regression suite | 69 passed, warnings treated as errors. |
+| Download/build tooling | 43 passed; type checks passed for the three changed scripts. |
+| Accounting and connected LLM/competitor paths | 45 passed; ledger type check passed. |
+| Ruff | Repository lint and configured formatting passed: 1,334 Python files formatted. |
+| Mypy | Full 636-file check passed; strict checks passed for effect-field, vector scoring, fact index and async conversation store. |
+| Graphify | 28,223 nodes, 94,437 edges; 402 modules, 291 possible unreachable candidates; zero missing endpoints; integrity/budget gates passed. |
+| Security scans | Bandit: zero medium/high findings. Hub direct pins and full transitive lock: no known vulnerabilities reported by pip-audit. |
+| OpenAPI and packaging | Gateway/Hub drift checks passed; wheel and sdist built. |
+
+Focused counts overlap and must not be added to the combined suite total.
+The high-confidence production credential-format scan found no matches for the
+selected token/private-key patterns; it is not a secret-history scan. Hub
+database integration, real provider/network/hardware integrations, non-Python
+SDK toolchains and remote CI were not rerun for this follow-up. No dependencies
+or Hub SQL/schema code changed. The earlier audit's Hub/TypeScript results above
+are historical results, not new verification claims.
+
+The combined run used:
+
+```bash
+.venv/bin/python -B -m pytest tests e2e_tests -q -n 2 --dist worksteal -p no:cacheprovider -W error
+```
+
+Generated build/cache outputs were removed with the scoped `make clean` command
+after verification. Audit logs and extracted graphs stayed outside the source tree.
