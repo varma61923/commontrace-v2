@@ -202,3 +202,74 @@ def test_aggregate_cost_overflow_raises_instead_of_returning_infinite_spend(tmp_
         session_ledger.record_usage(str(tmp_path), "session", "gpt-4o", 20, 10, cost_usd=1e308)
     with pytest.raises(ValueError, match="total cost must be a finite nonnegative"):
         session_ledger.session_summary(str(tmp_path), "session")
+
+
+@pytest.mark.parametrize("limit", [0, -1])
+def test_nonpositive_listing_limits_return_no_entries(tmp_path, limit):
+    session_ledger.record_usage(str(tmp_path), "session", "gpt-4o", 2, 1)
+    assert session_ledger.list_session_entries(str(tmp_path), limit=limit) == []
+
+
+@pytest.mark.parametrize("global_summary,count", [(False, 10_001), (True, 100_001)])
+def test_summaries_include_entries_beyond_former_silent_caps(tmp_path, global_summary, count):
+    entry = session_ledger.record_usage(str(tmp_path), "session", "gpt-4o", 2, 1, cost_usd=0.01)
+    path = tmp_path / "memory" / "session_ledger.jsonl"
+    row = entry.to_dict()
+    with path.open("w", encoding="utf-8") as journal:
+        for i in range(count):
+            row["id"] = f"entry-{i}"
+            # Date filtering must also reach older rows beyond a listing cap.
+            row["timestamp"] = "2026-01-01" if i == 0 else "2026-02-01"
+            journal.write(json.dumps(row) + "\n")
+    summary = (
+        session_ledger.overall_ledger_summary(str(tmp_path))
+        if global_summary
+        else session_ledger.session_summary(str(tmp_path), "session")
+    )
+    assert summary["call_count"] == count
+    assert summary["total_tokens"] == count * 3
+    assert summary["total_cost_usd"] == pytest.approx(count * 0.01)
+    if global_summary:
+        historical = session_ledger.overall_ledger_summary(str(tmp_path), until="2026-01-31")
+        assert historical["call_count"] == 1
+    recent = session_ledger.list_session_entries(str(tmp_path), limit=2)
+    assert [r.id for r in recent] == [f"entry-{count - 1}", f"entry-{count - 2}"]
+
+
+@pytest.mark.parametrize("field,value", [("model", []), ("timestamp", 42), ("session_id", {}), ("metadata", [])])
+def test_malformed_ledger_fields_fail_with_a_corruption_error(tmp_path, field, value):
+    row = session_ledger.record_usage(str(tmp_path), "session", "gpt-4o", 2, 1).to_dict()
+    row[field] = value
+    path = tmp_path / "memory" / "session_ledger.jsonl"
+    raw = json.dumps(row) + "\n"
+    path.write_text(raw, encoding="utf-8")
+    with pytest.raises(ValueError, match="corrupt session ledger entry"):
+        session_ledger.overall_ledger_summary(str(tmp_path))
+    assert path.read_text(encoding="utf-8") == raw
+
+
+def test_summary_closes_stream_when_a_row_is_corrupt(tmp_path, monkeypatch):
+    row = session_ledger.record_usage(str(tmp_path), "session", "gpt-4o", 2, 1).to_dict()
+    row["cost_usd"] = "invalid"
+    closed = []
+
+    def rows(_path):
+        try:
+            yield row
+        finally:
+            closed.append(True)
+
+    monkeypatch.setattr(session_ledger._jsonl, "iter_rows", rows)
+    with pytest.raises(ValueError, match="corrupt session ledger entry"):
+        session_ledger.session_summary(str(tmp_path), "session")
+    assert closed == [True]
+
+
+def test_listing_limit_preserves_newest_order_and_validates_only_selected_rows(tmp_path):
+    valid = session_ledger.record_usage(str(tmp_path), "session", "gpt-4o", 2, 1).to_dict()
+    corrupt = {**valid, "id": "old", "cost_usd": "invalid"}
+    path = tmp_path / "memory" / "session_ledger.jsonl"
+    path.write_text(json.dumps(corrupt) + "\n" + json.dumps(valid) + "\n", encoding="utf-8")
+    assert [e.id for e in session_ledger.list_session_entries(str(tmp_path), limit=1)] == [valid["id"]]
+    with pytest.raises(ValueError, match="corrupt session ledger entry"):
+        session_ledger.session_summary(str(tmp_path), "session")

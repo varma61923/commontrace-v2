@@ -8,7 +8,7 @@ import json
 import os
 import tempfile
 import threading
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Generator, Iterable, Iterator
 from typing import Any, TextIO
 
 from unimem import frontmatter
@@ -44,13 +44,12 @@ def locked(path: str) -> Iterator[None]:
         held.discard(key)
 
 
-def read_rows(path: str) -> list[dict[str, Any]]:
-    """Every JSON object line in *path*; unreadable lines are skipped."""
-    rows: list[dict[str, Any]] = []
+def iter_rows(path: str) -> Generator[dict[str, Any], None, None]:
+    """Stream JSON object lines; close explicitly when stopping before exhaustion."""
     try:
         fh = open(path, encoding="utf-8")
     except FileNotFoundError:
-        return rows
+        return
     with fh:
         for line in fh:
             line = line.strip()
@@ -61,8 +60,12 @@ def read_rows(path: str) -> list[dict[str, Any]]:
             except ValueError:
                 continue
             if isinstance(row, dict):
-                rows.append(row)
-    return rows
+                yield row
+
+
+def read_rows(path: str) -> list[dict[str, Any]]:
+    """Every JSON object line in *path*; unreadable lines are skipped."""
+    return list(iter_rows(path))
 
 
 def _replace(path: str, write: Callable[[TextIO], None]) -> None:

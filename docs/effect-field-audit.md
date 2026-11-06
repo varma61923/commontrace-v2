@@ -197,3 +197,71 @@ The combined run used:
 
 Generated build/cache outputs were removed with the scoped `make clean` command
 after verification. Audit logs and extracted graphs stayed outside the source tree.
+
+## Ledger scale and malformed-input audit: 2026-11-06
+
+Starting commit: `c3455c6`. A further pass traced session accounting through the
+CLI, MCP and LLM runtime, and reviewed the JSONL reader and resource lifetime.
+Eight new regression cases failed before the fixes:
+
+- **[BUG] Summary truncation:** `session_summary` stopped at 10,000 calls and
+  `overall_ledger_summary` at 100,000 before applying date filters. Both could
+  silently underreport spend. Summaries now process the complete journal;
+  tests verify 10,001/100,001 calls and date filtering beyond the former caps.
+- **[EDGE CASE] Listing limits:** a zero or negative limit returned one entry.
+  Such requests now return an empty list before opening the journal.
+- **[BUG] Malformed persisted fields:** lists/dictionaries in model/session
+  identifiers, numeric timestamps and non-object metadata escaped validation,
+  causing unstructured errors or silently ignored metadata. Readers now reject
+  these with an explicit corruption error while preserving the original file.
+- **[PERF] Row retention:** summaries and small listings materialized every
+  decoded row. The shared JSONL module now exposes a closeable streaming reader;
+  its existing list-returning reader retains its prior parsing policy. Summaries
+  retain aggregates rather than rows; listings retain at most the requested
+  number of matching raw rows, validate only that selected tail, and preserve
+  newest-first order. Readers close explicitly on validation/aggregation errors.
+
+The new helpers are used by the public execution paths. Redundant metadata
+fallbacks were removed after validation made the object contract explicit.
+No optional callbacks, public integrations or migrations were removed.
+
+### Measurements
+
+Baseline `c3455c6` and candidate ran serially in separate Python 3.12 processes
+without concurrent tests or scanners. Each workload had one warm-up and five
+timed calls; setup was excluded. Peak Python allocation was measured separately
+with tracemalloc, rather than included in the timings. Synthetic journal rows
+used one session/model and 256 bytes of metadata padding. Both output digests
+matched. Results describe these workloads, not every deployment or memory RSS.
+
+| Workload | Baseline median ms | Candidate median ms | Baseline traced peak bytes | Candidate traced peak bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Newest 100 entries from 50,000 rows | 323.131 | 207.543 | 94,184,818 | 197,094 |
+| Complete summary of 10,000 rows | 105.017 | 96.896 | 20,493,346 | 26,577 |
+
+Reading remains O(N). Summary aggregate memory still depends on the number of
+distinct sessions/models/occasions, and each individual row must fit in memory.
+The 100,001-row correctness case intentionally changes the previously truncated
+answer and is separate from the parity measurements above.
+
+### Verification
+
+| Check | Result |
+| --- | --- |
+| Complete core and end-to-end suite for this pass | **9,201 passed, 145 skipped** in 13m36s, warnings treated as errors. |
+| Focused ledger, JSONL, LLM accounting and competitor contracts | 162 passed, warnings treated as errors. |
+| Types | Full 636-file check and strict checks for both changed production modules passed. |
+| Ruff | Repository lint and configured formatting passed. |
+| Graphify | 28,235 nodes, 94,476 edges; 402 modules, 291 possible unreachable candidates, zero missing endpoints; integrity/budget gates passed. |
+| Bandit | Zero medium/high findings. |
+| OpenAPI and packaging | Both API drift checks passed; wheel and sdist built. |
+
+The performance comparison covered an unchanged-answer workload; it does not
+establish universal speedups. Dependencies, Hub SQL and SDK implementations were
+unchanged. Their service/toolchain integrations and remote CI were not rerun in
+this pass; earlier results in this report remain historical.
+
+The complete suite used the same two-worker, work-stealing command documented
+above. Generated artifacts and the disposable baseline worktree were removed
+after verification; no benchmark datasets or new audit files were added to the
+repository.
