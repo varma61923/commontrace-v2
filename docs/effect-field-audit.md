@@ -265,3 +265,102 @@ The complete suite used the same two-worker, work-stealing command documented
 above. Generated artifacts and the disposable baseline worktree were removed
 after verification; no benchmark datasets or new audit files were added to the
 repository.
+
+## Provider accounting and secret-boundary follow-up (2026-11-06)
+
+This pass follows baseline `9c433f9`. It preserves supported providers, public
+completion results, cache-hit accounting, secret precedence and file rotation.
+New failure-path regressions first reproduced 15 failures against the baseline
+(27 other selected tests passed).
+
+### Confirmed findings and changes
+
+- **[SECURITY, EDGE CASE] `unimem/secrets_provider.py::env_secret`:** mounted
+  `NAME_FILE` secrets were read without a bound, and UTF-8 decoding failures
+  escaped the sanitized provider error contract. Configured `file:` references
+  bounded characters after trimming, allowing a whitespace-padded oversized
+  source to be silently truncated and accepted. Both entry points now use one
+  closeable binary reader, read at most 65,537 bytes, reject raw files over
+  65,536 bytes, and translate read/decoding failures without leaking secret
+  bytes or falling back to stale plaintext. Existing missing-file diagnostics,
+  empty-file overrides, universal-newline conversion, and valid rotation remain
+  supported, including multibyte input and the exact byte-size boundary.
+- **[BUG] `unimem/llm_runtime.py::LLMRuntime.complete`:** cancellation and other
+  `BaseException` interruptions could escape without marking dispatch accounting
+  unknown. A ledger write failure after a billable response also left the
+  runtime available for further dispatch. One failure boundary now records the
+  failure once and fences subsequent spending, while propagating the original
+  exception, restoring the active context, and retaining already-known usage.
+  Successful cache hits still record zero new provider spend.
+- **[BUG, EDGE CASE] `unimem/llm.py::cost_usd`:** owner-supplied NaN, infinite,
+  negative and boolean prices could poison or understate spending; enormous
+  integers could raise an uncaught overflow. Invalid/unrepresentable costs now
+  remain unknown, so a monetary budget stops the next call. Ordinary arithmetic,
+  six-decimal rounding and numeric price strings are preserved. A scaled fallback
+  recovers finite results when only an intermediate multiplication overflows.
+- **[PERF, EDGE CASE] `unimem/retry.py::retry_after_seconds`:** a valid zero
+  `Retry-After` was ignored in favor of exponential backoff. Zero is now honored,
+  consistent with the nonnegative delay-seconds grammar in
+  [RFC 9110 section 10.2.3](https://www.rfc-editor.org/rfc/rfc9110.html#section-10.2.3).
+  Exponentiation also saturates before large retry counts can overflow. Retry
+  count limits, the 60-second wait cap and ambiguous-write replay protections
+  remain in place.
+
+The shared secret helper is connected to both existing resolution paths. No
+public API, optional integration, migration or callback was removed solely from
+static reachability results; no new production module or benchmark data file was
+added.
+
+### Measurements
+
+Baseline and candidate ran serially in separate Python 3.12 processes with no
+concurrent tests or scanners. Five timed loopback HTTP trials each received one
+429 response with `Retry-After: 0`, then a successful `ok` response; both revisions
+made exactly ten requests. Timings include the real retry wait and HTTP request
+work, not server setup. These measure recovery from this specific valid server
+hint, not general provider throughput.
+
+| Workload | Baseline | Candidate |
+| --- | ---: | ---: |
+| Retry recovery median | 1,070.705 ms | 1.020 ms |
+| Retry recovery range | 1,008.045–1,185.804 ms | 0.986–11.095 ms |
+| 8 MiB mounted-secret peak traced Python allocation | 16,782,578 bytes | 70,606 bytes |
+| 8 MiB mounted-secret outcome | Accepted all bytes | Rejected oversized file |
+| Valid 64 KiB secret read median | 13.325 µs | 10.736 µs |
+
+Secret allocation was measured separately with tracemalloc after file creation;
+it is not RSS. Oversize rejection intentionally changes an invalid-input outcome
+and is a bounded-resource check, not an equivalent-output speed comparison.
+Valid-file timing used one warm-up and 100 measured reads; the small difference
+does not establish a general throughput gain. Temporary fixtures and the baseline
+worktree stay outside the repository and are removed after verification.
+
+### Verification
+
+| Check | Result |
+| --- | --- |
+| Complete core and end-to-end suite for this follow-up | **9,292 passed, 138 skipped** in 791.93 seconds; two workers, warnings treated as errors. |
+| Focused provider/retry/pricing/accounting and Hub secret/configuration/KMS boundaries | 163 passed, 1 skipped; warnings treated as errors, no database required. The skipped test needs the optional Google GenAI SDK. |
+| Types | Full 637-file check and strict retry-module check with `--follow-imports=silent` passed. |
+| Ruff | Repository lint and configured formatting passed. |
+| Graphify | 28,307 nodes, 94,659 edges; 402 modules, 291 possible unreachable candidates, zero missing endpoints; integrity/budget gates passed. |
+| Bandit | Zero medium/high findings; this is static analysis, not a penetration test. |
+| OpenAPI and packaging | Gateway and Hub API checks passed; wheel and source distribution built; isolated installed-wheel provider/secret smoke passed. |
+
+No dependency, SQL, SDK or deployment implementation changed in this pass. Live
+cloud-provider behavior, hosted CI, deployment and production-scale load have not
+been verified here. Earlier service integration results remain historical.
+The full typing command is the repository's existing check; it does not enforce
+strict typing across every legacy module or check every untyped function body.
+
+The complete suite used:
+
+```bash
+PATH=/tmp/unimem-production-tools:$PATH .venv/bin/python -B -m pytest tests e2e_tests \
+  -q -n 2 --dist worksteal -p no:cacheprovider -W error
+```
+
+The temporary tools directory supplied Helm and promtool for native deployment
+checks. Generated source-tree artifacts, the installed-wheel smoke directory,
+and the disposable baseline worktree were removed after verification. No
+benchmark fixtures or additional audit files were committed.

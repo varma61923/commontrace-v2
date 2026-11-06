@@ -15,6 +15,26 @@ from typing import Protocol
 
 from unimem.runtime_cache import RuntimeCache
 
+MAX_SECRET_FILE_BYTES = 65_536
+
+
+def _file_secret(path: str, message: str) -> str:
+    try:
+        with open(path, "rb") as stream:
+            raw = stream.read(MAX_SECRET_FILE_BYTES + 1)
+        if len(raw) > MAX_SECRET_FILE_BYTES:
+            raise ValueError("secret file exceeds its bound")
+        # Preserve the previous text-mode universal-newline behavior, including
+        # multiline credentials, while bounding bytes before decoding.
+        value = raw.decode("utf-8")
+        if "\r" in value:
+            value = value.replace("\r\n", "\n").replace("\r", "\n")
+        return value.strip()
+    except (OSError, ValueError):
+        # Unicode decoding errors include offending input bytes. Do not expose
+        # them or accept a truncated/invalid secret, even when plaintext exists.
+        raise RuntimeError(message) from None
+
 
 class SecretProvider(Protocol):
     def get(self, name: str) -> str:
@@ -86,16 +106,13 @@ def env_secret(name: str, default: str = "", *, provider: SecretProvider | None 
     ``NAME_AWS_SECRET_ID`` opts into AWS; ``NAME_AWS_SECRET_FIELD`` selects a
     field from SecretString JSON. ``NAME_AWS_REGION`` optionally sets the region.
     File values are read anew on every invocation, reflecting mounted rotation.
+    Secret files must be UTF-8 and at most 65,536 bytes before trimming.
     """
     if provider is not None:
         return provider.get(name)
     file_path = os.environ.get(f"{name}_FILE")
     if file_path:
-        try:
-            with open(file_path, encoding="utf-8") as fh:
-                return fh.read().strip()
-        except OSError:
-            raise RuntimeError(f"{name}_FILE='{file_path}' is set but could not be read") from None
+        return _file_secret(file_path, f"{name}_FILE='{file_path}' is set but could not be read")
     secret_id = os.environ.get(f"{name}_AWS_SECRET_ID")
     if secret_id:
         region = os.environ.get(f"{name}_AWS_REGION") or None
@@ -118,14 +135,7 @@ def env_secret(name: str, default: str = "", *, provider: SecretProvider | None 
         if kind == "file":
             if not os.path.isabs(target):
                 target = os.path.join((current() or {}).get("root", os.getcwd()), target)
-            try:
-                with open(target, encoding="utf-8") as stream:
-                    value = stream.read(65537).strip()
-                if len(value) > 65536:
-                    raise ValueError("secret exceeds its bound")
-                return value
-            except (OSError, ValueError):
-                raise RuntimeError("configured secret file source is unavailable") from None
+            return _file_secret(target, "configured secret file source is unavailable")
         aws = _AWS_PROVIDERS.get_or_load(None, lambda: AWSSecretsProvider())
         return aws.get(target)
     return os.environ.get(name, default)

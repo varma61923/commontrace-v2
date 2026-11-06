@@ -106,3 +106,40 @@ def test_llm_secret_failure_is_classified_as_provider_unavailability(tmp_path, m
     with pytest.raises(llm.LLMUnavailable, match="API secret") as error:
         llm.load_config()
     assert "stale-key-must-not-be-used" not in str(error.value)
+
+
+@pytest.mark.parametrize("content", [b"x" * 65537, b"key" + b" " * 65536, b"private-value\xff", "é".encode() * 32769])
+@pytest.mark.parametrize("reference", [False, True])
+def test_file_secrets_are_bounded_and_reject_invalid_content_without_stale_fallback(
+    tmp_path, monkeypatch, content, reference
+):
+    path = tmp_path / "mounted-secret"
+    path.write_bytes(content)
+    if reference:
+        monkeypatch.delenv("TEST_SECRET", raising=False)
+        monkeypatch.setattr("unimem.configuration.secret_reference", lambda _: "file:" + str(path))
+    else:
+        monkeypatch.setenv("TEST_SECRET_FILE", str(path))
+        monkeypatch.setenv("TEST_SECRET", "stale-plaintext")
+    with pytest.raises(RuntimeError) as caught:
+        secrets.env_secret("TEST_SECRET")
+    assert "private-value" not in str(caught.value) and "stale-plaintext" not in str(caught.value)
+
+
+@pytest.mark.parametrize("reference", [False, True])
+def test_file_secrets_preserve_the_boundary_empty_override_and_rotation(tmp_path, monkeypatch, reference):
+    path = tmp_path / "key"
+    if reference:
+        monkeypatch.delenv("TEST_SECRET", raising=False)
+        monkeypatch.setattr("unimem.configuration.secret_reference", lambda _: "file:" + str(path))
+    else:
+        monkeypatch.setenv("TEST_SECRET_FILE", str(path))
+        monkeypatch.setenv("TEST_SECRET", "stale-value")
+    path.write_bytes(b"x" * 65536)
+    assert secrets.env_secret("TEST_SECRET") == "x" * 65536
+    path.write_text("\n rotated \n", encoding="utf-8")
+    assert secrets.env_secret("TEST_SECRET") == "rotated"
+    path.write_bytes(b"\r\nfirst\r\nsecond\rthird\r\n")
+    assert secrets.env_secret("TEST_SECRET") == "first\nsecond\nthird"
+    path.write_bytes(b"")
+    assert secrets.env_secret("TEST_SECRET") == ""

@@ -95,73 +95,77 @@ class LLMRuntime:
             self.calls += 1
             token = ACTIVE.set(None)
             try:
-                text, usage = self.caller(prompt, config=cfg)
-            except Exception:
+                try:
+                    text, usage = self.caller(prompt, config=cfg)
+                finally:
+                    ACTIVE.reset(token)
+                input_tokens = (
+                    usage.get("prompt_tokens", usage.get("input_tokens")) if isinstance(usage, dict) else None
+                )
+                output_tokens = (
+                    usage.get("completion_tokens", usage.get("output_tokens")) if isinstance(usage, dict) else None
+                )
+                if (
+                    not isinstance(input_tokens, int)
+                    or isinstance(input_tokens, bool)
+                    or input_tokens < 0
+                    or not isinstance(output_tokens, int)
+                    or isinstance(output_tokens, bool)
+                    or output_tokens < 0
+                ):
+                    raise llm.LLMUnavailable("provider usage is missing or invalid; further dispatch stopped")
+                cache_hit = isinstance(usage, dict) and usage.get("_unimem_cache_hit") is True
+                self.tokens += input_tokens + output_tokens
+                if cache_hit:
+                    cached_cost = usage.get("_unimem_cached_cost_usd")
+                    cost = (
+                        float(cached_cost)
+                        if isinstance(cached_cost, (float, int))
+                        and not isinstance(cached_cost, bool)
+                        and math.isfinite(cached_cost)
+                        and cached_cost >= 0
+                        else None
+                    )
+                else:
+                    cost = llm.cost_usd({"input_tokens": input_tokens, "output_tokens": output_tokens}, cfg.model)
+                if cache_hit:
+                    self.cached_calls += 1
+                    self.cached_tokens += input_tokens + output_tokens
+                    if cost is None:
+                        self.cached_unpriced_calls += 1
+                    else:
+                        self.cached_historical_cost += cost
+                elif cost is None:
+                    # Unpriced provider calls cannot silently evade a monetary budget.
+                    self.unpriced = True
+                    self.unpriced_calls += 1
+                else:
+                    self.cost += cost
+                ledger_cost = 0.0 if cache_hit or cost is None else cost
+                session_ledger.record_usage(
+                    self.root,
+                    self.session_id,
+                    cfg.model,
+                    input_tokens,
+                    output_tokens,
+                    provider=cfg.provider,
+                    cost_usd=ledger_cost,
+                    occasion=purpose,
+                    metadata={
+                        "cost_known": cache_hit or cost is not None,
+                        "cache_hit": cache_hit,
+                        "historical_cost_known": cost is not None if cache_hit else None,
+                        "historical_cost_usd": (cost if cache_hit and cost is not None else None),
+                    },
+                )
+                return text, usage
+            except BaseException:
+                # A dispatch may have been accepted, or its durable accounting
+                # may have failed. Preserve cancellation/error identity and stop
+                # further spend until the caller reconciles this runtime.
                 self.failed += 1
                 self.accounting_unknown = self.unpriced = True
                 raise
-            finally:
-                ACTIVE.reset(token)
-            input_tokens = usage.get("prompt_tokens", usage.get("input_tokens")) if isinstance(usage, dict) else None
-            output_tokens = (
-                usage.get("completion_tokens", usage.get("output_tokens")) if isinstance(usage, dict) else None
-            )
-            if (
-                not isinstance(input_tokens, int)
-                or isinstance(input_tokens, bool)
-                or input_tokens < 0
-                or not isinstance(output_tokens, int)
-                or isinstance(output_tokens, bool)
-                or output_tokens < 0
-            ):
-                self.accounting_unknown = self.unpriced = True
-                self.failed += 1
-                raise llm.LLMUnavailable("provider usage is missing or invalid; further dispatch stopped")
-            cache_hit = isinstance(usage, dict) and usage.get("_unimem_cache_hit") is True
-            self.tokens += input_tokens + output_tokens
-            if cache_hit:
-                cached_cost = usage.get("_unimem_cached_cost_usd")
-                cost = (
-                    float(cached_cost)
-                    if isinstance(cached_cost, (float, int))
-                    and not isinstance(cached_cost, bool)
-                    and math.isfinite(cached_cost)
-                    and cached_cost >= 0
-                    else None
-                )
-            else:
-                cost = llm.cost_usd({"input_tokens": input_tokens, "output_tokens": output_tokens}, cfg.model)
-            if cache_hit:
-                self.cached_calls += 1
-                self.cached_tokens += input_tokens + output_tokens
-                if cost is None:
-                    self.cached_unpriced_calls += 1
-                else:
-                    self.cached_historical_cost += cost
-            elif cost is None:
-                # Unpriced provider calls cannot silently evade a monetary budget.
-                self.unpriced = True
-                self.unpriced_calls += 1
-            else:
-                self.cost += cost
-            ledger_cost = 0.0 if cache_hit or cost is None else cost
-            session_ledger.record_usage(
-                self.root,
-                self.session_id,
-                cfg.model,
-                input_tokens,
-                output_tokens,
-                provider=cfg.provider,
-                cost_usd=ledger_cost,
-                occasion=purpose,
-                metadata={
-                    "cost_known": cache_hit or cost is not None,
-                    "cache_hit": cache_hit,
-                    "historical_cost_known": cost is not None if cache_hit else None,
-                    "historical_cost_usd": (cost if cache_hit and cost is not None else None),
-                },
-            )
-            return text, usage
 
     def manifest(self) -> dict:
         return {

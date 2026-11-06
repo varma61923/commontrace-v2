@@ -353,6 +353,24 @@ class TestCloudProviders:
 class TestCost:
     PRICES = {"m": {"input_per_mtok": 3.0, "output_per_mtok": 15.0}}
 
+    @pytest.mark.parametrize(
+        ("count", "rate", "expected"),
+        [(2, 1e308, 2e302), (10**310, 1e-10, 1e294)],
+    )
+    def test_finite_cost_survives_intermediate_overflow(self, count, rate, expected):
+        usage = {"input_tokens": count, "output_tokens": 0}
+        prices = {"m": {"input_per_mtok": rate, "output_per_mtok": 0}}
+        assert llm.cost_usd(usage, "m", prices) == pytest.approx(expected)
+
+    @pytest.mark.parametrize("count", [-1, True, None, "1", 10**400])
+    def test_invalid_or_unrepresentable_usage_has_unknown_cost(self, count):
+        assert llm.cost_usd({"input_tokens": count, "output_tokens": 1}, "m", self.PRICES) is None
+
+    def test_numeric_price_strings_and_zero_usage_remain_supported(self):
+        prices = {"m": {"input_per_mtok": "3.0", "output_per_mtok": "15.0"}}
+        assert llm.cost_usd({"input_tokens": 2000, "output_tokens": 500}, "m", prices) == 0.0135
+        assert llm.cost_usd({"input_tokens": 0, "output_tokens": 0}, "m", prices) == 0
+
     def test_cost_comes_only_from_the_owners_price_table(self, tmp_path, monkeypatch):
         usage = {"input_tokens": 2000, "output_tokens": 500}
         assert llm.cost_usd(usage, "m", self.PRICES) == pytest.approx((2000 * 3 + 500 * 15) / 1e6)

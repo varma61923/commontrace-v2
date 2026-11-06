@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -705,13 +706,26 @@ def cost_usd(usage: dict, model: str, prices: dict | None = None) -> float | Non
     if not isinstance(entry, dict):
         return None
     try:
-        return round(
-            (
-                usage["input_tokens"] * float(entry["input_per_mtok"])
-                + usage["output_tokens"] * float(entry["output_per_mtok"])
-            )
-            / 1_000_000,
-            6,
+        counts = (usage["input_tokens"], usage["output_tokens"])
+        raw_rates = (entry["input_per_mtok"], entry["output_per_mtok"])
+        if any(type(count) is not int or count < 0 for count in counts) or any(
+            isinstance(rate, bool) for rate in raw_rates
+        ):
+            return None
+        rates = tuple(float(rate) for rate in raw_rates)
+        if any(not math.isfinite(rate) or rate < 0 for rate in rates):
+            return None
+        try:
+            total = counts[0] * rates[0] + counts[1] * rates[1]
+        except OverflowError:
+            total = math.inf
+        # Retain the usual arithmetic exactly. Normalize before multiplication
+        # only if an intermediate overflowed but the final cost may still fit.
+        cost = (
+            total / 1_000_000
+            if math.isfinite(total)
+            else math.fsum(count / 1_000_000 * rate for count, rate in zip(counts, rates))
         )
-    except (KeyError, TypeError, ValueError):
+        return round(cost, 6) if math.isfinite(cost) else None
+    except (KeyError, TypeError, ValueError, OverflowError):
         return None
