@@ -570,3 +570,48 @@ reduce container filesystem fixture-reset costs; these tests verify SQL/API
 behavior, not PostgreSQL power-loss durability. No production database or
 deployment setting changed. Generated graphs, dependency inventories, benchmark
 fixtures and build artifacts remained outside the tracked product source.
+
+## CodeQL security-gate remediation (2026-11-07)
+
+Starting commit: `3fc60d8`. The Actions workflows completed successfully, but the
+separate GitHub Advanced Security `CodeQL` check on PR #186 failed with four new
+high-severity clear-text logging alerts. The previous local verification did not
+cover that separate gate. Its annotations identified fact-consolidation output,
+conversation indexing in JSON/text, and store-initialization metadata.
+
+The generic configuration getter can resolve the `secrets` mapping, including
+arbitrary opaque file contents. Model/backend metadata must not share that value
+path. Pattern-based output redaction cannot identify every opaque credential.
+
+Added `configuration.setting` for public configuration. It refuses credential
+names and secret-backed references before opening files or calling providers.
+Embedding selection, consolidation embedding metadata and fact-backend selection
+now use it. The existing bounded secret getter remains available for credential
+consumers. Ordinary profile/settings/environment values keep their behavior;
+public values configured through `secrets` now fail with a sanitized error.
+Use `profiles.local.embedding` or `settings.runtime.conversation_embedder` /
+`settings.runtime.consolidate_embedder` for embedding metadata, and `--fact-store`
+or `UNIMEM_FACT_STORE` for the backend. Indexing translates invalid configuration
+into the CLI's ordinary exit code 2.
+
+Four CLI regressions reproduced the original behavior, including opaque values
+in JSON and text output. They now verify refusal before any secret-file read.
+Seven additional API cases cover credential-name refusal, unresolved references,
+public configuration defaults and environment precedence. The expanded focused
+suite passed **257 tests** with warnings treated as errors; lint, full 637-file
+mypy checks with versions 1.20.2 and 2.4.1, and Graphify integrity/surface gates
+also passed (402 modules, 291 reachability candidates, zero missing endpoints).
+
+The CodeQL reproduction uses CLI **2.27.4** and Python query pack **1.9.0**,
+matching the hosted run. Original and fixed source databases use the repository's
+existing source exclusions. The original logging query is compared against the
+fixed code's complete 52-query Python security-extended suite. Generated
+databases and SARIF results remain outside the repository.
+
+The baseline query reproduced exactly the four hosted logging findings at the
+same locations. The fixed security-extended suite reports **zero clear-text
+logging findings**. Its sole remaining diagnostic is the already documented
+`hub/auth.py:64` HMAC-SHA256 index for 256-bit random API keys; the existing review
+is recorded in `.github/codeql/config.yml`. Query selection and source exclusions
+were retained. Hosted verification must inspect the PR's complete check rollup,
+including the separate `CodeQL` policy check, rather than only workflow success.

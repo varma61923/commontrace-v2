@@ -50,7 +50,7 @@ from typing import Any
 from unimem import hierarchical, redundancy
 from unimem._lexical import STOPWORDS
 from unimem._stem import stem
-from unimem.configuration import getenv as _configuration_getenv
+from unimem.configuration import setting as _configuration_setting
 from unimem.overlap import DEFAULT_NUM_PERM, minhash
 
 DEFAULT_THRESHOLD = 0.5
@@ -160,7 +160,7 @@ def _lexical_pairs(norms: Sequence[str], threshold: float) -> dict[tuple[int, in
 def _resolve_embedder(embedder) -> tuple[Any, str]:
     """(provider or None, tag) from a tag, a provider object, or the environment."""
     if embedder is None:
-        embedder = _configuration_getenv(EMBEDDER_ENV, "").strip() or None
+        embedder = _configuration_setting(EMBEDDER_ENV, "").strip() or None
     if embedder is None or embedder in ("", "none", "off"):
         return None, ""
     if isinstance(embedder, str):

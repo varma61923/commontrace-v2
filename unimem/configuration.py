@@ -306,8 +306,40 @@ def getenv(name: str, default: str | None = None) -> str | None:
             # Every configured secret uses the same bounded, rotating reader
             # and fail-closed errors as direct provider resolution.
             return env_secret(name, default or "")
-        path = SETTING_PATHS.get(name)
-        value = config.get("settings", {}).get(path)
+    return _setting_value(config, name, default)
+
+
+@overload
+def setting(name: str, default: None = None) -> str | None: ...
+
+
+@overload
+def setting(name: str, default: str) -> str: ...
+
+
+def setting(name: str, default: str | None = None) -> str | None:
+    """Read public configuration without resolving credentials or secret references.
+
+    Public metadata such as model/backend names can be printed. Keep its value
+    path separate from secret resolution, even when a secret happens to look
+    like a valid model tag. Configure these values through settings, profiles
+    or explicit environment variables instead of the secrets mapping.
+    """
+    if _credential(name):
+        raise ValueError("public settings cannot read credentials; use the secret resolver")
+    config = current()
+    if config is not None and name in config.get("secrets", {}):
+        raise ValueError(
+            "public settings cannot resolve secret references; use public settings, profiles or environment values"
+        )
+    if name in os.environ:
+        return os.environ[name]
+    return _setting_value(config, name, default)
+
+
+def _setting_value(config: dict | None, name: str, default: str | None) -> str | None:
+    if config is not None:
+        value = config.get("settings", {}).get(SETTING_PATHS.get(name))
         if value is None:
             value = next(
                 (config.get("options", {}).get(key) for key, variables in PRIMARY.items() if name in variables), None

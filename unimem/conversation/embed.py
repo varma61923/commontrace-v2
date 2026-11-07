@@ -15,7 +15,7 @@ from _thread import LockType
 from collections import OrderedDict
 from dataclasses import dataclass
 
-from unimem.configuration import getenv as _configuration_getenv
+from unimem.configuration import setting as _configuration_setting
 from unimem.conversation import store as _store
 
 MODELS = {
@@ -101,7 +101,7 @@ def configured() -> str | None:
 
     Any tag from `unimem.embeddings` is accepted, e.g. ``openai:text-embedding-3-small``.
     """
-    raw = _configuration_getenv("UNIMEM_CONVERSATION_EMBEDDER", DEFAULT).strip()
+    raw = _configuration_setting("UNIMEM_CONVERSATION_EMBEDDER", DEFAULT).strip()
     if raw.lower() in ("", "none", "off", "0"):
         return None
     tag = raw.lower() if raw.lower() in MODELS else canonical(raw)
