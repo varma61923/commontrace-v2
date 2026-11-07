@@ -158,7 +158,7 @@ class TestHubPepperRotationAndTenantIsolation:
             result_mock = MagicMock()
             result_mock.scalars.return_value = scalars_mock
             session.execute.return_value = result_mock
-            session.scalar.return_value = None
+            session.get.return_value = candidate
 
             with patch.object(auth, "_PEPPER", new_pepper):
                 assert candidate.key_hmac != new_hmac
@@ -167,6 +167,7 @@ class TestHubPepperRotationAndTenantIsolation:
                 now = datetime.now(timezone.utc)
                 authenticated = await auth._verify_by_legacy_scan(session, raw_key, now)
 
+                session.get.assert_awaited_once_with(ApiKey, candidate.id, populate_existing=True, with_for_update=True)
                 assert authenticated is not None
                 assert authenticated.org_id == "org_test_tenant"
                 assert candidate.key_hmac == new_hmac
@@ -201,11 +202,12 @@ class TestHubPepperRotationAndTenantIsolation:
             result_mock = MagicMock()
             result_mock.scalars.return_value = scalars_mock
             session.execute.return_value = result_mock
-            session.scalar.return_value = None
+            session.get.return_value = candidate
 
             with patch.object(auth, "_PEPPER", pepper):
                 now = datetime.now(timezone.utc)
                 authenticated = await auth._verify_by_legacy_scan(session, raw_key, now)
+                session.get.assert_awaited_once_with(ApiKey, candidate.id, populate_existing=True, with_for_update=True)
                 assert authenticated is not None
                 assert candidate.key_hmac == current_hmac
 

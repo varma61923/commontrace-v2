@@ -822,7 +822,7 @@ class PostgresJournal:
                     capability_io.runtime_descriptor(MemoryRecord(**current.record)),
                     namespace="records",
                 )
-            if await retention.active_holds(session, self.org_id):
+            if await retention.active_holds(session, self.org_id, lock=True):
                 raise PermissionError("an active legal hold blocks record erasure; release it explicitly")
             if expected_version is not None or _expected_digest is not None:
                 from unimem.frontier_protocol import digest

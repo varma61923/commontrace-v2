@@ -110,7 +110,7 @@ export class MemoryClient {
                                                payload?: Record<string, unknown>; timeoutMs?: number;
                                                context?: string[]} = {}) {
     const {timeoutMs, context, ...data} = options;
-    return this.request<MemoryTurn>("turn", {session_id: session, query, ...data}, {timeoutMs, context});
+    return this.request<MemoryTurn>("turn", {...data, session_id: session, query}, {timeoutMs, context});
   }
   add(text: string, memoryType = "general") {
     return this.request<{facts: Record<string, unknown>[] }>("add", {text, local: true, memory_type: memoryType});

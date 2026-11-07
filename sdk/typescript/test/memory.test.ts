@@ -123,3 +123,16 @@ test('native middleware uses one scoped turn and replaces its trailing update', 
   assert.equal(await processor.processInput({messages, messageList}), messageList);
   assert.equal(calls.length, 2);
 });
+
+test("one-call turns keep the selected session and query pinned with JavaScript options", async () => {
+  let payload: Record<string, unknown> = {};
+  const memory = new MemoryClient({url: "https://memory.example", agentId: "worker", fetch: async (_url, init) => {
+    payload = JSON.parse(String(init?.body));
+    return new Response("{}");
+  }});
+  await memory.turn("selected-session", "selected-query", {
+    session_id: "other-session", query: "other-query", text: "captured", context: ["user:owner"],
+  } as never);
+  assert.deepEqual(payload, {text: "captured", session_id: "selected-session", query: "selected-query",
+    context: ["agent:worker", "user:owner"]});
+});

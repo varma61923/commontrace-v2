@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import func, select
+from sqlalchemy import func, insert, select
 
-from hub import retention
+from hub import crud, retention
 from hub.db import session_scope
 from hub.models import (
     AuditLogEntry,
@@ -218,6 +219,33 @@ class TestApply:
             left = set((await session.execute(select(Trace.id).where(Trace.org_id == org))).scalars())
         assert left == {ids[2]}
 
+    async def test_purge_larger_than_asyncpg_parameter_limit(self, session_factory, org):
+        count = 32768
+        async with session_scope(session_factory) as session:
+            await session.execute(
+                insert(Trace),
+                [
+                    {
+                        "org_id": org,
+                        "title": f"expired-{i}",
+                        "context_text": "c",
+                        "solution_text": "s",
+                        "agent_type": "code",
+                        "created_at": _aged(400),
+                    }
+                    for i in range(count)
+                ],
+            )
+            (await session.get(Organization, org)).trace_count = count
+        await self._one_policy(session_factory, org)
+        async with session_scope(session_factory) as session:
+            planned = await retention.plan(session, org, now=NOW)
+            assert planned.n_doomed == count
+            await retention.apply(session, org, planned.digest, now=NOW)
+        async with session_scope(session_factory) as session:
+            assert await session.scalar(select(func.count()).select_from(Trace).where(Trace.org_id == org)) == 0
+            assert (await session.get(Organization, org)).trace_count == 0
+
     async def test_purged_traces_free_their_quota_and_leave_no_dangling_relations(self, session_factory, org):
         ids = await _add_traces(session_factory, org, [400, 400, 10])
         async with session_scope(session_factory) as session:
@@ -281,6 +309,40 @@ class TestApply:
 
 @pytest.mark.asyncio
 class TestLegalHold:
+    @pytest.mark.parametrize("operation", ["retention", "delete_trace"])
+    async def test_erasure_waits_for_a_concurrent_hold_to_commit(self, session_factory, org, operation):
+        ids = await _add_traces(session_factory, org, [400])
+        async with session_scope(session_factory) as session:
+            await retention.set_policy(session, org, "trace", 90)
+            planned = await retention.plan(session, org, now=NOW)
+
+        started = asyncio.Event()
+
+        async def erase():
+            async with session_scope(session_factory) as session:
+                started.set()
+                if operation == "retention":
+                    return await retention.apply(session, org, planned.digest, now=NOW)
+                return await crud.delete_trace(session, org, ids[0])
+
+        task = None
+        try:
+            async with session_scope(session_factory) as session:
+                await retention.place_hold(session, org, reason="pending investigation", placed_by="test")
+                task = asyncio.create_task(erase())
+                await asyncio.wait_for(started.wait(), timeout=5)
+                with pytest.raises(asyncio.TimeoutError):
+                    await asyncio.wait_for(asyncio.shield(task), timeout=0.1)
+            error = retention.StalePlanError if operation == "retention" else PermissionError
+            with pytest.raises(error):
+                await asyncio.wait_for(task, timeout=5)
+        finally:
+            if task is not None and not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        async with session_scope(session_factory) as session:
+            assert await session.get(Trace, ids[0]) is not None
+
     async def test_a_hold_freezes_rows_the_policy_would_delete(self, session_factory, org):
         await _add_traces(session_factory, org, [400, 400])
         async with session_scope(session_factory) as session:

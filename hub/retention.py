@@ -32,6 +32,7 @@ STATUS_ANY = "any"
 # `now - timedelta(days=age)` overflow, so every later plan() for the org
 # raised and its retention could never run again.
 MAX_RETENTION_DAYS = 36_500
+_DELETE_BATCH_SIZE = 5000
 
 BLOCKED_EXPERIMENT_RUNNING = (
     "the org's randomized holdout is running -- deleting arm assignments "
@@ -199,6 +200,7 @@ async def set_policy(
             f"days (asked for {max_age_days}): {kind.floor_reason}"
         )
 
+    await _lock_org(session, org_id)
     existing = (
         await session.execute(
             select(RetentionPolicy).where(
@@ -228,6 +230,7 @@ async def set_policy(
 async def remove_policy(session, org_id: str, object_type: str, *, status: str = STATUS_ANY) -> bool:
     kind = kind_or_error(object_type)
     check_status(kind, status)
+    await _lock_org(session, org_id)
     result = await session.execute(
         delete(RetentionPolicy).where(
             RetentionPolicy.org_id == org_id,
@@ -269,6 +272,7 @@ async def place_hold(
         raise RetentionError(
             "a hold on one object needs its type as well as its id, so it can be matched without searching every table"
         )
+    await _lock_org(session, org_id)
     hold = LegalHold(
         org_id=org_id,
         object_type=object_type,
@@ -296,6 +300,8 @@ async def release_hold(session, hold_id: str, *, reason: str = "") -> LegalHold:
     hold = (await session.execute(select(LegalHold).where(LegalHold.id == hold_id))).scalar_one_or_none()
     if hold is None:
         raise RetentionError(f"no legal hold with id {hold_id}")
+    await _lock_org(session, hold.org_id)
+    await session.refresh(hold)
     if hold.released_at is not None:
         raise RetentionError(f"legal hold {hold_id} was already released at {hold.released_at}")
     hold.released_at = _now()
@@ -312,7 +318,15 @@ async def release_hold(session, hold_id: str, *, reason: str = "") -> LegalHold:
     return hold
 
 
-async def active_holds(session, org_id: str) -> list[LegalHold]:
+async def _lock_org(session, org_id: str) -> None:
+    # Hold/policy changes and destructive consumers must serialize before
+    # reading protection state, not just before their eventual DELETE/INSERT.
+    await session.execute(select(Organization.id).where(Organization.id == org_id).with_for_update())
+
+
+async def active_holds(session, org_id: str, *, lock: bool = False) -> list[LegalHold]:
+    if lock:
+        await _lock_org(session, org_id)
     rows = await session.execute(
         select(LegalHold)
         .where(LegalHold.org_id == org_id, LegalHold.released_at.is_(None))
@@ -494,6 +508,7 @@ async def apply(
     now: datetime.datetime | None = None,
 ) -> PurgePlan:
     """Delete exactly what a plan with this digest described."""
+    await _lock_org(session, org_id)
     fresh = await plan(session, org_id, now=now)
     if fresh.digest != expect_digest:
         raise StalePlanError(expect_digest, fresh.digest)
@@ -503,20 +518,22 @@ async def apply(
         if bucket.blocked or not bucket.doomed:
             continue
         model = KINDS[bucket.object_type].model
-        doomed = list(bucket.doomed)
-        if model is Trace:
-            # As crud.delete_trace does: relations pointing at a purged trace carry
-            # no foreign key, so they would otherwise be left dangling.
-            await session.execute(delete(TraceRelation).where(TraceRelation.related_trace_id.in_(doomed)))
-        result = await session.execute(delete(model).where(model.id.in_(doomed)))
-        if model is Trace and result.rowcount:
+        n_deleted = 0
+        for offset in range(0, len(bucket.doomed), _DELETE_BATCH_SIZE):
+            doomed = bucket.doomed[offset : offset + _DELETE_BATCH_SIZE]
+            if model is Trace:
+                # Relations pointing at a purged trace carry no foreign key.
+                await session.execute(delete(TraceRelation).where(TraceRelation.related_trace_id.in_(doomed)))
+            result = await session.execute(delete(model).where(model.org_id == org_id, model.id.in_(doomed)))
+            n_deleted += result.rowcount or 0
+        if model is Trace and n_deleted:
             # The plan's trace quota reads this counter; purged traces must free it.
             await session.execute(
                 update(Organization)
                 .where(Organization.id == org_id)
-                .values(trace_count=func.greatest(0, Organization.trace_count - result.rowcount))
+                .values(trace_count=func.greatest(0, Organization.trace_count - n_deleted))
             )
-        deleted[bucket.object_type] = deleted.get(bucket.object_type, 0) + (result.rowcount or 0)
+        deleted[bucket.object_type] = deleted.get(bucket.object_type, 0) + n_deleted
 
     with contextlib.suppress(events.EventError):
         await events.emit(

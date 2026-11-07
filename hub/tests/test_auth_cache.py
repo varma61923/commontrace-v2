@@ -76,6 +76,40 @@ async def test_revoking_through_this_process_forgets_the_key_at_once(session_fac
     assert await _verify(session_factory, raw) is None
 
 
+async def test_inflight_verification_cannot_refill_a_cache_cleared_by_revocation(session_factory, config, monkeypatch):
+    import asyncio
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select, update
+
+    from hub.models import ApiKey
+
+    _, raw, _ = await _key(session_factory)
+    async with session_scope(session_factory) as session:
+        key_id = (await session.execute(select(ApiKey.id))).scalar_one()
+        await session.execute(update(ApiKey).where(ApiKey.id == key_id).values(last_used_at=datetime.now(timezone.utc)))
+    auth.configure_auth_cache(30)
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def delayed_region_check(session, org_id):
+        started.set()
+        await release.wait()
+        return True
+
+    monkeypatch.setattr(auth, "_region_ok", delayed_region_check)
+    task = asyncio.create_task(_verify(session_factory, raw))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        async with session_scope(session_factory) as session:
+            await auth.revoke_api_key(session, key_id)
+    finally:
+        release.set()
+        await task
+
+    assert auth.cached_key(raw) is None
+    assert await _verify(session_factory, raw) is None
+
+
 async def test_rotation_forgets_the_old_key(session_factory, config):
     _, raw, _ = await _key(session_factory)
     auth.configure_auth_cache(30)

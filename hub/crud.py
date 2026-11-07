@@ -1500,7 +1500,7 @@ async def delete_trace(session: AsyncSession, org_id: str, trace_id: str, actor:
 
     from hub import retention
 
-    if await retention.active_holds(session, org_id):
+    if await retention.active_holds(session, org_id, lock=True):
         raise PermissionError("an active legal hold blocks trace erasure; release it explicitly")
 
     chain_ids = await amendment_chain(session, trace_id)
@@ -1545,7 +1545,7 @@ def _hash_deletion_token(raw_token: str) -> str:
 
 async def request_org_deletion(session: AsyncSession, org_id: str, actor: str = AUDIT_ACTOR_UNKNOWN) -> dict:
     """Start the two-step self-service account deletion. Deletes nothing."""
-    org = await session.get(Organization, org_id)
+    org = await session.get(Organization, org_id, populate_existing=True, with_for_update=True)
     if org is None:
         raise ValueError(f"no such organization: {org_id}")
 
@@ -1572,7 +1572,7 @@ async def request_org_deletion(session: AsyncSession, org_id: str, actor: str = 
 
 
 async def cancel_org_deletion(session: AsyncSession, org_id: str, actor: str = AUDIT_ACTOR_UNKNOWN) -> bool:
-    org = await session.get(Organization, org_id)
+    org = await session.get(Organization, org_id, populate_existing=True, with_for_update=True)
     if org is None or org.deletion_token_hash is None:
         return False
     org.deletion_token_hash = None
@@ -1597,7 +1597,7 @@ async def confirm_org_deletion(
     actor: str = AUDIT_ACTOR_UNKNOWN,
     stripe: StripeSettings = StripeSettings(),
 ) -> bool:
-    org = await session.get(Organization, org_id)
+    org = await session.get(Organization, org_id, populate_existing=True, with_for_update=True)
     if org is None:
         raise ValueError(f"no such organization: {org_id}")
     if org.deletion_token_hash is None or org.deletion_requested_at is None:
@@ -1612,6 +1612,11 @@ async def confirm_org_deletion(
     if not secrets.compare_digest(_hash_deletion_token(token), org.deletion_token_hash):
         raise DeletionNotReady("confirmation token does not match the pending request")
 
+    from hub import retention
+
+    if await retention.active_holds(session, org_id):
+        raise DeletionNotReady("an active legal hold blocks account deletion; release it explicitly")
+
     if org.stripe_subscription_id:
         try:
             await cancel_subscription(stripe, subscription_id=org.stripe_subscription_id)
@@ -1621,8 +1626,11 @@ async def confirm_org_deletion(
                 f"account deletion was NOT performed: {exc}"
             ) from exc
 
-    trace_ids = (await session.execute(select(Trace.id).where(Trace.org_id == org_id))).scalars().all()
-    if trace_ids:
+    trace_ids = select(Trace.id).where(Trace.org_id == org_id)
+    n_traces = int(await session.scalar(select(func.count()).select_from(Trace).where(Trace.org_id == org_id)) or 0)
+    if n_traces:
+        # Keep the deletion in SQL: a large tenant can exceed asyncpg's bind
+        # limit if every trace identity is materialized into one IN list.
         await session.execute(delete(TraceRelation).where(TraceRelation.related_trace_id.in_(trace_ids)))
     org_name = org.name
     had_subscription = bool(org.stripe_subscription_id)
@@ -1637,8 +1645,7 @@ async def confirm_org_deletion(
         org_id=org_id,
         target_type="org",
         target_id=org_id,
-        summary=f"name={org_name!r} n_traces={len(trace_ids)} "
-        f"stripe_subscription_cancelled={had_subscription} irreversible",
+        summary=f"name={org_name!r} n_traces={n_traces} stripe_subscription_cancelled={had_subscription} irreversible",
     )
     return True
 

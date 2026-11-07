@@ -328,19 +328,29 @@ class CellKernel:
     def _context(self, a: str, b: str) -> float:
         if a == b:
             return 1.0
-        if (a, b) not in self._shared:
-            pa, pb = a.split("/"), b.split("/")
-            self._shared[a, b] = sum(1 for i in range(min(len(pa), len(pb))) if pa[i] == pb[i]) / self.width
-        return self._shared[a, b]
+        key = (a, b)
+        cached = self._shared.get(key)
+        if cached is not None:
+            return cached
+        pa, pb = a.split("/"), b.split("/")
+        value = sum(1 for i in range(min(len(pa), len(pb))) if pa[i] == pb[i]) / self.width
+        if len(self._shared) < MAX_SIMILARITY_CACHE:
+            self._shared[key] = value
+        return value
 
     def _memory(self, a: str, b: str) -> float:
         if a == b:
             return 1.0
         if self.content is None:
             return 0.0
-        if (a, b) not in self._sims:
-            self._sims[a, b] = self.content.similarity(a, b)
-        return self._sims[a, b]
+        key = (a, b)
+        cached = self._sims.get(key)
+        if cached is not None:
+            return cached
+        value = self.content.similarity(a, b)
+        if len(self._sims) < MAX_SIMILARITY_CACHE:
+            self._sims[key] = value
+        return value
 
     def similarity(self, a: str, b: str) -> float:
         (ma, ca), (mb, cb) = self.cells[a], self.cells[b]
@@ -374,16 +384,40 @@ class CellKernel:
         out: dict[str, Neighbors] = {}
         for q in queries:
             memory, context = self.cells[q]
+            nearest = near.get(memory, ())
+            limit = max(NEIGHBORS, len(nearest))
+            visited: set[str] = set()
+            ranked: list[tuple[str, float]] = []
+            while True:
 
-            def scored() -> Iterable[tuple[str, float]]:
-                for other, weight in ((memory, 1.0), *near.get(memory, ())):
-                    for cell in by_memory.get(other, ()):
-                        if cell != q:
-                            s = weight * self._context(context, self.cells[cell][1])
-                            if s > 1e-9:
-                                yield cell, round(min(1.0, s), 12)
+                def scored() -> Iterable[tuple[str, float]]:
+                    yield from ranked
+                    for other, weight in ((memory, 1.0), *nearest):
+                        if other in visited:
+                            continue
+                        visited.add(other)
+                        for cell in by_memory.get(other, ()):
+                            if cell != q:
+                                s = weight * self._context(context, self.cells[cell][1])
+                                if s > 1e-9:
+                                    yield cell, round(min(1.0, s), 12)
 
-            out[q] = tuple(heapq.nsmallest(k, scored(), key=lambda item: (-item[1], item[0])))
+                ranked = heapq.nsmallest(k, scored(), key=lambda item: (-item[1], item[0]))
+                # Content cosine upper-bounds every cell's product similarity.
+                # Expand until the remaining memories cannot beat the kth cell;
+                # equal scores must still be visited for deterministic ID ties.
+                if (
+                    self.content is None
+                    or len(nearest) < limit
+                    or limit >= len(by_memory)
+                    or (len(ranked) == k and ranked[-1][1] > nearest[-1][1])
+                ):
+                    break
+                limit = min(len(by_memory), max(limit * 2, k))
+                # Keep expansions local: retaining every full roster per memory
+                # would turn the bounded pool cache into quadratic storage.
+                nearest = self.content.neighbors([memory], sorted(by_memory), limit)[memory]
+            out[q] = tuple(ranked)
         return out
 
 

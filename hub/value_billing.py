@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 
 from hub import billing, plans
 
@@ -27,16 +28,25 @@ def check(settings: billing.StripeSettings, plan: str, line: dict, *, allow_live
     if line.get("kind") != "value":
         raise ValueBillingRefused("only a value line is reported as usage")
     amount = line.get("amount")
-    if not isinstance(amount, (int, float)) or amount <= 0:
+    if isinstance(amount, bool) or not isinstance(amount, (int, float)) or amount <= 0:
         raise ValueBillingRefused("a value line that is not positive reports nothing")
+    try:
+        minor = amount * 100
+        if not math.isfinite(minor):
+            raise ValueError("non-finite amount")
+        minor = int(round(minor))
+    except (OverflowError, ValueError):
+        raise ValueBillingRefused("a value line must have a finite amount representable in minor units") from None
+    if minor <= 0:
+        raise ValueBillingRefused("a value line must be positive after rounding to minor units")
     ev = line.get("evidence") or {}
-    if not (ev.get("ledger_root") and ev.get("data_digest") and ev.get("verify")):
+    if not isinstance(ev, dict) or not (ev.get("ledger_root") and ev.get("data_digest") and ev.get("verify")):
         raise ValueBillingRefused("a value line without its evidence (ledger root, digest, how to verify) is not sent")
     if not settings.secret_key:
         raise ValueBillingRefused("no Stripe secret key is configured")
-    if settings.secret_key.startswith("sk_live_") and not allow_live:
+    if settings.secret_key.startswith(("sk_live_", "rk_live_")) and not allow_live:
         raise ValueBillingRefused("a live Stripe key was supplied; pass allow_live to report to the live account")
-    return int(round(amount * 100))
+    return minor
 
 
 async def report_value_line(

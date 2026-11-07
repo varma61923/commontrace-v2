@@ -68,7 +68,7 @@ MAX_CONTEXTS_PER_LESSON = 64
 DRIFT_SPLITS = (0.25, 0.5, 0.75)
 RESET_ALPHA = 0.01  # evidence is only forgotten on stronger proof of drift than is reported
 MIN_OVERLAP_ESS = 30.0
-MAX_LOG_WEIGHT = 50.0  # importance weights beyond e**50 are treated as unbounded
+MAX_LOG_WEIGHT = 50.0  # rescale extreme log weights before exponentiation; ratios and ESS stay unchanged
 UNKNOWN_SOURCE = "local"
 _WEIGHT_ROOT_MAX = math.sqrt(sys.float_info.max) / 2.0
 
@@ -738,7 +738,7 @@ def policy_value(rows: Sequence[Row], rate_for: RateFor, *, z: float = 1.9599639
     occasions: dict[str, list[Row]] = defaultdict(list)
     for r in rows:
         occasions[r.occasion_id].append(r)
-    weights: list[float] = []
+    log_weights: list[float] = []
     outcomes: list[float] = []
     for occasion_rows in occasions.values():
         log_ratio = 0.0
@@ -749,11 +749,17 @@ def policy_value(rows: Sequence[Row], rate_for: RateFor, *, z: float = 1.9599639
                 log_ratio = -math.inf
                 break
             log_ratio += math.log(new_p) - math.log(r.propensity)
-        weights.append(math.exp(min(log_ratio, MAX_LOG_WEIGHT)) if log_ratio > -math.inf else 0.0)
+        log_weights.append(log_ratio)
         outcomes.append(float(occasion_rows[0].succeeded))
-    n = len(weights)
+    n = len(log_weights)
     if n == 0:
         return OffPolicy("INSUFFICIENT_DATA", 0, 0)
+    largest = max(log_weights)
+    # Self-normalized value, ESS and influence are invariant to a common scale.
+    # Capping each weight separately fabricates overlap; directly exponentiating
+    # uniformly tiny weights instead loses a perfectly supported evaluation.
+    offset = largest if math.isfinite(largest) and abs(largest) > MAX_LOG_WEIGHT else 0.0
+    weights = [math.exp(value - offset) for value in log_weights]
     total = math.fsum(weights)
     logged = math.fsum(outcomes) / n
     if total <= 0:

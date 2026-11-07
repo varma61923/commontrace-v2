@@ -5,7 +5,7 @@ import threading
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 
 from hub import auth
 from hub.db import session_scope
@@ -389,6 +389,52 @@ async def test_a_freshly_issued_key_never_calls_argon2_verify(session_factory, c
     assert resolved is not None
     assert resolved.org_id == org_id
     assert calls == []
+
+
+@pytest.mark.parametrize("change", ["delete", "expire", "narrow", "replace_hash"])
+async def test_legacy_verification_uses_authority_after_argon2(session_factory, config, monkeypatch, change):
+    from argon2 import PasswordHasher
+
+    org_id = await _make_org(session_factory)
+    async with session_scope(session_factory) as session:
+        issued = await auth.issue_api_key(session, org_id)
+        await session.execute(update(ApiKey).where(ApiKey.id == issued.key_id).values(key_hmac=None))
+
+    started, release = threading.Event(), threading.Event()
+    real_verify = PasswordHasher.verify
+
+    def blocking_verify(self, encoded, raw):
+        started.set()
+        assert release.wait(timeout=10), "test did not release Argon2"
+        return real_verify(self, encoded, raw)
+
+    monkeypatch.setattr(PasswordHasher, "verify", blocking_verify)
+
+    async def verify():
+        async with session_scope(session_factory) as session:
+            return await auth.verify_api_key(session, issued.raw_key)
+
+    task = asyncio.create_task(verify())
+    try:
+        assert await asyncio.to_thread(started.wait, 10), "Argon2 did not start"
+        async with session_scope(session_factory) as session:
+            if change == "delete":
+                await session.execute(delete(ApiKey).where(ApiKey.id == issued.key_id))
+            else:
+                values = {
+                    "expire": {"expires_at": datetime.now(timezone.utc) - timedelta(seconds=1)},
+                    "narrow": {"scopes": ["read"]},
+                    "replace_hash": {"key_hash": "replaced-by-concurrent-rotation"},
+                }[change]
+                await session.execute(update(ApiKey).where(ApiKey.id == issued.key_id).values(**values))
+    finally:
+        release.set()
+        result = await task
+
+    if change == "narrow":
+        assert result is not None and result.scopes == ("read",)
+    else:
+        assert result is None
 
 
 async def test_a_pre_hmac_key_is_backfilled_on_first_legacy_verification(session_factory, config, monkeypatch):

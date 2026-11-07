@@ -822,14 +822,12 @@ class Store:
     def delete_session(self, session: str) -> int:
         with self._lock, write_txn(self.db):
             chains = self._chains_for_turns("t.session=?", (session,))
-            ids = [
-                r[0]
-                for r in self.db.execute(
-                    "SELECT u.id FROM units u JOIN turns t ON t.id = u.turn WHERE t.session=?", (session,)
-                )
-            ]
             if FTS5:
-                self.db.executemany("DELETE FROM units_fts WHERE rowid=?", [(i,) for i in ids])
+                self.db.execute(
+                    "DELETE FROM units_fts WHERE rowid IN "
+                    "(SELECT u.id FROM units u JOIN turns t ON t.id=u.turn WHERE t.session=?)",
+                    (session,),
+                )
             n = self.db.execute("DELETE FROM turns WHERE session=?", (session,)).rowcount
             self.db.execute("DELETE FROM sessions WHERE id=?", (session,))
             self.db.execute("DELETE FROM meta WHERE key=?", (f"extracted:{session}",))
@@ -1088,15 +1086,12 @@ class Store:
                     args,
                 )
             ]  # nosec B608 - fixed clauses
-            ids = [
-                r[0]
-                for r in self.db.execute(  # nosec B608
-                    f"SELECT u.id FROM units u JOIN turns t ON t.id = u.turn WHERE {where}",  # nosec B608
+            if FTS5:
+                self.db.execute(
+                    "DELETE FROM units_fts WHERE rowid IN "  # nosec B608 - fixed predicates; values remain bound
+                    f"(SELECT u.id FROM units u JOIN turns t ON t.id=u.turn WHERE {where})",
                     args,
                 )
-            ]  # nosec B608
-            if FTS5:
-                self.db.executemany("DELETE FROM units_fts WHERE rowid=?", [(i,) for i in ids])
             n = self.db.execute(f"DELETE FROM turns WHERE {where}", args).rowcount  # nosec B608
             self.db.execute(
                 "DELETE FROM meta WHERE key IN (SELECT 'extracted:' || id FROM sessions "

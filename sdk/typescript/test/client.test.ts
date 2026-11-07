@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mock, test } from "node:test";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 
 import { clampRetryAfter, parseToolResult } from "../src/client.js";
 import { HubClient, HubConfigurationError, HubConnectionError, HubToolError, checkHubUrl, type ToolCaller } from "../src/index.js";
@@ -327,4 +328,59 @@ test("close() releases the caller's connection once", async () => {
   await client.close();
   await client.close();
   assert.equal(closed, 1);
+});
+
+test("closed clients reject calls before reaching the transport", async () => {
+  const caller = new FakeCaller({});
+  const client = HubClient.withCaller(caller);
+  await client.close();
+  await assert.rejects(() => client.getTrace("one"), /client is closed/);
+  assert.equal(caller.calls.length, 0);
+});
+
+test("concurrent close calls await the same cleanup and observe its failure", async () => {
+  let closes = 0;
+  let finish: (() => void) | undefined;
+  const client = HubClient.withCaller({
+    async callTool() { return {}; },
+    async close() {
+      closes += 1;
+      await new Promise<void>(resolve => { finish = resolve; });
+      throw new Error("cleanup failed");
+    },
+  });
+  const first = client.close();
+  const second = client.close();
+  const checks = [assert.rejects(first, /cleanup failed/), assert.rejects(second, /cleanup failed/)];
+  await Promise.resolve();
+  assert.equal(closes, 1);
+  finish?.();
+  await Promise.all(checks);
+});
+
+test("closing during a rate limit pause prevents another request", async () => {
+  const caller = new FakeCaller({error: "rate_limited", retry_after: 0}, {});
+  const client = HubClient.withCaller(caller);
+  const call = client.call("get_trace");
+  const check = assert.rejects(call, /client is closed/);
+  await client.close();
+  await check;
+  assert.equal(caller.calls.length, 1);
+});
+
+test("failed connection awaits cleanup while preserving its original error", async (t) => {
+  const failure = new Error("handshake failed");
+  let cleaned = false;
+  t.mock.method(Client.prototype, "connect", async () => { throw failure; });
+  t.mock.method(Client.prototype, "close", async () => {
+    await Promise.resolve();
+    cleaned = true;
+    throw new Error("cleanup also failed");
+  });
+  await assert.rejects(() => HubClient.connect("https://hub.example/mcp", "key"), (error: unknown) => {
+    assert.ok(error instanceof HubConnectionError);
+    assert.equal(error.cause, failure);
+    return true;
+  });
+  assert.equal(cleaned, true);
 });

@@ -45,6 +45,10 @@ PROVIDERS = {
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # urllib only closes a redirect response after redirect_request returns.
+        # Refusal raises before that cleanup, so this handler owns the body.
+        if fp is not None:
+            fp.close()
         raise ValueError("provider redirect refused; bearer credentials remain on their pinned origin")
 
 

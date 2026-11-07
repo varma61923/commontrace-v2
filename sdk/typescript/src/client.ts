@@ -180,6 +180,7 @@ export class HubClient {
   private readonly caller: ToolCaller;
   private readonly maxAttempts: number;
   private closed = false;
+  private closePromise?: Promise<void>;
 
   private constructor(caller: ToolCaller, maxAttempts: number) {
     this.caller = caller;
@@ -202,6 +203,9 @@ export class HubClient {
     try {
       await mcpClient.connect(transport);
     } catch (err) {
+      // A failed handshake can leave transport streams/listeners allocated.
+      // Cleanup must preserve the original connection error.
+      await mcpClient.close().catch(() => {});
       throw new HubConnectionError(`could not connect to the Hub at ${url}`, err);
     }
     const caller: ToolCaller = {
@@ -245,6 +249,7 @@ export class HubClient {
    */
   async call<T = Record<string, unknown>>(name: string, args: Record<string, unknown> = {}): Promise<T> {
     for (let attempt = 1; ; attempt += 1) {
+      if (this.closed) throw new HubConnectionError("Hub client is closed");
       const body = objectBody(name, await this.caller.callTool(name, args));
       if (isErrorBody(body)) {
         if (body.error === "rate_limited" && attempt < this.maxAttempts) {
@@ -262,9 +267,10 @@ export class HubClient {
    * and a Node process that is otherwise done may not exit. Safe to call
    * more than once. */
   async close(): Promise<void> {
-    if (this.closed) return;
     this.closed = true;
-    await this.caller.close?.();
+    // Concurrent callers all await the actual cleanup, including its failure.
+    this.closePromise ??= Promise.resolve().then(() => this.caller.close?.());
+    await this.closePromise;
   }
 
   // --- Typed convenience wrappers for the surface most integrations reach for first ---

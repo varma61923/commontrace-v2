@@ -147,7 +147,11 @@ async def list_users(
     if user_name is not None:
         query = query.where(User.email == user_name)
     total = await session.scalar(select(func.count()).select_from(query.subquery()))
-    rows = (await session.execute(query.order_by(User.created_at).offset(start_index - 1).limit(count))).scalars().all()
+    rows = (
+        (await session.execute(query.order_by(User.created_at, User.id).offset(start_index - 1).limit(count)))
+        .scalars()
+        .all()
+    )
     return int(total or 0), list(rows)
 
 
@@ -259,7 +263,7 @@ async def _member_ids(session: AsyncSession, group_id: str) -> list[str]:
             await session.execute(
                 select(ScimGroupMembership.user_id)
                 .where(ScimGroupMembership.group_id == group_id)
-                .order_by(ScimGroupMembership.created_at)
+                .order_by(ScimGroupMembership.created_at, ScimGroupMembership.user_id)
             )
         )
         .scalars()
@@ -269,21 +273,37 @@ async def _member_ids(session: AsyncSession, group_id: str) -> list[str]:
 
 
 async def group_to_scim(session: AsyncSession, group: ScimGroup) -> dict:
-    member_ids = await _member_ids(session, group.id)
-    members = []
-    if member_ids:
-        users = (await session.execute(select(User).where(User.id.in_(member_ids)))).scalars().all()
-        by_id = {u.id: u for u in users}
-        for user_id in member_ids:
-            user = by_id.get(user_id)
-            members.append({"value": user_id, "display": user.email if user else ""})
-    return {
-        "schemas": [SCIM_GROUP_SCHEMA],
-        "id": group.id,
-        "displayName": group.display_name,
-        "members": members,
-        "meta": {"resourceType": "Group", "created": group.created_at.isoformat()},
-    }
+    return (await _groups_to_scim(session, [group]))[0]
+
+
+async def _groups_to_scim(session: AsyncSession, groups: list[ScimGroup]) -> list[dict]:
+    """Hydrate one page in one query, retaining canonical tenant boundaries."""
+    if not groups:
+        return []
+    rows = await session.execute(
+        select(ScimGroupMembership.group_id, User.id, User.email)
+        .join(User, User.id == ScimGroupMembership.user_id)
+        .join(ScimGroup, ScimGroup.id == ScimGroupMembership.group_id)
+        .where(
+            ScimGroupMembership.group_id.in_([group.id for group in groups]),
+            ScimGroupMembership.org_id == ScimGroup.org_id,
+            User.org_id == ScimGroup.org_id,
+        )
+        .order_by(ScimGroupMembership.created_at, ScimGroupMembership.user_id)
+    )
+    members: dict[str, list[dict]] = {}
+    for group_id, user_id, email in rows:
+        members.setdefault(group_id, []).append({"value": user_id, "display": email})
+    return [
+        {
+            "schemas": [SCIM_GROUP_SCHEMA],
+            "id": group.id,
+            "displayName": group.display_name,
+            "members": members.get(group.id, []),
+            "meta": {"resourceType": "Group", "created": group.created_at.isoformat()},
+        }
+        for group in groups
+    ]
 
 
 async def _existing_org_user_ids(session: AsyncSession, org_id: str, candidate_ids: set[str]) -> set[str]:
@@ -405,7 +425,7 @@ async def list_groups(
         query = query.where(ScimGroup.display_name == display_name)
     total = await session.scalar(select(func.count()).select_from(query.subquery()))
     rows = (
-        (await session.execute(query.order_by(ScimGroup.created_at).offset(start_index - 1).limit(count)))
+        (await session.execute(query.order_by(ScimGroup.created_at, ScimGroup.id).offset(start_index - 1).limit(count)))
         .scalars()
         .all()
     )
@@ -792,7 +812,7 @@ def add_scim_routes(
                 start_index=start_index,
                 count=count,
             )
-            resources = [await group_to_scim(session, g) for g in rows]
+            resources = await _groups_to_scim(session, rows)
         return _response(
             {
                 "schemas": [SCIM_LIST_RESPONSE_SCHEMA],

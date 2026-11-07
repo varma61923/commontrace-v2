@@ -321,3 +321,83 @@ def _facts(root):
         return []
     with open(path, encoding="utf-8") as fh:
         return [json.loads(line) for line in fh if line.strip()]
+
+
+@pytest.mark.parametrize("target", ["file:///etc/passwd", "https://127.0.0.1/private"])
+def test_refused_crawler_redirect_releases_the_original_response(target):
+    import io
+    import urllib.error
+    import urllib.request
+
+    from unimem.connectors.web_crawler import _HttpOnlyRedirects
+
+    response = io.BytesIO(b"redirect response")
+    with pytest.raises((ValueError, urllib.error.HTTPError)):
+        _HttpOnlyRedirects().redirect_request(
+            urllib.request.Request("https://example.com/a"), response, 302, "Found", {}, target
+        )
+    assert response.closed
+
+
+def test_crawler_redirect_dns_failure_releases_the_original_response(monkeypatch):
+    import io
+    import socket
+    import urllib.request
+
+    from unimem.connectors import web_crawler
+
+    def unavailable(_target):
+        raise socket.gaierror("DNS unavailable")
+
+    monkeypatch.setattr(web_crawler, "_redirect_target_is_public", unavailable)
+    response = io.BytesIO(b"redirect response")
+    with pytest.raises(socket.gaierror):
+        web_crawler._HttpOnlyRedirects().redirect_request(
+            urllib.request.Request("https://example.com/a"), response, 302, "Found", {}, "https://other.example/a"
+        )
+    assert response.closed
+
+
+def test_provider_redirect_refusal_releases_the_original_response():
+    import io
+    import urllib.request
+
+    from unimem.connectors.knowledge import NoRedirect
+
+    response = io.BytesIO(b"redirect response")
+    with pytest.raises(ValueError, match="provider redirect refused"):
+        NoRedirect().redirect_request(
+            urllib.request.Request("https://api.github.com/a"), response, 302, "Found", {}, "https://other.example/a"
+        )
+    assert response.closed
+
+
+def test_crawler_response_deadline_stops_a_trickling_body_and_closes_it(monkeypatch):
+    from unimem import retry
+    from unimem.connectors import web_crawler
+
+    class Response:
+        headers = {"Content-Type": "text/plain"}
+        closed = False
+        reads = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.closed = True
+
+        def read1(self, _limit):
+            self.reads += 1
+            return b"x"
+
+        def read(self, _limit):
+            pytest.fail("an unbounded-in-time body read bypassed the response deadline")
+
+    response = Response()
+    clock = iter([0, 0, 2])
+    monkeypatch.setattr(retry.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(web_crawler._OPENER, "open", lambda *_args, **_kwargs: response)
+    with pytest.raises(TimeoutError, match="within 1s"):
+        web_crawler._get("https://example.com/a", "bot", 1, 1024)
+    assert response.reads == 1 and response.closed

@@ -591,3 +591,23 @@ def test_mcp_retrieve_logs_the_agent_type_and_the_report_tool_answers(tmp_path):
     report = call(server, "causal_gate_report")
     assert report["model"]["rows"] == 0 and "note" in report
     assert "error" in json.dumps(call(server, "causal_gate_report", floor=0.7)).lower()
+
+
+def test_extreme_importance_weights_cannot_manufacture_overlap():
+    # Forty apparently favorable occasions have huge ratios, but one ratio
+    # dominates all the others: the evaluation has effectively one observation.
+    rows = [Row("memory", str(i), False, i < 40, 1e-200 if i == 0 else (1e-60 if i < 40 else 0.5)) for i in range(80)]
+    result = causal_gate.policy_value(rows, lambda _lesson, _context: 0.5)
+    assert result.effective_sample_size == pytest.approx(1.0)
+    assert result.verdict == "INSUFFICIENT_OVERLAP"
+
+
+def test_uniformly_tiny_joint_importance_weights_preserve_overlap():
+    # Each complete assignment is unlikely under the candidate policy, but every
+    # occasion has the same ratio. A common scale cannot change the SNIS mean/ESS.
+    rows = [Row(f"memory-{j}", str(i), False, bool(i % 2), 0.5) for i in range(40) for j in range(200)]
+    result = causal_gate.policy_value(rows, lambda _lesson, _context: 0.005)
+    assert result.effective_sample_size == pytest.approx(40.0)
+    assert result.policy_value == pytest.approx(0.5)
+    assert result.lift == pytest.approx(0.0)
+    assert result.verdict == "INCONCLUSIVE"

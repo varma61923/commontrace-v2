@@ -109,3 +109,57 @@ def test_failed_chain_repair_rolls_back_and_releases_staging_table(tmp_path):
         store.db.execute("DROP TRIGGER fail_repair")
         assert store.delete_session("new") == 1
         assert store.facts()[0]["statement"] == "I live in Oslo."
+
+
+@pytest.mark.parametrize("operation", ["session", "before", "expired"])
+@pytest.mark.parametrize("fts", [False, True])
+def test_bulk_retention_preserves_other_sessions_and_search_evidence(tmp_path, monkeypatch, operation, fts):
+    if fts and not store_module.FTS5:
+        pytest.skip("SQLite FTS5 is unavailable")
+    monkeypatch.setattr(store_module, "FTS5", fts)
+    with Store(str(tmp_path), "retention") as store:
+        store.add(
+            "remove",
+            [{"text": f"Obsolete deployment evidence {i}", "expires": "2024-06-01"} for i in range(40)],
+            session_at="2024-01-01",
+            extract_profile=False,
+        )
+        store.add("keep", [{"text": "Current deployment evidence"}], session_at="2025-01-01")
+        store.set_summary("remove", "Obsolete deployment evidence", "manual")
+        store.set_meta("extracted:remove", "39")
+        statements = []
+        store.db.set_trace_callback(statements.append)
+        if operation == "session":
+            removed = store.delete_session("remove")
+        elif operation == "before":
+            removed = store.purge(before="2024-02-01")
+        else:
+            removed = store.purge(expired_at="2024-06-01")
+        store.db.set_trace_callback(None)
+        assert removed == 40
+        assert store.stats()["turns"] == store.stats()["units"] == 1
+        assert store.get_meta("extracted:remove") is None
+        assert "remove" not in store.summaries()
+        assert not store.lexical("Obsolete", 100)
+        assert store.lexical("Current", 100)
+        # Retention must not issue one Python-to-SQL DELETE per search unit.
+        # SQLite's internal cascade/trigger statements are outside this budget.
+        deletes = [sql for sql in statements if sql.startswith("DELETE FROM units_fts")]
+        assert len(deletes) == int(fts)
+
+
+def test_failed_retention_restores_search_index_and_source_evidence(tmp_path):
+    if not store_module.FTS5:
+        pytest.skip("SQLite FTS5 is unavailable")
+    with Store(str(tmp_path), "retention") as store:
+        store.add("old", [{"text": "I live in Oslo."}], session_at="2023-01-01")
+        store.add("new", [{"text": "I live in Paris."}], session_at="2025-01-01")
+        before = store.lexical("Paris", 10)
+        store.db.execute(
+            "CREATE TEMP TRIGGER fail_retention BEFORE DELETE ON turns "
+            "BEGIN SELECT RAISE(ABORT, 'retention rejected'); END"
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="retention rejected"):
+            store.purge(before="2026-01-01")
+        assert store.lexical("Paris", 10) == before
+        assert store.stats()["turns"] == 2

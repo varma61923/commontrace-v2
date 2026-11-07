@@ -558,3 +558,65 @@ def test_content_similar_memories_lend_each_other_context_evidence():
     witnesses = together.context_transfer["regrasp-a"].witnesses("regrasp-a\x1ejaw/depot/pick")
     assert any(w.startswith("regrasp-b\x1e") for w, _s in witnesses)
     assert rmse(together) < rmse(alone)
+
+
+def test_context_neighbors_expand_past_unrelated_content_shortlist():
+    content = effect_field.Kernel.from_embeddings(
+        {"query": [1.0, 0.0], **{f"memory-{i:02}": [1.0, i / 100] for i in range(1, 15)}}
+    )
+    cells = {
+        "query": ("query", "robot/site"),
+        **{f"cell-{i:02}": (f"memory-{i:02}", "unrelated/place" if i < 14 else "robot/site") for i in range(1, 15)},
+    }
+    kernel = effect_field.CellKernel.build(content, cells)
+    assert kernel.neighbors(["query"], cells, k=1)["query"] == (
+        ("cell-14", round(kernel.similarity("query", "cell-14"), 12)),
+    )
+    # Reusing the original bounded pool cache must retain the same answer.
+    assert kernel.neighbors(["query"], cells, k=1)["query"][0][0] == "cell-14"
+
+
+def test_context_neighbors_honor_counts_larger_than_content_shortlist():
+    cells = {f"cell-{i:02}": (f"memory-{i:02}", "robot/site") for i in range(30)}
+    content = effect_field.Kernel.from_embeddings({memory: [1.0] for memory, _context in cells.values()})
+    kernel = effect_field.CellKernel.build(content, cells)
+    for count in (20, 5, 30):
+        actual = kernel.neighbors(["cell-00"], cells, k=count)["cell-00"]
+        expected = tuple((cell, 1.0) for cell in sorted(cells) if cell != "cell-00")[:count]
+        assert actual == expected
+
+
+def test_context_neighbors_include_later_content_ties_in_cell_id_order():
+    content = effect_field.Kernel.from_embeddings(
+        {"query": [1.0, 0.0], **{f"memory-{i:02}": [1.0, 0.0] for i in range(13)}}
+    )
+    cells = {
+        "query": ("query", "robot/site"),
+        **{f"z-cell-{i:02}": (f"memory-{i:02}", "robot/site") for i in range(12)},
+        "a-cell": ("memory-12", "robot/site"),
+    }
+    kernel = effect_field.CellKernel.build(content, cells)
+    assert kernel.neighbors(["query"], cells, k=1)["query"] == (("a-cell", 1.0),)
+
+
+def test_context_pair_caches_stay_bounded_without_changing_similarity_or_neighbors(monkeypatch):
+    monkeypatch.setattr(effect_field, "MAX_SIMILARITY_CACHE", 3)
+    content = effect_field.Kernel.from_embeddings({f"memory-{i:02}": [1.0] for i in range(20)})
+    cells = {f"cell-{19 - i:02}": (f"memory-{i:02}", f"robot/site-{i}") for i in range(20)}
+    kernel = effect_field.CellKernel.build(content, cells)
+    for a in cells:
+        for b in cells:
+            assert kernel.similarity(a, b) == (1.0 if a == b else 0.5)
+    assert len(kernel._shared) == len(kernel._sims) == 3
+    context_cache, content_cache = dict(kernel._shared), dict(kernel._sims)
+    actual = kernel.neighbors(["cell-19"], cells, k=5)["cell-19"]
+    assert actual == tuple((cell, 0.5) for cell in sorted(cells) if cell != "cell-19")[:5]
+    assert kernel._shared == context_cache and kernel._sims == content_cache
+
+    # Saturation preserves ordinary cache hits while computing new pairs on demand.
+    def forbidden(*_args):
+        raise AssertionError("a retained content similarity must remain cached")
+
+    monkeypatch.setattr(effect_field.Kernel, "similarity", forbidden)
+    retained_pair = next(iter(content_cache))
+    assert kernel._memory(*retained_pair) == content_cache[retained_pair]

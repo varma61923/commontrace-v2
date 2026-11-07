@@ -3,12 +3,13 @@ from __future__ import annotations
 import httpx
 import pytest
 import pytest_asyncio
+from sqlalchemy import event
 from starlette.applications import Starlette
 
 from hub import auth, scim
 from hub.abuse import RateLimiter
 from hub.db import session_scope
-from hub.models import Organization, User
+from hub.models import Organization, ScimGroupMembership, User
 
 pytestmark = pytest.mark.asyncio
 
@@ -49,6 +50,41 @@ async def _issue(session_factory, org_id, granted) -> str:
     async with session_scope(session_factory) as session:
         issued = await auth.issue_api_key(session, org_id, scopes=granted)
     return issued.raw_key
+
+
+@pytest.mark.parametrize("page_size", [1, 20])
+async def test_group_page_hydrates_members_in_one_tenant_scoped_query(session_factory, org, other_org, page_size):
+    async with session_scope(session_factory) as session:
+        member = await scim.create_user(session, org, {"userName": "member@example.test"}, actor="test")
+        foreign = await scim.create_user(session, other_org, {"userName": "private@example.test"}, actor="test")
+        for i in range(page_size):
+            group = await scim.create_group(
+                session, org, {"displayName": f"group-{i}", "members": [{"value": member.id}]}, actor="test"
+            )
+        # Legacy/imported inconsistent memberships must never expose another
+        # tenant's email, even when the group identifier itself is authorized.
+        session.add(ScimGroupMembership(org_id=org, group_id=group.id, user_id=foreign.id))
+        member_id = member.id
+
+    raw = await _issue(session_factory, org, ["scim"])
+    statements = []
+    engine = session_factory.kw["bind"].sync_engine
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        if "scim_group_memberships" in statement:
+            statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        async with _client(_app(session_factory)) as client:
+            response = await client.get("/scim/v2/Groups", headers=_auth(raw))
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+    assert response.status_code == 200
+    assert len(statements) == 1
+    resources = response.json()["Resources"]
+    assert len(resources) == page_size
+    assert all(group["members"] == [{"value": member_id, "display": "member@example.test"}] for group in resources)
 
 
 def _auth(raw_key: str) -> dict:
