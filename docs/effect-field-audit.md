@@ -615,3 +615,11 @@ logging findings**. Its sole remaining diagnostic is the already documented
 is recorded in `.github/codeql/config.yml`. Query selection and source exclusions
 were retained. Hosted verification must inspect the PR's complete check rollup,
 including the separate `CodeQL` policy check, rather than only workflow success.
+
+Hosted verification of `349157b` cleared the CodeQL security gate, then exposed
+an ONNX default-selection fixture that still patched the removed private getter
+import. The fixture now binds an isolated store through the public `using(root)`
+configuration context. With the native fastembed/ONNX test dependencies installed,
+the exact CI selection (`test_onnx_text`, `test_embeddings`, and
+`test_default_local_retrieval`, with `HF_HUB_OFFLINE=1`) passed **55 tests with no
+skips**. The follow-up changes only that fixture and this verification record.

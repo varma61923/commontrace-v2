@@ -6,19 +6,20 @@ import sys
 from types import SimpleNamespace
 
 from unimem import embeddings, fact_embeddings, hierarchical, kg_similarity, search_recipes
-from unimem.configuration import DEFAULTS
+from unimem.configuration import DEFAULTS, using
 from unimem.conversation import Options, Store, embed, recall, search
 
 DEFAULT_TAG = "fastembed:BAAI/bge-small-en-v1.5"
 
 
-def test_profiles_and_conversation_choose_the_fastembed_default(monkeypatch):
+def test_profiles_and_conversation_choose_the_fastembed_default(tmp_path, monkeypatch):
     assert all(profile["embedding"] == DEFAULT_TAG for profile in DEFAULTS["profiles"].values())
     monkeypatch.delenv("UNIMEM_CONVERSATION_EMBEDDER", raising=False)
-    monkeypatch.setattr(embed, "_configuration_getenv", lambda _name, default: default)
+    monkeypatch.delenv("UNIMEM_CONFIG", raising=False)
     monkeypatch.setattr(embed, "available_for", lambda tag: tag == DEFAULT_TAG)
 
-    assert embed.configured() == DEFAULT_TAG
+    with using(str(tmp_path)):
+        assert embed.configured() == DEFAULT_TAG
 
 
 def test_conversation_cache_miss_keeps_lexical_recall_and_never_downloads(tmp_path, monkeypatch):
