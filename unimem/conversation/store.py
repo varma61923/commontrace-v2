@@ -689,7 +689,7 @@ class Store:
         if cache_vectors:
             from unimem.conversation import embed
 
-            tag = embed.configured() if embedder in (None, "auto") else embed.canonical(embedder)
+            tag = embed.configured() if embedder is None or embedder == "auto" else embed.canonical(embedder)
             if not tag or not embed.available_for(tag):
                 raise ConversationError("vector preparation requires an available configured embedding provider")
         if not SESSION_RE.match(session or ""):

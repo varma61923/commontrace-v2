@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import threading
 
 import pytest
@@ -153,3 +154,76 @@ def test_hot_recall_observes_an_external_writer(tmp_path):
 def test_invalid_configuration(tmp_path, option):
     with pytest.raises(ValueError, match=option):
         asyncio.run(AsyncStore.open(str(tmp_path), "s", **{option: 0}))
+
+
+def test_open_and_batched_operations_preserve_each_callers_context(tmp_path, monkeypatch):
+    from unimem import configuration, memory_authority, offline
+
+    observed = []
+    original_open, original_add = Store.__init__, Store.add
+
+    def snapshot(operation):
+        observed.append(
+            (operation, memory_authority.WRITER.get(), offline.enabled(), configuration.getenv("UNIMEM_LLM_MODEL"))
+        )
+        # Mutating a worker binding must not affect a later request or caller.
+        memory_authority.WRITER.set(("worker-mutation", "operator"))
+
+    def opening(self, *args, **kwargs):
+        snapshot("open")
+        original_open(self, *args, **kwargs)
+
+    def adding(self, session, *args, **kwargs):
+        snapshot(session)
+        return original_add(self, session, *args, **kwargs)
+
+    monkeypatch.setattr(Store, "__init__", opening)
+    monkeypatch.setattr(Store, "add", adding)
+    monkeypatch.delenv("UNIMEM_LLM_MODEL", raising=False)
+
+    async def run():
+        with memory_authority.writer("opener", "agent"), offline.without_network():
+            store = await AsyncStore.open(str(tmp_path), "contexts", batch_size=8)
+            assert memory_authority.WRITER.get() == ("opener", "agent")
+        try:
+
+            async def add(name, blocked):
+                config = {"options": {"llm_model": name}}
+                with memory_authority.writer(name, "agent"), configuration.apply(config):
+                    if blocked:
+                        with offline.without_network():
+                            result = await store.add(name, [{"text": name}], extract_profile=False)
+                    else:
+                        result = await store.add(name, [{"text": name}], extract_profile=False)
+                    assert memory_authority.WRITER.get() == (name, "agent")
+                    return result
+
+            assert all(row["added"] == 1 for row in await asyncio.gather(add("first", True), add("second", False)))
+        finally:
+            await store.close()
+
+    # Isolate this probe from any application context in the surrounding suite.
+    contextvars.Context().run(asyncio.run, run())
+    assert observed == [
+        ("open", ("opener", "agent"), True, None),
+        ("first", ("first", "agent"), True, "first"),
+        ("second", ("second", "agent"), False, "second"),
+    ]
+
+
+def test_recall_keeps_task_local_network_refusal(tmp_path, monkeypatch):
+    from unimem import offline
+    from unimem.conversation import async_store
+
+    def network_recall(*_args, **_kwargs):
+        offline.check_url("https://example.invalid/embedding", "semantic recall")
+        return "network would have been allowed"
+
+    monkeypatch.setattr(async_store, "recall", network_recall)
+
+    async def run():
+        async with await AsyncStore.open(str(tmp_path), "policy") as store:
+            with offline.without_network(), pytest.raises(offline.OfflineError):
+                await store.recall("question", options=Options(embedder=None, rerank=None))
+
+    asyncio.run(run())

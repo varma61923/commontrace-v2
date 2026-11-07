@@ -301,23 +301,11 @@ def getenv(name: str, default: str | None = None) -> str | None:
     config = current()
     if config is not None:
         if name in config.get("secrets", {}):
-            ref = config.get("secrets", {}).get(name, "")
-            if ref.startswith("env:"):
-                target = ref[4:]
-                return os.environ.get(target, default)
-            if ref.startswith("file:"):
-                target = ref[5:]
-                if not os.path.isabs(target):
-                    target = os.path.join(config.get("root", os.getcwd()), target)
-                try:
-                    with open(target, encoding="utf-8") as fh:
-                        return fh.read(65536).strip()
-                except OSError:
-                    return default
-            from unimem import secrets_provider as _sec_mod
+            from unimem.secrets_provider import env_secret
 
-            _resolver = getattr(_sec_mod, "env_" + "secret")
-            return _resolver(name, default or "")
+            # Every configured secret uses the same bounded, rotating reader
+            # and fail-closed errors as direct provider resolution.
+            return env_secret(name, default or "")
         path = SETTING_PATHS.get(name)
         value = config.get("settings", {}).get(path)
         if value is None:

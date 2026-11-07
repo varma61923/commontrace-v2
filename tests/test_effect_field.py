@@ -461,6 +461,36 @@ def test_context_similarity_is_the_share_of_matching_components_within_one_memor
     assert kernel.similarity("a", "a") == pytest.approx(1.0)
 
 
+@pytest.mark.parametrize("k", [-1, True, 1.5, "2"])
+def test_context_neighbors_validate_the_same_count_contract_as_content_neighbors(k):
+    kernel = effect_field.CellKernel.build(None, {"a": ("m", "robot/site"), "b": ("m", "robot/other")})
+    with pytest.raises(ValueError, match="neighbor count"):
+        kernel.neighbors(["a"], ["a", "b"], k=k)
+
+
+def test_zero_context_neighbors_does_not_build_a_pool(monkeypatch):
+    kernel = effect_field.CellKernel.build(None, {"a": ("m", "robot/site")})
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("zero neighbors must not compute a content pool")
+
+    monkeypatch.setattr(effect_field.CellKernel, "_pool", forbidden)
+    assert kernel.neighbors(["a"], ["a"], k=0) == {"a": ()}
+
+
+def test_context_neighbors_preserve_pairwise_order_across_a_large_cell_pool():
+    cells = {str(i): ("m", f"robot/{i % 7}/pick") for i in range(1000)}
+    kernel = effect_field.CellKernel.build(None, cells)
+    for k in (1, 12, 1001):
+        actual = kernel.neighbors(["0", "1"], cells, k=k)
+        for query in actual:
+            expected = sorted(
+                ((cell, round(kernel.similarity(query, cell), 12)) for cell in cells if cell != query),
+                key=lambda item: (-item[1], item[0]),
+            )[:k]
+            assert actual[query] == tuple(expected)
+
+
 def _fleet(seed: int, *, linked: bool, per: int = 30) -> tuple[list[Row], dict[str, float]]:
     rng = random.Random(seed)
     contexts = [f"{e}/{s}/pick" for e in EMBODIMENT_EFFECT for s in SITES]

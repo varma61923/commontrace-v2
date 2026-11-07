@@ -10,6 +10,7 @@ close the connection. Cancellation after admission does not retract a write.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import copy
 import hashlib
 import json
@@ -39,6 +40,7 @@ class _Request:
     args: tuple[Any, ...]
     kwargs: dict[str, Any]
     result: asyncio.Future[Any]
+    context: contextvars.Context
 
 
 class AsyncStore:
@@ -128,7 +130,10 @@ class AsyncStore:
             raise ValueError("vector index does not match the pinned tenant and conversation space")
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="unimem-sqlite")
         loop = asyncio.get_running_loop()
-        opening = loop.run_in_executor(executor, lambda: Store(root, space, create=create, read_only=read_only))
+        context = contextvars.copy_context()
+        opening = loop.run_in_executor(
+            executor, context.run, lambda: Store(root, space, create=create, read_only=read_only)
+        )
         try:
             store = await asyncio.shield(opening)
         except BaseException:
@@ -172,7 +177,7 @@ class AsyncStore:
         # Retrieve it to avoid unhandled-Future warnings while preserving normal
         # exception delivery to callers who remain attached.
         result.add_done_callback(lambda future: future.exception() if not future.cancelled() else None)
-        self._queue.put_nowait(_Request(operation, args, kwargs, result))
+        self._queue.put_nowait(_Request(operation, args, kwargs, result, contextvars.copy_context()))
         return await asyncio.shield(result)
 
     async def add(
@@ -473,6 +478,25 @@ class AsyncStore:
         await self._admit()
         return cast(dict[str, Any], await self._enqueue("stats", (), {}))
 
+    def _execute_one(self, request: _Request) -> Any:
+        """Dispatch in this request's context, never the queue owner's context."""
+        if request.operation == "add":
+            return self._store.add(*request.args, **request.kwargs)
+        if request.operation == "recall":
+            return recall(self._store, *request.args, **request.kwargs)
+        if request.operation == "vector_plan":
+            return self._vector_plan(*request.args)
+        if request.operation == "vector_batch":
+            return self._vector_batch(*request.args)
+        if request.operation == "vector_ids":
+            return self._vector_ids(*request.args)
+        if request.operation == "vector_delta":
+            return self._vector_delta(*request.args)
+        if request.operation == "vector_check":
+            self._vector_check(*request.args)
+            return None
+        return self._store.stats()
+
     def _execute(self, batch: list[_Request]) -> list[tuple[Any, Exception | None]]:
         outcomes: list[tuple[Any, Exception | None]] = []
         offset = 0
@@ -487,7 +511,7 @@ class AsyncStore:
                     with self._store._lock, write_txn(self._store.db):
                         for pending in batch[offset:end]:
                             try:
-                                group.append((self._store.add(*pending.args, **pending.kwargs), None))
+                                group.append((pending.context.run(self._execute_one, pending), None))
                             except Exception as exc:
                                 group.append((None, exc))
                 except Exception as exc:
@@ -497,22 +521,7 @@ class AsyncStore:
                 offset = end
                 continue
             try:
-                value: Any
-                if request.operation == "recall":
-                    value = recall(self._store, *request.args, **request.kwargs)
-                elif request.operation == "vector_plan":
-                    value = self._vector_plan(*request.args)
-                elif request.operation == "vector_batch":
-                    value = self._vector_batch(*request.args)
-                elif request.operation == "vector_ids":
-                    value = self._vector_ids(*request.args)
-                elif request.operation == "vector_delta":
-                    value = self._vector_delta(*request.args)
-                elif request.operation == "vector_check":
-                    self._vector_check(*request.args)
-                    value = None
-                else:
-                    value = self._store.stats()
+                value = request.context.run(self._execute_one, request)
                 outcomes.append((value, None))
             except Exception as exc:
                 outcomes.append((None, exc))

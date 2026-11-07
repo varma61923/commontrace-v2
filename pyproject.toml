@@ -83,7 +83,7 @@ vector-postgres = [
     "asyncpg>=0.31,<1.0",
 ]
 dev = [
-    "openapi-spec-validator>=0.7,<0.8",
+    "openapi-spec-validator>=0.9,<0.10",
     "pytest>=9.2.0,<10.0",
     "ruff>=0.17.3,<1.0",
     "pytest-asyncio>=1.4.1,<2.0",

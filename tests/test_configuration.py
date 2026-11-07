@@ -5,6 +5,40 @@ import pytest
 from unimem.configuration import apply, load
 
 
+@pytest.mark.parametrize("payload", [b"x" * 65537, b" " * 65536 + b"x", b"\xffprivate-test-value"])
+def test_getenv_secret_references_reject_oversize_or_invalid_files(tmp_path, monkeypatch, payload):
+    from unimem.configuration import getenv
+
+    monkeypatch.delenv("UNIMEM_LLM_API_KEY", raising=False)
+    (tmp_path / "key").write_bytes(payload)
+    (tmp_path / "unimem.yaml").write_text("secrets:\n  UNIMEM_LLM_API_KEY: file:key\n")
+    with apply(load(str(tmp_path))), pytest.raises(RuntimeError, match="secret file") as caught:
+        getenv("UNIMEM_LLM_API_KEY", "stale-default")
+    assert "private-test-value" not in str(caught.value)
+
+
+def test_getenv_secret_sources_fail_closed_and_preserve_valid_rotation(tmp_path, monkeypatch):
+    from unimem.configuration import getenv
+
+    name = "UNIMEM_LLM_API_KEY"
+    monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("OWNER_MODEL_KEY", raising=False)
+    (tmp_path / "unimem.yaml").write_text("secrets:\n  UNIMEM_LLM_API_KEY: env:OWNER_MODEL_KEY\n")
+    with apply(load(str(tmp_path))), pytest.raises(RuntimeError, match="environment source"):
+        getenv(name, "stale-default")
+    (tmp_path / "unimem.yaml").write_text("secrets:\n  UNIMEM_LLM_API_KEY: file:key\n")
+    with apply(load(str(tmp_path))):
+        with pytest.raises(RuntimeError, match="secret file"):
+            getenv(name, "stale-default")
+        path = tmp_path / "key"
+        path.write_bytes(b"x" * 65536)
+        assert getenv(name) == "x" * 65536
+        path.write_bytes(b"first\r\nsecond\rthird\n")
+        assert getenv(name) == "first\nsecond\nthird"
+        path.write_bytes(b" \n")
+        assert getenv(name, "stale-default") == ""
+
+
 def test_profiles_environment_precedence_and_validation(tmp_path, monkeypatch):
     (tmp_path / "unimem.yaml").write_text(
         "profile: local\nprofiles:\n  local:\n    embedding: bge-small\n    redact_pii: true\n    telemetry: false\n"

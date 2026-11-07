@@ -42,17 +42,14 @@ import sys
 import tempfile
 from typing import Any
 
+import yaml
+
 try:
     import numpy as _numpy
 except ImportError:
     np = None
 else:
     np = _numpy
-
-try:
-    import yaml
-except ImportError:
-    yaml = None
 
 SentenceTransformer: type[Any] | None = None
 try:

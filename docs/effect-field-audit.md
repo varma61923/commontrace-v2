@@ -467,3 +467,106 @@ and cache artifacts, the installed-wheel smoke directory, and the disposable
 baseline worktree were removed after verification. Benchmark data and graphs
 were kept outside the source tree; no additional production module or audit file
 was added.
+
+## Async policy, context-kernel and dependency audit (2026-11-07)
+
+Starting commit: `7d49137`, branch `feat/effect-field`. This pass used the
+repository-pinned Graphify 0.9.92, repository-wide lint/type/security/dependency
+checks and manual tracing of asynchronous conversation storage, model loading,
+configuration secrets, effect-field neighbor selection and SDK dependencies.
+The review is broad static coverage with focused manual verification; it does
+not establish that every line or optional integration is defect-free.
+
+### Reproduced findings and fixes
+
+| Finding | Severity | Change |
+| --- | --- | --- |
+| AsyncStore lost request context | High | `run_in_executor` did not propagate ContextVars. Store construction and each admitted operation now run in separate copied contexts, preserving task-local offline refusal, configuration, runtime and identity bindings. Capturing only the queue worker's context would incorrectly apply the opener's settings to every caller. Batched writes still share a transaction while their operations retain individual contexts. |
+| Legacy conversation models bypassed offline policy | High | `arctic-m` and `minilm` retried a local cache miss with an unrestricted model constructor. The fallback now checks the existing offline policy and raises `OfflineError` before attempting a download. Cached local models and online initialization retain their behavior. |
+| Configuration had a weaker duplicate secret reader | High | `configuration.getenv` accepted truncated file secrets, exposed UTF-8 decoder errors and returned a default when configured file/environment sources were unavailable. Configured references now use `secrets_provider.env_secret`, including the 65,536-byte raw bound, sanitized failures, relative paths and fresh rotation reads. Explicit environment precedence remains unchanged. |
+| Context-kernel neighbor counts were inconsistent | Medium | `CellKernel.neighbors` accepted negative/boolean counts and performed content-pool work for zero. It now enforces the content kernel's nonnegative integer contract and returns immediately for zero. A streaming heap replaces full candidate-list sorting, preserving rounded scores and deterministic ties within the existing neighbor roster. |
+| Development and Hub dependencies could not resolve together | Medium | OpenAPI validator 0.7 required `referencing<0.37`, conflicting with Hub's JSON Schema pin. The development extra now uses validator 0.9, which supports the pinned schema stack and Python 3.10+. |
+| SDK lock contained vulnerable transitive packages | High | Updated compatible locked versions of `@hono/node-server`, `body-parser`, `fast-uri`, `ip-address`, `qs` and `zod`. The initial production dependency scan reported six affected packages: two high and four moderate. These advisories include server-side dependencies bundled by the MCP SDK; exploitation through the UniMem client was not demonstrated. |
+| Existing optional-value type errors | Low | Narrowed the optional embedder explicitly. Removed misleading missing-YAML import fallbacks in the reference scripts: those readers dereference YAML unconditionally, and PyYAML is the project's required core dependency. Optional NumPy/model fallbacks remain intact. |
+
+The first regression run reproduced **10 failures** in async context, offline
+model loading and configured secrets, alongside 58 passes. A separate kernel
+probe reproduced **five failures** and one pass. New coverage checks independent
+concurrent callers, worker binding isolation, actual task-local network refusal,
+both legacy models under environment/task policy, oversized and invalid UTF-8
+secrets, unavailable sources, exact byte boundaries, rotation, invalid neighbor
+counts, the zero-work path and deterministic ranking over 1,000 cells.
+
+### Wiring and dead-code review
+
+Graphify traced `AsyncStore` through its public conversation export and
+`frameworks.MemoryTools`, and traced `configuration.getenv` into model, retrieval,
+offline, OAuth and handoff consumers. The new dispatcher is used by both batched
+writes and queued reads/vector operations. The duplicated secret parsing and
+unnecessary dynamic attribute lookup were removed; no public integration was
+removed based on static reachability alone.
+
+The unreachable inventory remains dominated by UI event callbacks, reference
+script entry points, optional framework/robot adapters, OpenTelemetry callbacks
+and urllib redirect handlers. These require their runtime registration or public
+API contracts, rather than deletion merely because static callers are absent.
+Ruff checks unused imports and undefined names across the repository.
+
+### Allocation measurement
+
+A synthetic pool of 40,000 cells belonging to one memory used seven repeating
+contexts, one query and `k=12`. Baseline and candidate ran serially in separate
+Python 3.12 processes, after a warm-up populated their ordinary pool/context
+caches. A separate tracemalloc pass measured the warmed selection call, excluding
+source construction. Its output digest matched in both versions:
+`cb72e8d5238fbb99ecea79930a349cd6a7fcd5f429e765d4de069086c7ddacef`.
+
+| Metric | Baseline | Candidate |
+| --- | ---: | ---: |
+| Peak traced Python allocation during warmed selection | 7,322,624 bytes | 2,098,312 bytes |
+
+Timing samples were collected while other audit checks were active, so they are
+not reported as throughput evidence. This measures neither RSS nor a cold/full
+field fit. Pool membership and cached context/pool data still require memory
+proportional to the source; heap selection removes the full scored list/sort,
+and retains at most the requested result count. Context copies likewise isolate
+bindings, while mutable objects stored in ContextVars retain their existing
+ownership contracts.
+
+### Verification for this pass
+
+| Check | Result |
+| --- | --- |
+| Complete core and end-to-end suite for this pass | **9,285 passed, 155 skipped** in 1,743.40 seconds; two workers, warnings treated as errors. |
+| Hub suite with disposable PostgreSQL 16 | **2,812 passed, 24 skipped** in 1,273.12 seconds; two workers, warnings treated as errors. |
+| Focused effect-field, async conversation and vector materialization contracts | 70 passed, 20 optional pgvector cases skipped; warnings treated as errors. |
+| Gateway and Hub OpenAPI validator contracts | 20 passed with validator 0.9; generated specifications are current. |
+| Types | All 637 files passed the repository's full mypy check with both mypy 1.20.2 and 2.4.1 (the current unpinned CI resolution). Strict checks passed for async conversation storage and effect-field kernels; explicit checks also passed for the reference readers and synchronous conversation store. |
+| Ruff | Repository lint and configured formatting passed across 1,338 Python files. |
+| Graphify | 28,365 nodes, 94,824 edges, 402 core modules, 291 possible unreachable candidates; no missing endpoints or integrity/budget violations. Final extraction used `--code-only --no-cluster`, with the LLM backend disabled. |
+| Python dependency scans | No known vulnerabilities in the Hub transitive lock or 150 pinned packages resolved from all declared extras for Python 3.12. The development extra also resolves for Python 3.10. |
+| TypeScript SDK | Clean lockfile installation, build and all 42 tests passed. Full npm audit: zero vulnerabilities, down from six affected production packages. |
+| Bandit | No medium/high production Python findings. |
+| Packaging | Wheel and source distribution built; isolated installed-wheel checks on Python 3.10 passed for async context/SQLite capture, secret-file bounds and count validation. |
+| Credential-format inventory | Selected GitHub token, AWS access-key, live Stripe key and private-key-header patterns matched only test fixtures. This is not a comprehensive or history-wide secret scan. |
+
+Focused counts overlap and are not additive. Full mypy does not enable strict
+checking of every legacy untyped function body. Real provider credentials,
+external model downloads, optional cloud/robot hardware integrations, browser
+automation and non-TypeScript SDK toolchains were not verified in this pass.
+Hosted CI results are separate from these local checks.
+
+To reproduce the full suites, set `AUDIT_DATABASE_URL` to a disposable PostgreSQL
+URL. This audit used only a disposable loopback instance:
+
+```bash
+.venv/bin/python -B -m pytest tests e2e_tests -q -n 2 --dist worksteal -p no:cacheprovider -W error
+HUB_TEST_DATABASE_URL="$AUDIT_DATABASE_URL" \
+  .venv/bin/python -B -m pytest hub/tests -q -n 2 --dist worksteal -p no:cacheprovider -W error
+```
+
+The Hub suite used PostgreSQL 16. Fsync was disabled partway through the run to
+reduce container filesystem fixture-reset costs; these tests verify SQL/API
+behavior, not PostgreSQL power-loss durability. No production database or
+deployment setting changed. Generated graphs, dependency inventories, benchmark
+fixtures and build artifacts remained outside the tracked product source.

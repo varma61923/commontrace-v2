@@ -119,7 +119,13 @@ def _model(tag: str):
             with _no_progress_bars():
                 try:
                     model = SentenceTransformer(name, device="cpu", local_files_only=True)
-                except Exception:  # noqa: BLE001 - not cached yet: fetch it once
+                except Exception as exc:  # noqa: BLE001 - model runtimes use backend-specific cache errors
+                    from unimem import offline
+
+                    if offline.enabled():
+                        raise offline.OfflineError(
+                            f"offline mode: local embedding model {name!r} is not available in the cache"
+                        ) from exc
                     model = SentenceTransformer(name, device="cpu")
             model.max_seq_length = MAX_SEQ
             _MODELS[tag] = model

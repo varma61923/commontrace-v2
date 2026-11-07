@@ -365,19 +365,25 @@ class CellKernel:
     def neighbors(self, queries: Iterable[str], pool: Iterable[str], k: int = NEIGHBORS) -> dict[str, Neighbors]:
         """Each query cell's `k` most similar pool cells: its own memory's other contexts and its
         content neighbours' contexts."""
+        if type(k) is not int or k < 0:
+            raise ValueError("neighbor count must be a non-negative integer")
         queries = list(queries)
+        if not k:
+            return {q: () for q in queries}
         by_memory, near = self._pool(pool, (self.cells[q][0] for q in queries))
         out: dict[str, Neighbors] = {}
         for q in queries:
             memory, context = self.cells[q]
-            scored = []
-            for other, weight in ((memory, 1.0), *near.get(memory, ())):
-                for cell in by_memory.get(other, ()):
-                    if cell != q:
-                        s = weight * self._context(context, self.cells[cell][1])
-                        if s > 1e-9:
-                            scored.append((cell, round(min(1.0, s), 12)))
-            out[q] = tuple(sorted(scored, key=lambda item: (-item[1], item[0]))[:k])
+
+            def scored() -> Iterable[tuple[str, float]]:
+                for other, weight in ((memory, 1.0), *near.get(memory, ())):
+                    for cell in by_memory.get(other, ()):
+                        if cell != q:
+                            s = weight * self._context(context, self.cells[cell][1])
+                            if s > 1e-9:
+                                yield cell, round(min(1.0, s), 12)
+
+            out[q] = tuple(heapq.nsmallest(k, scored(), key=lambda item: (-item[1], item[0])))
         return out
 
 
