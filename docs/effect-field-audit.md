@@ -623,3 +623,47 @@ configuration context. With the native fastembed/ONNX test dependencies installe
 the exact CI selection (`test_onnx_text`, `test_embeddings`, and
 `test_default_local_retrieval`, with `HF_HUB_OFFLINE=1`) passed **55 tests with no
 skips**. The follow-up changes only that fixture and this verification record.
+
+The next hosted run passed the ONNX selection and the separate CodeQL gate, but
+the full Python 3.12 suite exposed nondeterministic personalization-test input.
+For the failing trial ID, deterministic assignment withheld 166 of 400 cases
+at a declared rate of 0.5 (exact binomial p=0.000808), so the production
+assignment-integrity guard correctly refused it. Both wall-clock fact timestamps
+and freshly generated store signing keys changed source revisions and trial IDs
+between test runs. The shared frozen clock now also controls fact timestamps;
+personalization fixtures create a fixed test-only private key in temporary
+stores, retaining real signing and signature verification. A regression requires
+identical source revisions and trial IDs across independent stores with the
+same fixture inputs. Production randomization, key generation and integrity
+thresholds are unchanged.
+The complete affected fixture family plus assignment-integrity suites passed
+**152 tests**, with **one optional-service test skipped**, under two workers and
+warnings treated as errors. Lint and formatting also passed.
+
+## Removal and cache-preservation review (2026-11-07)
+
+Compared all changes in this audit against `7d49137`, including Python API
+symbols, CLI argument registrations, console entry points, dependency extras,
+dedicated cache/pool/snapshot modules and cache methods inside modified modules.
+No tracked files, public symbols, CLI registrations, entry points or extras
+were removed. Nine dedicated cache/pool/snapshot modules are byte-identical;
+16 embedding, vector snapshot, effect-field and configuration cache components
+are AST-identical. Cache algorithms, expiration policies, persistent vectors
+and stored user memories were retained. The focused cache-preservation suite
+passed **114 tests**, with **10 optional local cases skipped**; hosted native
+integration jobs are checked separately.
+
+Intentional replacements remove duplicate secret-reading and async-dispatch
+code, replace full neighbor sorting with bounded top-k selection, and remove
+the missing-required-PyYAML import fallback in two reference tools. Public
+model/backend settings now reject secret references before resolving them;
+offline model cache misses raise instead of downloading; invalid neighbor
+counts are rejected. These are documented behavior changes, not removed
+features. The private embed configuration import was replaced; its fixture now
+uses the public configuration context.
+
+The earlier `make clean` removed generated development artifacts, including
+`.mypy_cache`, `.ruff_cache`, Python bytecode, build outputs and TypeScript SDK
+`dist`; it did not clear application runtime caches or memory databases. The
+TypeScript SDK build output was regenerated after this review. Generated
+removal inventories remain outside the tracked product source.
