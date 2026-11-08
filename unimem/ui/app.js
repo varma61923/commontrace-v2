@@ -115,8 +115,8 @@
       if (r.status === 401) { var e = new Error("auth"); e.auth = true; throw e; }
       if (!r.ok) {
         return r.json().catch(function () { return {}; }).then(function (d) {
-          var err = new Error((d.error && d.error.message) || ("HTTP " + r.status));
-          err.status = r.status; err.code = d.error && d.error.code; throw err;
+          var err = new Error((d && d.error && d.error.message) || ("HTTP " + r.status));
+          err.status = r.status; err.code = d && d.error && d.error.code; throw err;
         });
       }
       return r.json();
@@ -1600,7 +1600,12 @@
     keys[reviewPath] = "lessons";
     keys[libraryPath] = "library"; keys[tracesPath] = "traces"; keys[tracePath] = "trace"; keys["benchmark-history"] = "benchmarks";
     return Promise.all(wants.map(function (w) {
-      return api("/v1/" + w).then(function (d) { return [w, d]; }).catch(function (error) {
+      return api("/v1/" + w).then(function (d) {
+        if (w.indexOf("learning/") === 0 && (!d || typeof d !== "object" || Array.isArray(d) || d.schema !== "unimem.learning.v1")) {
+          return [w, { unavailable: 502, message: "The gateway returned an invalid or incompatible learning reply." }];
+        }
+        return [w, d];
+      }).catch(function (error) {
         if (error.auth || route !== "learning" || w.indexOf("learning/") !== 0 && w !== "whoami") throw error;
         return [w, { unavailable: error.status || 503, message: error.message }];
       });

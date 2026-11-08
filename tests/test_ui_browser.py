@@ -659,19 +659,29 @@ def test_learning_write_cannot_restore_old_session_or_block_future_actions(
     assert page.evaluate("() => sessionStorage.getItem('unimem-token')") == console.credential[0]
 
 
-def test_learning_access_refusal_is_visible_without_false_offline_state(page: Page, console: Console) -> None:
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ('{"error":{"message":"Learning status requires permission"}}', "Learning status requires permission"),
+        ("null", "HTTP 403"),
+        ("invalid JSON", "HTTP 403"),
+    ],
+)
+def test_learning_access_refusal_is_visible_without_false_offline_state(
+    page: Page, console: Console, payload: str, message: str
+) -> None:
     connect(page, console)
     page.route(
         "**/v1/learning/status",
         lambda route: route.fulfill(
             status=403,
             content_type="application/json",
-            body='{"error":{"message":"Learning status requires permission"}}',
+            body=payload,
         ),
     )
     navigate(page, "Adaptive learning")
     pw.expect(page.get_by_role("heading", name="Learning state unavailable", exact=True)).to_be_visible()
-    pw.expect(page.get_by_text("Learning status requires permission", exact=True)).to_be_visible()
+    pw.expect(page.get_by_text(message, exact=True)).to_be_visible()
     pw.expect(page.locator("#conn")).to_have_attribute("data-state", "ok")
     assert page.get_by_role("button", name="Start experiment", exact=True).count() == 0
 
@@ -754,3 +764,17 @@ def test_learning_lost_success_response_reports_uncertain_commit(page: Page, con
     pw.expect(page.get_by_role("alert")).to_contain_text("It may have been accepted")
     pw.expect(page.get_by_role("button", name="Evaluate evidence", exact=True)).to_be_enabled()
     assert learning.operate(console.root, "status")["config"]["mode"] == "observe"
+
+
+@pytest.mark.parametrize("payload", ["null", "[]", '{"schema":"unknown"}'])
+def test_malformed_learning_status_does_not_stay_loading(page: Page, console: Console, payload: str) -> None:
+    connect(page, console)
+    page.route(
+        "**/v1/learning/status", lambda route: route.fulfill(status=200, content_type="application/json", body=payload)
+    )
+    navigate(page, "Adaptive learning")
+    pw.expect(
+        page.get_by_text("The gateway returned an invalid or incompatible learning reply.", exact=True)
+    ).to_be_visible()
+    pw.expect(page.locator("#conn")).to_have_attribute("data-state", "ok")
+    assert page.get_by_role("button", name="Start experiment", exact=True).count() == 0
