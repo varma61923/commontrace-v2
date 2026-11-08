@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from uuid import NAMESPACE_URL, uuid5
 
 import pytest
 import pytest_asyncio
@@ -28,7 +29,24 @@ async def harmed(session_factory):
         session.add(o)
         await session.flush()
         org_id = o.id
-    bad, good = await _lessons(session_factory, org_id, ["paste the reset link", "verify the owner"])
+    # These policy tests require a valid experiment. Random UUIDs occasionally
+    # produce an arm imbalance that correctly invalidates the seeded evidence.
+    # Stable identities keep the real assignment hash reproducible.
+    titles = ["paste the reset link", "verify the owner"]
+    bad, good = [str(uuid5(NAMESPACE_URL, f"unimem.test/search-harm/{title}")) for title in titles]
+    async with session_scope(session_factory) as session:
+        session.add_all(
+            Trace(
+                id=trace_id,
+                org_id=org_id,
+                title=title,
+                context_text=f"context for {title}",
+                solution_text=f"solution for {title}",
+                tags=[TAG],
+                agent_type="code",
+            )
+            for trace_id, title in zip((bad, good), titles)
+        )
     await _drive(session_factory, org_id, bad, 200, 0.0, 1.0, "bad")
     return org_id, bad, good
 
