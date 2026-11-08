@@ -20,6 +20,7 @@ let token = 'first-token', location = {hash: '#/overview'}, route = 'overview';
 let state = {}, lastOk = 0, painted = 0, connection = '', requested = [], pending = [];
 let selected = {}, notice = null, lastPaint = '';
 const main = {textContent: '', appendChild() {}};
+const document = {getElementById() {return null;}};
 const sessionStorage = {removeItem() {}};
 function currentRoute() {return {id: route};}
 function hashQuery() {return 'lesson_one';}
@@ -48,7 +49,7 @@ function api(path) {requested.push(path); return Promise.resolve({path});}
 @pytest.mark.parametrize(
     ("route", "paths"),
     [
-        ("overview", ["status", "memories", "agents"]),
+        ("overview", ["status", "memories", "agents", "learning/status"]),
         ("explore", ["status"]),
         ("learning", ["status", "learning/capabilities", "learning/status", "whoami"]),
         ("memories", ["status", "memories"]),
@@ -175,7 +176,7 @@ await refresh();
 console.log(JSON.stringify({requested,connection,cleared:Object.values(state).every(value=>value===null)}));
 """)
     assert result == {
-        "requested": ["/v1/status", "/v1/capabilities", "/v1/memories", "/v1/agents"],
+        "requested": ["/v1/status", "/v1/capabilities", "/v1/memories", "/v1/agents", "/v1/learning/status"],
         "connection": "bad",
         "cleared": True,
     }

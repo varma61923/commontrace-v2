@@ -227,8 +227,10 @@ def _topbar(title: str, badge: str) -> str:
         '<header class="top">'
         f'<div class="crumbs">{crumbs}<b>{h(title)}</b></div>'
         f'<div class="top-actions">{badge}'
-        '<button type="button" class="search-btn" data-palette data-js hidden aria-label="Open the command palette">'
-        f"{ui_kit.icon('search')}<span>Search or jump to…</span><kbd data-mod-key>Ctrl K</kbd></button>"
+        '<button type="button" class="search-btn" data-palette data-js hidden '
+        'aria-labelledby="palette-label palette-shortcut">'
+        f'{ui_kit.icon("search")}<span id="palette-label">Search or jump to…</span>'
+        '<kbd id="palette-shortcut" data-mod-key>Ctrl K</kbd></button>'
         '<button type="button" class="icon-btn" data-theme-toggle data-js hidden aria-label="Change colour theme">'
         f"{theme_icons}</button>"
         "</div></header>"
@@ -1766,6 +1768,7 @@ def _render_learning(
     error: str = "",
     flash: str = "",
     draft: dict | None = None,
+    draft_operation: str = "configure",
 ) -> str:
     """Render measured evidence without confusing per-key counts with org-wide evaluation."""
     data = data or {}
@@ -1773,7 +1776,7 @@ def _render_learning(
     report = data.get("report") or {}
     mode = str(config.get("mode") or "not configured")
     body = [
-        '<div class="page-head"><div><p class="learning-eyebrow">MEMORY INTELLIGENCE</p>'
+        '<div class="page-head"><div>'
         '<h1>Learning</h1><p class="sub">Turn experience into better memory decisions. '
         "Measure outcomes, inspect the evidence, and stay in control.</p></div>"
         f'<a class="btn secondary" href="{CONSOLE_PATH}/learning">{ui_kit.icon("refresh")}Refresh evidence</a></div>',
@@ -1789,18 +1792,29 @@ def _render_learning(
             "Valid evidence can adjust delivery by source revision and task context. Harmful cohorts are disabled."
         ),
     }.get(mode, "Start in observe mode to measure memory before enabling automatic delivery changes.")
-    body.append(
-        '<section class="learning-hero" aria-labelledby="learning-state"><div>'
-        '<span class="badge">Measured learning</span>'
-        f'<h2 id="learning-state">{h(mode.capitalize())}</h2><p>{h(description)}</p>'
-        '<p class="muted">Protected memories stay protected. Every outcome stays attached to its original '
-        "experiment.</p>"
-        '</div><ol class="learning-flow" aria-label="Learning lifecycle">'
+    lifecycle = (
+        '<ol class="learning-flow" aria-label="Learning lifecycle">'
         "<li><b>01</b><span>Assign<small>Freeze source and context</small></span></li>"
         "<li><b>02</b><span>Deliver<small>Confirm what was used</small></span></li>"
         "<li><b>03</b><span>Measure<small>Record task outcomes</small></span></li>"
-        "<li><b>04</b><span>Adapt<small>Apply valid evidence</small></span></li></ol></section>"
+        "<li><b>04</b><span>Adapt<small>Apply valid evidence</small></span></li></ol>"
     )
+    protection = "Protected memories stay protected. Every outcome stays attached to its original experiment."
+    if data:
+        body.append(
+            '<section class="learning-status" aria-labelledby="learning-state">'
+            '<div class="learning-status-head">'
+            f'<h2 id="learning-state">{h(mode.capitalize())}</h2><span class="badge">Measured learning</span></div>'
+            f'<p>{h(description)}</p><details class="learning-method"><summary>How measured learning works</summary>'
+            f'<p class="muted">{h(protection)}</p>{lifecycle}</details></section>'
+        )
+    else:
+        body.append(
+            '<section class="learning-hero" aria-labelledby="learning-state"><div>'
+            '<span class="badge">Measured learning</span>'
+            f'<h2 id="learning-state">{h(mode.capitalize())}</h2><p>{h(description)}</p>'
+            f'<p class="muted">{h(protection)}</p></div>{lifecycle}</section>'
+        )
     if data:
         evidence_label = "Organisation evidence" if is_admin else "Visible evidence"
         body.append(
@@ -1923,10 +1937,12 @@ def _render_learning(
             )
         body.append("</section>")
     if is_admin:
-        fields = draft if draft is not None else config
+        config_draft = draft if draft_operation == "configure" else None
+        rollback_draft = draft if draft_operation == "rollback" else None
+        fields = config_draft if config_draft is not None else config
         utility = (
             fields.get("utility", "")
-            if draft is not None
+            if config_draft is not None
             else (json.dumps(config["utility"], indent=2) if config.get("utility") is not None else "")
         )
         options = "".join(
@@ -1937,9 +1953,17 @@ def _render_learning(
                 ("off", "Off · no randomized holdouts"),
             )
         )
+        config_open = " open" if config_draft is not None else ""
+        config_start = (
+            f'<details class="panel learning-settings"{config_open}><summary>Experiment configuration</summary>'
+            if data
+            else '<section class="panel"><h2>Experiment configuration</h2>'
+        )
+        config_end = "</details>" if data else "</section>"
         body.append(
-            '<div class="grid-2"><section class="panel"><h2>Experiment configuration</h2>'
-            '<p class="muted">Saving starts a new experiment. Existing assignments and late outcomes keep '
+            '<div class="grid-2">'
+            + config_start
+            + '<p class="muted">Saving starts a new experiment. Existing assignments and late outcomes keep '
             "their original configuration.</p>"
             f'<form class="stack" method="post" action="{CONSOLE_PATH}/learning/configure">'
             f'<div><label for="learning-mode">Mode</label><select id="learning-mode" '
@@ -1957,25 +1981,33 @@ def _render_learning(
             "require named terms with weight, low, high, and better (higher or lower).</p></div>"
             '<label class="learning-confirm"><input name="confirm" type="checkbox" value="yes" required> I '
             "understand this starts a new experiment.</label>"
-            '<button type="submit">Start new experiment</button></form></section>'
+            '<button type="submit">Start new experiment</button></form>' + config_end
         )
         if data:
             pinned = f'<input type="hidden" name="experiment_id" value="{h(data.get("experiment_id"))}">'
+            rollback_open = " open" if rollback_draft is not None else ""
+            rollback_fields = rollback_draft or {}
+            rollback_pinned = (
+                '<input type="hidden" name="experiment_id" '
+                f'value="{h(rollback_fields.get("experiment_id", data.get("experiment_id")))}">'
+            )
             body.append(
                 '<section class="panel"><h2>Policy controls</h2>'
                 '<p class="muted">Evaluation uses accepted evidence and the same integrity checks as the '
                 "runtime. Adaptive mode can change delivery.</p>"
                 f'<form class="stack" method="post" action="{CONSOLE_PATH}/learning/run">{pinned}'
                 '<button type="submit">Evaluate evidence</button></form>'
-                '<hr><h3>Restore an earlier policy</h3><p class="muted">Rollback creates a new policy '
-                "revision and preserves evidence. It cannot restore revoked access.</p>"
-                f'<form class="stack" method="post" action="{CONSOLE_PATH}/learning/rollback">{pinned}'
+                f'<details class="learning-restore"{rollback_open}><summary>Restore an earlier policy</summary>'
+                '<p class="muted">Rollback creates a new policy revision and preserves evidence. '
+                "It cannot restore revoked access.</p>"
+                f'<form class="stack" method="post" action="{CONSOLE_PATH}/learning/rollback">{rollback_pinned}'
                 '<div><label for="learning-revision">Revision to restore (optional)</label>'
                 '<input id="learning-revision" name="decision_revision" type="number" min="0" step="1" '
-                'placeholder="Previous revision"></div>'
+                f'placeholder="Previous revision" value="{h(rollback_fields.get("decision_revision", ""))}"></div>'
                 '<div><label for="learning-reason">Reason for rollback</label>'
-                '<input id="learning-reason" name="reason" type="text" maxlength="256" required></div>'
-                '<button class="secondary" type="submit">Restore policy</button></form></section>'
+                '<input id="learning-reason" name="reason" type="text" maxlength="256" '
+                f'value="{h(rollback_fields.get("reason", ""))}" required></div>'
+                '<button class="secondary" type="submit">Restore policy</button></form></details></section>'
             )
         body.append("</div>")
     else:
@@ -2207,6 +2239,7 @@ def add_console_routes(
         error: str = "",
         flash: str = "",
         draft: dict | None = None,
+        draft_operation: str = "configure",
         status_code: int = 200,
     ) -> Response:
         try:
@@ -2227,7 +2260,12 @@ def add_console_routes(
             data = None
             error = "Learning status is temporarily unavailable. Retry shortly."
             status_code = 503
-        response = _page("Learning", _render_learning(data, _is_admin(claims), error=error, flash=flash, draft=draft))
+        response = _page(
+            "Learning",
+            _render_learning(
+                data, _is_admin(claims), error=error, flash=flash, draft=draft, draft_operation=draft_operation
+            ),
+        )
         response.status_code = status_code
         return response
 
@@ -2251,10 +2289,14 @@ def add_console_routes(
             "run": {"experiment_id"},
             "rollback": {"experiment_id", "reason", "decision_revision"},
         }[operation]
-        draft = fields if operation == "configure" else None
+        draft = fields if operation in ("configure", "rollback") else None
         if set(fields) - allowed or len(form.multi_items()) != len(fields):
             return await _learning_view(
-                claims, error="Unexpected or repeated form fields.", draft=draft, status_code=400
+                claims,
+                error="Unexpected or repeated form fields.",
+                draft=draft,
+                draft_operation=operation,
+                status_code=400,
             )
         try:
             if operation == "configure":
@@ -2292,7 +2334,11 @@ def add_console_routes(
             )
         except (learning_contract.LearningError, ValueError) as exc:
             return await _learning_view(
-                claims, error=str(exc), draft=draft, status_code=getattr(exc, "status_code", 400)
+                claims,
+                error=str(exc),
+                draft=draft,
+                draft_operation=operation,
+                status_code=getattr(exc, "status_code", 400),
             )
         except PermissionError:
             return await _learning_view(
@@ -2301,7 +2347,11 @@ def add_console_routes(
         except (WorkerCapacityError, SQLAlchemyError):
             logger.warning("learning console operation temporarily unavailable")
             return await _learning_view(
-                claims, error="Learning is temporarily busy. Retry shortly.", draft=draft, status_code=503
+                claims,
+                error="Learning is temporarily busy. Retry shortly.",
+                draft=draft,
+                draft_operation=operation,
+                status_code=503,
             )
         return RedirectResponse(f"{CONSOLE_PATH}/learning?done={operation}", status_code=303)
 
