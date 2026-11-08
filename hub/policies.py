@@ -17,7 +17,7 @@ from starlette.responses import JSONResponse
 
 from hub import transparency
 from hub.db import session_scope
-from hub.models import MemoryPolicyState, TransparencyEntry
+from hub.models import MemoryPolicyState, Organization, TransparencyEntry
 from unimem import frontier_protocol as fp
 from unimem import origin, policy_proof
 
@@ -91,6 +91,15 @@ def record_permits(record, *, action="read"):
 
 
 async def _locked(session, org_id):
+    # Learning holds this tenant row while resolving original actor authority and
+    # applying a measured decision. Acquire it before the policy row so a policy
+    # activation cannot interleave generations or invert the shared lock order.
+    # The tenant row also exists before the first policy-state row is inserted.
+    organization = (
+        await session.execute(select(Organization.id).where(Organization.id == org_id).with_for_update())
+    ).scalar_one_or_none()
+    if organization is None:
+        raise PermissionError("organization is unavailable")
     await session.execute(insert(MemoryPolicyState).values(org_id=org_id, generation=0).on_conflict_do_nothing())
     return (
         await session.execute(

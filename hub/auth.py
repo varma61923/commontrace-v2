@@ -404,6 +404,7 @@ async def _verify_by_legacy_scan(session: AsyncSession, raw_key: str, now: datet
 current_org_id: contextvars.ContextVar[str | None] = contextvars.ContextVar("current_org_id", default=None)
 
 current_actor: contextvars.ContextVar[str | None] = contextvars.ContextVar("current_actor", default=None)
+current_key_id: contextvars.ContextVar[str | None] = contextvars.ContextVar("current_key_id", default=None)
 
 current_scopes: contextvars.ContextVar[tuple[str, ...] | None] = contextvars.ContextVar("current_scopes", default=None)
 

@@ -7,6 +7,7 @@ if TYPE_CHECKING:
 
 import asyncio
 import contextlib
+import copy
 import glob
 import hashlib
 import itertools
@@ -525,6 +526,60 @@ class _RateLimitGate:
                 self._min_interval = 0.0
 
 
+class HubLearningClient:
+    """Measured learning through the hosted MCP surface, with explicit negotiation."""
+
+    def __init__(self, session: "HubSession"):
+        self._session = session
+
+    async def capabilities(self) -> dict:
+        from unimem.client import learning_capabilities_reply
+
+        return learning_capabilities_reply(await self._session.call("learning_capabilities", {}))
+
+    async def call(self, operation: str, payload: dict | None = None) -> dict:
+        from unimem.client import LEARNING_OPERATIONS, learning_reply
+
+        if operation not in LEARNING_OPERATIONS:
+            raise ValueError("unknown learning operation")
+        if operation == "capabilities":
+            return await self.capabilities()
+        request = copy.deepcopy(dict(payload or {}))
+        if operation not in (await self.capabilities()).get("operations", []):
+            raise RuntimeError(f"peer does not support learning {operation}")
+        return learning_reply(
+            await self._session.call(
+                "learning_" + operation,
+                request,
+                retry_transport=operation not in {"configure", "run", "rollback"},
+            )
+        )
+
+    async def configure(self, mode: str, **options) -> dict:
+        return await self.call("configure", {**options, "mode": mode})
+
+    async def assign(self, occasion_id: str, memory_ids: list[str], **options) -> dict:
+        return await self.call("assign", {**options, "occasion_id": occasion_id, "memory_ids": memory_ids})
+
+    async def delivery(self, occasion_id: str, memory_ids: list[str], **options) -> dict:
+        return await self.call("delivery", {**options, "occasion_id": occasion_id, "memory_ids": memory_ids})
+
+    async def outcome(self, occasion_id: str, succeeded: bool | None = None, **options) -> dict:
+        body = {**options, "occasion_id": occasion_id}
+        if succeeded is not None:
+            body["succeeded"] = succeeded
+        return await self.call("outcome", body)
+
+    async def run(self, **options) -> dict:
+        return await self.call("run", options)
+
+    async def status(self, **options) -> dict:
+        return await self.call("status", options)
+
+    async def rollback(self, reason: str, **options) -> dict:
+        return await self.call("rollback", {**options, "reason": reason})
+
+
 class HubSession:
     """One live MCP session, reusable for many tool calls."""
 
@@ -548,6 +603,7 @@ class HubSession:
         self._probe = probe
         self._gate = gate if gate is not None else _RateLimitGate()
         self._session: ClientSession | None = None
+        self.learning = HubLearningClient(self)
 
     async def call(self, name: str, arguments: dict[str, Any], *, retry_transport: bool = True) -> dict:
         """One tool call, with retries."""

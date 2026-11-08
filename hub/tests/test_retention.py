@@ -592,6 +592,7 @@ class TestSchemaSafety:
         )
         from hub.alembic.versions.fe36f8a0b2d4_memory_policy_state import _TABLES as _POLICY_TABLES
         from hub.alembic.versions.ff47a9b1c3e5_attested_worker_keys import _TABLES as _ATTESTED_KEY_TABLES
+        from hub.alembic.versions.ff69cbd3e507_measured_learning import _TABLES as _LEARNING_TABLES
         from hub.models import Base
 
         protected = {
@@ -612,6 +613,7 @@ class TestSchemaSafety:
             *_CAPABILITY_TABLES,
             *_POLICY_TABLES,
             *_ATTESTED_KEY_TABLES,
+            *_LEARNING_TABLES,
             "traces",
         }
         exempt = {

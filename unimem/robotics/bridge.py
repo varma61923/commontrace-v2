@@ -48,13 +48,29 @@ class HTTPGateway:
         self.endpoint, self._token = endpoint.rstrip("/"), token
         self.timeout = fp.number(timeout, 0.1, 60)
 
+    def get(self, path: str, context: list[str]) -> dict[str, Any]:
+        from urllib.parse import urlencode
+
+        if path not in ("/v1/learning/capabilities", "/v1/learning/status"):
+            raise ValueError("unknown robot read operation")
+        return self._request(path + "?" + urlencode({"context": context}, doseq=True), None)
+
     def post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
-        if path not in ("/v1/recall", "/v1/outcome"):
+        if path not in (
+            "/v1/recall",
+            "/v1/outcome",
+            "/v1/learning/assign",
+            "/v1/learning/delivery",
+            "/v1/learning/outcome",
+        ):
             raise ValueError("robot bridge permits only recall and outcome gateway operations")
+        return self._request(path, body)
+
+    def _request(self, path: str, body: dict[str, Any] | None) -> dict[str, Any]:
         req = Request(
             self.endpoint + path,
-            fp.wire(body),
-            method="POST",
+            None if body is None else fp.wire(body),
+            method="GET" if body is None else "POST",
             headers={"Authorization": "Bearer " + self._token, "Content-Type": "application/json"},
         )
         try:
@@ -74,6 +90,8 @@ class HTTPGateway:
                 raise ConnectionError("robot gateway request failed; outcome remains queued for retry") from None
             finally:
                 exc.close()
+        except GatewayRefused:
+            raise
         except Exception:
             raise ConnectionError("robot gateway request failed; outcome remains queued for retry") from None
 
@@ -84,6 +102,123 @@ def _error_code(exc: HTTPError) -> str:
         return fp.text(str(error.get("code", "")), "gateway error code", 64) if isinstance(error, dict) else ""
     except Exception:
         return ""
+
+
+class RobotLearningClient:
+    """Explicit assignment/delivery receipts; outcome replay retains the experiment identity."""
+
+    def __init__(self, bridge: "RobotBridge") -> None:
+        self._bridge = bridge
+        self._assignments: dict[str, dict] = {}
+        self._capabilities: dict | None = None
+
+    def _get(self, path: str, context: list[str]) -> dict:
+        read = getattr(self._bridge.transport, "get", None)
+        if not callable(read):
+            raise RuntimeError("robot transport does not support learning capability negotiation")
+        return read(path, context)
+
+    def capabilities(self) -> dict:
+        from unimem.client import learning_capabilities_reply
+
+        self._capabilities = learning_capabilities_reply(
+            self._get("/v1/learning/capabilities", ["agent:" + self._bridge.robot])
+        )
+        return self._capabilities
+
+    def _call(self, operation: str, body: dict) -> dict:
+        from unimem.client import learning_reply
+
+        if operation not in self.capabilities().get("operations", []):
+            raise RuntimeError(f"peer does not support learning {operation}")
+        body = {**body, "context": ["agent:" + self._bridge.robot]}
+        if operation == "status":
+            return learning_reply(self._get("/v1/learning/status", body["context"]))
+        return learning_reply(self._bridge.transport.post("/v1/learning/" + operation, body))
+
+    def status(self) -> dict:
+        return self._call("status", {})
+
+    def assign(self, occasion_id: str, memory_ids: list[str], *, experiment_id: str | None = None) -> dict:
+        if occasion_id not in self._assignments and len(self._assignments) >= 128:
+            raise ValueError("too many unfinished robot learning assignments")
+        body = {"occasion_id": occasion_id, "memory_ids": memory_ids, "task_context": self._bridge.context}
+        if experiment_id is not None:
+            body["experiment_id"] = experiment_id
+        result = self._call("assign", body)
+        if not isinstance(result.get("experiment_id"), str) or not result["experiment_id"]:
+            raise ValueError("learning assignment must pin an experiment_id")
+        self._assignments[occasion_id] = json.loads(fp.wire(result))
+        # Assignment alone is not evidence that the planner received any memory.
+        self._bridge._recalls[occasion_id] = {"deliver": []}
+        return result
+
+    def _pinned(self, occasion_id: str, experiment_id: str | None) -> dict:
+        pinned = self._assignments.get(occasion_id, {}).get("experiment_id")
+        if pinned and experiment_id and pinned != experiment_id:
+            raise ValueError("experiment conflicts with pinned robot assignment")
+        experiment = pinned or experiment_id
+        if not experiment:
+            raise ValueError("learning requires a pinned experiment_id")
+        return {"occasion_id": occasion_id, "experiment_id": experiment}
+
+    def delivery(self, occasion_id: str, memory_ids: list[str], *, experiment_id: str | None = None) -> dict:
+        result = self._call("delivery", {**self._pinned(occasion_id, experiment_id), "memory_ids": memory_ids})
+        assignment = self._assignments.get(occasion_id, {})
+        self._bridge._recalls[occasion_id] = {
+            "deliver": [row for row in assignment.get("memories", []) if row.get("id") in memory_ids]
+        }
+        return result
+
+    def outcome(
+        self,
+        occasion_id: str,
+        succeeded: bool | None = None,
+        *,
+        reward: float | None = None,
+        metrics: dict[str, float] | None = None,
+        experiment_id: str | None = None,
+    ) -> dict:
+        body = self._pinned(occasion_id, experiment_id)
+        if sum(value is not None for value in (succeeded, reward, metrics)) != 1:
+            raise ValueError("learning outcome requires exactly one outcome")
+        if succeeded is not None:
+            if type(succeeded) is not bool:
+                raise ValueError("succeeded must be boolean")
+            body["succeeded"] = succeeded
+        elif reward is not None:
+            body["reward"] = fp.number(reward, 0, 1, "reward")
+        else:
+            if not isinstance(metrics, dict) or not 1 <= len(metrics) <= 64:
+                raise ValueError("metrics must contain 1 to 64 finite values")
+            body["metrics"] = {
+                fp.text(k, "metric", 64): fp.number(v, -1e12, 1e12, "metric") for k, v in metrics.items()
+            }
+        body["context"] = ["agent:" + self._bridge.robot]
+        queue = self._bridge.queue
+        path = "/v1/learning/outcome"
+        if queue is not None:
+            queue.enqueue(body, path=path)
+        try:
+            from unimem.client import learning_reply
+
+            capabilities = self._capabilities or self.capabilities()
+            if "outcome" not in capabilities.get("operations", []):
+                raise RuntimeError("peer does not support learning outcome")
+            result = learning_reply(self._bridge.transport.post(path, body))
+        except ConnectionError:
+            if queue is None:
+                raise
+            return {"queued": True, **body}
+        except GatewayRefused as exc:
+            if queue is not None:
+                queue.reject(occasion_id, exc.status, exc.code)
+            raise
+        if queue is not None:
+            queue.acknowledge(occasion_id)
+        self._assignments.pop(occasion_id, None)
+        self._bridge._recalls.pop(occasion_id, None)
+        return result
 
 
 class RobotBridge:
@@ -110,6 +245,7 @@ class RobotBridge:
         self.queue = outcome_queue
         self._prewarm = prewarm
         self._recalls: dict[str, dict[str, Any]] = {}
+        self.learning = RobotLearningClient(self)
         if prewarm is not None:
             prewarm("robot-boot")
 

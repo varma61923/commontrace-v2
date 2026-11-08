@@ -1,3 +1,4 @@
+import { LearningClient } from "./learning.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -177,6 +178,7 @@ export function clampRetryAfter(retryAfter?: unknown): number {
  * wants the Python CLI for that specific job.
  */
 export class HubClient {
+  readonly learning = new LearningClient((operation, body) => this.call("learning_" + operation, body));
   private readonly caller: ToolCaller;
   private readonly maxAttempts: number;
   private closed = false;

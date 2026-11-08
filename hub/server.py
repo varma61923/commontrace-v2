@@ -31,7 +31,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp
 
-from hub import auth, collab, commons, crud, observability, plans, scheduler, scopes
+from hub import auth, collab, commons, crud, learning, observability, plans, scheduler, scopes
 from hub.abuse import (
     RateLimited,
     RateLimiterBackend,
@@ -217,6 +217,7 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
 
         org_token = auth.current_org_id.set(authenticated.org_id)
         actor_token = auth.current_actor.set(authenticated.key_prefix)
+        key_token = auth.current_key_id.set(authenticated.key_id or None)
         scope_token = auth.current_scopes.set(authenticated.scopes)
         try:
             if self._capability_config is not None:
@@ -231,6 +232,7 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
         finally:
             auth.current_org_id.reset(org_token)
             auth.current_actor.reset(actor_token)
+            auth.current_key_id.reset(key_token)
             auth.current_scopes.reset(scope_token)
 
     def _unauthorized(self, payload: dict) -> JSONResponse:
@@ -1623,6 +1625,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         """
         return await run_batch(delete_trace, ids, field="id")
 
+    learning.register_mcp(scoped_tool, session_factory)
     setattr(mcp, "unimem_tool_scopes", dict(tool_scopes))
     return mcp
 
@@ -1785,7 +1788,7 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
     async def _lifespan_with_scheduler(app):
         async with _lifespan_with_rls_check(app):
             stop_event = asyncio.Event()
-            tasks = []
+            tasks = [asyncio.create_task(learning.run_worker(session_factory, stop_event=stop_event))]
             if config.alert_scheduler_enabled:
                 tasks.append(
                     asyncio.create_task(

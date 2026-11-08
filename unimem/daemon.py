@@ -224,6 +224,12 @@ def _invoke_hooks(root: str) -> dict:
     except Exception as exc:  # noqa: BLE001
         results["anticipate"] = f"error: {exc}"
     try:
+        from unimem import learning
+
+        results["learning"] = learning.run_pending(root)
+    except Exception as exc:  # noqa: BLE001 - durable evidence remains pending for retry
+        results["learning"] = f"error: {exc}"
+    try:
         from unimem import jobs
 
         if os.path.exists(jobs.db_path(root)):

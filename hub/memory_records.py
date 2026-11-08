@@ -338,30 +338,41 @@ class PostgresJournal:
                     decode(MemoryRecord(**row.record))
         return _HostedEvidenceResolver("", facts), invalid
 
-    async def _cap_allowed_ids(self, session, context, reference, kinds):
+    async def _cap_allowed_ids(self, session, context, reference, kinds, *, identities=None):
         from hub import policies
         from unimem import frontier_protocol as fp
         from unimem.capability_io import runtime_descriptor
 
         policy = await policies.active(session, self.org_id)
 
-        rows = (
-            (
-                await session.execute(
-                    select(MemoryRecordProjection)
-                    .where(
-                        MemoryRecordProjection.org_id == self.org_id,
-                        delegation.record_predicate(),
-                        MemoryRecordProjection.scope.op("<@")(context),
-                        MemoryRecordProjection.record.contains({"status": "active", "is_latest": True}),
-                    )
-                    .order_by(MemoryRecordProjection.id)
-                    .limit(2001)
-                )
-            )
-            .scalars()
-            .all()
+        base = select(MemoryRecordProjection).where(
+            MemoryRecordProjection.org_id == self.org_id,
+            delegation.record_predicate(),
+            MemoryRecordProjection.scope.op("<@")(context),
+            MemoryRecordProjection.record.contains({"status": "active", "is_latest": True}),
         )
+        if identities is None:
+            rows = list((await session.execute(base.order_by(MemoryRecordProjection.id).limit(2001))).scalars().all())
+        else:
+            # Resolve only the requested grounding closure for direct source lookup.
+            rows, seen, pending = [], set(), set(identities)
+            for _depth in range(65):
+                pending -= seen
+                if not pending:
+                    break
+                seen.update(pending)
+                fp.count(len(seen), 0, 2000, "UniMem scoped Hub grounding closure")
+                batch = list(
+                    (await session.execute(base.where(MemoryRecordProjection.id.in_(sorted(pending))))).scalars().all()
+                )
+                rows.extend(batch)
+                pending = set()
+                for row in batch:
+                    relations = row.record.get("relations", {})
+                    pending.update(relations.get("derives", []))
+                    pending.update(relations.get("caused_by", []))
+            else:
+                raise PermissionError("memory grounding depth exceeds the admission budget")
         fp.count(len(rows), 0, 2000, "UniMem scoped Hub capability namespace")
         records = {row.id: MemoryRecord(**row.record) for row in rows}
         grounding = GroundingState()

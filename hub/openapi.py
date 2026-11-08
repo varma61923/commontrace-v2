@@ -884,6 +884,7 @@ _TAGS = [
     ("Evidence", "UniMem signed aggregate contributions and model-based pooled estimates."),
     ("Incidents", "Legal holds, frozen evidence and signed regulator-evidence exports."),
     ("Memory", "Versioned, tenant-scoped memory records and erasure."),
+    ("Learning", "Measured, principal-scoped adaptive memory selection."),
     (
         "MCP",
         "The MCP streamable-HTTP endpoint (path HUB_STREAMABLE_HTTP_PATH, default /mcp). Tools are "
@@ -2327,6 +2328,37 @@ def _operations() -> dict[tuple[str, str], dict]:
             "413": _error("Payload exceeds 100 kB."),
         },
     )
+    from unimem import learning_contract
+
+    for operation in learning_contract.OPERATIONS:
+        method = "GET" if operation in ("capabilities", "status") else "POST"
+        body_schema = learning_contract.request_schema(operation)
+        utility_schema = body_schema["properties"].get("utility")
+        if utility_schema is not None and utility_schema.pop("nullable", False):
+            body_schema["properties"]["utility"] = {"anyOf": [utility_schema, {"type": "null"}]}
+        body_schema["properties"]["context"] = {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1, "maxLength": 256},
+            "maxItems": 128,
+        }
+        ops[(method, "/v1/learning/" + operation)] = _api(
+            "learning" + operation.title(),
+            "Learning",
+            "Measured learning: " + operation,
+            body=_json_body(body_schema) if method == "POST" else None,
+            parameters=(
+                (
+                    (_query("experiment_id", _string(), "Pinned experiment identifier."),)
+                    if operation == "status"
+                    else ()
+                )
+                + (_query("context", _array(_string()), "Requested context labels within authenticated scope."),)
+            )
+            if method == "GET"
+            else (),
+            ok={"200": _json("Versioned learning response.", _free_object("unimem.learning.v1"))},
+            errors=("400", "401", "403", "404", "409", "429", "503"),
+        )
     return ops
 
 

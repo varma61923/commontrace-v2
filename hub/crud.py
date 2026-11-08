@@ -1911,6 +1911,8 @@ async def holdout_assign(
                         "injected": d["injected"],
                         "salt": org.holdout_salt,
                         "trace_revision": d["trace_revision"],
+                        "assignment_rate": org.holdout_rate,
+                        "assignment_context": {},
                     }
                     for d in decisions
                 ]
@@ -2161,7 +2163,6 @@ async def _attach_evidence(session: AsyncSession, org_id: str, result: dict) -> 
 
 
 async def holdout_assignments(session: AsyncSession, org_id: str) -> list:
-    org = await session.get(Organization, org_id)
     rows = (
         await session.execute(
             select(
@@ -2173,10 +2174,12 @@ async def holdout_assignments(session: AsyncSession, org_id: str) -> list:
                 HoldoutObservation.created_at,
                 HoldoutObservation.resolved_at,
                 HoldoutObservation.trace_revision,
+                HoldoutObservation.assignment_rate,
             )
             .where(
                 HoldoutObservation.org_id == org_id,
-                HoldoutObservation.salt == (org.holdout_salt if org else ""),
+                HoldoutObservation.salt
+                == select(Organization.holdout_salt).where(Organization.id == org_id).scalar_subquery(),
             )
             .order_by(HoldoutObservation.created_at, HoldoutObservation.id)
         )
@@ -2187,7 +2190,7 @@ async def holdout_assignments(session: AsyncSession, org_id: str) -> list:
             lesson=r.trace_id,
             occasion_id=r.occasion_id,
             injected=r.injected,
-            rate=(org.holdout_rate if org else experiment.DEFAULT_HOLDOUT_RATE),
+            rate=r.assignment_rate,
             salt=r.salt,
             succeeded=r.succeeded,
             at=r.created_at,
@@ -2195,6 +2198,7 @@ async def holdout_assignments(session: AsyncSession, org_id: str) -> list:
             revision=r.trace_revision,
         )
         for r in rows
+        if r.assignment_rate is not None
     ]
     return assignments
 
@@ -2254,7 +2258,19 @@ async def causal_effects(session: AsyncSession, org_id: str, alpha: float = 0.05
             )
         ).all()
     }
+    unknown_metadata = (
+        await session.execute(
+            select(func.count())
+            .select_from(HoldoutObservation)
+            .where(
+                HoldoutObservation.org_id == org_id,
+                HoldoutObservation.salt == (org.holdout_salt if org else ""),
+                HoldoutObservation.assignment_rate.is_(None),
+            )
+        )
+    ).scalar_one()
     return {
+        "legacy_unknown_assignments": unknown_metadata,
         "experiment_running": bool(org and org.holdout_rate > 0 and org.holdout_salt),
         "holdout_rate": org.holdout_rate if org else 0.0,
         "n_observations": len(observations),

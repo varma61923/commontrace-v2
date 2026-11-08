@@ -178,7 +178,7 @@ def main() -> int:
         "--api",
         choices=("memory", "gateway", "hub"),
         default="memory",
-        help="Generate the memory subset (default), all gateway routes, or the Hub REST API",
+        help="Generate the memory and learning subset (default), all gateway routes, or the Hub REST API",
     )
     parser.add_argument("--package-version", help="release version for generated package manifests (SemVer)")
     args = parser.parse_args()

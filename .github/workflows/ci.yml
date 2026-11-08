@@ -150,8 +150,11 @@ jobs:
       - name: Lint with ruff
         run: make lint
 
-      - name: Standard OpenAPI memory contract stays current
+      - name: Standard OpenAPI memory and learning contracts stay current
         run: python scripts/export_openapi.py --check
+
+      - name: Chronological measured learning regression
+        run: python -m benchmarks.learning_stream --check --out /tmp/learning-results.json
 
       - name: Hub server image allowlist stays in sync with hub/'s imports
         run: python -m pytest hub/tests/test_image_contents.py -q --noconftest

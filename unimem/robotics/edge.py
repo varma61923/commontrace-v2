@@ -172,7 +172,14 @@ class OutcomeQueue:
                     {"kind": "reject", "occasion_id": occasion, "status": int(status), "code": str(code)},
                 )
 
-    def enqueue(self, body: dict[str, Any]) -> None:
+    def enqueue(self, body: dict[str, Any], *, path: str = "/v1/outcome") -> None:
+        if path not in {"/v1/outcome", "/v1/learning/outcome"}:
+            raise ValueError("unsupported queued outcome endpoint")
+        if path == "/v1/learning/outcome":
+            experiment = body.get("experiment_id")
+            if not isinstance(experiment, str):
+                raise ValueError("learning outcome requires a pinned experiment_id")
+            fp.text(experiment, "pinned experiment_id", 256)
         identity = fp.text(body["occasion_id"])
         kinds = [k for k in ("succeeded", "reward", "metrics") if k in body]
         binary = kinds == ["succeeded"] and type(body["succeeded"]) is bool
@@ -184,11 +191,15 @@ class OutcomeQueue:
             rows = fp.journal(self.root, "edge-outcomes.jsonl")
             prior = next((r for r in rows if r.get("kind") == "enqueue" and r["occasion_id"] == identity), None)
             if prior:
-                if prior["body"] != body:
+                if prior["body"] != body or prior.get("path", "/v1/outcome") != path:
                     raise ValueError("conflicting queued outcome")
                 return
             fp.count(len(self.pending()), 0, 1999, "pending outcomes")
-            fp.append(self.root, "edge-outcomes.jsonl", {"kind": "enqueue", "occasion_id": identity, "body": body})
+            fp.append(
+                self.root,
+                "edge-outcomes.jsonl",
+                {"kind": "enqueue", "occasion_id": identity, "body": body, "path": path},
+            )
 
     def acknowledge(self, occasion: str) -> None:
         fp.text(occasion)
@@ -209,9 +220,23 @@ class OutcomeQueue:
         from unimem.robotics.bridge import GatewayRefused
 
         sent = 0
-        for body in self.pending():
+        # Derive bodies and routes from one snapshot. Concurrent producers may
+        # append after this point; they are replayed by the next flush.
+        with _jsonl.locked(fp.filename(self.root, "edge-outcomes.jsonl")):
+            rows = fp.journal(self.root, "edge-outcomes.jsonl")
+            settled = {row["occasion_id"] for row in rows if row.get("kind") in {"ack", "reject"}}
+            entries = [row for row in rows if row.get("kind") == "enqueue" and row["occasion_id"] not in settled]
+        for entry in entries:
+            body = entry["body"]
+            path = entry.get("path", "/v1/outcome")
+            if path not in {"/v1/outcome", "/v1/learning/outcome"}:
+                raise ValueError("unsupported queued outcome endpoint")
             try:
-                post("/v1/outcome", body)
+                reply = post(path, body)
+                if path == "/v1/learning/outcome":
+                    from unimem.client import learning_reply
+
+                    learning_reply(reply)
             except GatewayRefused as exc:
                 self.reject(body["occasion_id"], exc.status, exc.code)
                 continue

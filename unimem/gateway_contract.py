@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from unimem.learning_contract import OPERATIONS as LEARNING_OPERATIONS
+
 REF = "#/components/schemas/"
 
 
@@ -1510,6 +1512,34 @@ EXTRA_PATHS: dict[str, dict] = {
 
 def memory_operation(operation: str) -> Operation:
     return Operation("memory_" + operation.replace("-", "_"), "Memory")
+
+
+def learning_operation(operation: str, method: str) -> Operation:
+    from unimem.learning_contract import request_schema
+
+    request = request_schema(operation)
+    request["properties"]["context"] = array(string(maxLength=256), maxItems=128)
+    query: tuple[tuple[str, dict, bool, str], ...] = (
+        ("context", array(string()), False, "Owner scope labels; agent credentials pin their scope."),
+    )
+    if operation == "status":
+        query += (("experiment_id", string(), False, "Inspect an experiment in the authenticated scope."),)
+    return Operation(
+        "learning_" + operation,
+        "Learning",
+        request=request if method == "POST" else None,
+        response=ANY_OBJECT,
+        errors=(400, 403, 404, 409, 413, 429),
+        query=query if method == "GET" else (),
+        description="Versioned scoped learning; assignment and delivery are distinct evidence.",
+    )
+
+
+for _learning_operation in LEARNING_OPERATIONS:
+    _learning_method = "GET" if _learning_operation in ("capabilities", "status") else "POST"
+    OPERATIONS[(_learning_method, "/v1/learning/" + _learning_operation)] = learning_operation(
+        _learning_operation, _learning_method
+    )
 
 
 # Inline model names derived from operationId can collide with the named memory

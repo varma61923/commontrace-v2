@@ -592,6 +592,117 @@ def build_server(root: str, *, allow_approval: bool = True):
 
     setattr(mcp, "tool", _traced_tool)
 
+    def _learning_call(operation: str, payload: dict, context: list[str] | None = None) -> dict:
+        from unimem import learning
+        from unimem.configuration import using
+
+        try:
+            with using(root):
+                return learning.operate(root, operation, payload, context=context or [])
+        except PermissionError as exc:
+            return _err(str(exc), code="forbidden")
+        except (ValueError, TypeError) as exc:
+            return _err(str(exc), code=getattr(exc, "code", "invalid_learning_request"))
+
+    @mcp.tool()
+    def learning_capabilities() -> dict:
+        """Discover the measured-learning schema, modes, outcome types and operations before starting an experiment."""
+        return _learning_call("capabilities", {})
+
+    @mcp.tool()
+    def learning_status(experiment_id: str | None = None, context: list[str] | None = None) -> dict:
+        """Inspect the scoped experiment, unresolved outcomes, policy decisions and durable worker state."""
+        return _learning_call("status", {"experiment_id": experiment_id} if experiment_id is not None else {}, context)
+
+    @mcp.tool()
+    def learning_assign(
+        occasion_id: str,
+        memory_ids: list[str],
+        task_context: str = "",
+        experiment_id: str | None = None,
+        context: list[str] | None = None,
+    ) -> dict:
+        """Freeze scoped source revisions and randomized choices before a task; do not deliver withheld IDs."""
+        payload = {"occasion_id": occasion_id, "memory_ids": memory_ids, "task_context": task_context}
+        if experiment_id is not None:
+            payload["experiment_id"] = experiment_id
+        return _learning_call("assign", payload, context)
+
+    @mcp.tool()
+    def learning_delivery(
+        occasion_id: str,
+        memory_ids: list[str],
+        experiment_id: str | None = None,
+        context: list[str] | None = None,
+    ) -> dict:
+        """Acknowledge the exact memory IDs serialized to the task, including an empty control-arm receipt."""
+        payload = {"occasion_id": occasion_id, "memory_ids": memory_ids}
+        if experiment_id is not None:
+            payload["experiment_id"] = experiment_id
+        return _learning_call("delivery", payload, context)
+
+    @mcp.tool()
+    def learning_outcome(
+        occasion_id: str,
+        succeeded: bool | None = None,
+        reward: float | None = None,
+        metrics: dict | None = None,
+        experiment_id: str | None = None,
+        context: list[str] | None = None,
+    ) -> dict:
+        """Record exactly one final success, reward or utility-metrics outcome, idempotently."""
+        payload: dict = {"occasion_id": occasion_id}
+        for key, value in (
+            ("succeeded", succeeded),
+            ("reward", reward),
+            ("metrics", metrics),
+            ("experiment_id", experiment_id),
+        ):
+            if value is not None:
+                payload[key] = value
+        return _learning_call("outcome", payload, context)
+
+    if allow_approval:
+
+        @mcp.tool()
+        def learning_configure(
+            mode: str,
+            holdout_rate: float = 0.5,
+            min_arm: int = 10,
+            utility: dict | None = None,
+            context: list[str] | None = None,
+        ) -> dict:
+            """Owner operation: explicitly enable off, observe or adaptive learning for one scope."""
+            payload = {"mode": mode, "holdout_rate": holdout_rate, "min_arm": min_arm}
+            if utility is not None:
+                payload["utility"] = utility
+            return _learning_call("configure", payload, context)
+
+        @mcp.tool()
+        def learning_run(
+            limit: int = 10000, experiment_id: str | None = None, context: list[str] | None = None
+        ) -> dict:
+            """Owner operation: run a bounded, resumable evidence evaluation; provider credentials are unnecessary."""
+            payload: dict = {"limit": limit}
+            if experiment_id is not None:
+                payload["experiment_id"] = experiment_id
+            return _learning_call("run", payload, context)
+
+        @mcp.tool()
+        def learning_rollback(
+            reason: str,
+            decision_revision: int | None = None,
+            experiment_id: str | None = None,
+            context: list[str] | None = None,
+        ) -> dict:
+            """Owner operation: restore a prior selection policy as a new revision, retaining all evidence."""
+            payload: dict = {"reason": reason}
+            if decision_revision is not None:
+                payload["decision_revision"] = decision_revision
+            if experiment_id is not None:
+                payload["experiment_id"] = experiment_id
+            return _learning_call("rollback", payload, context)
+
     @mcp.tool()
     async def retrieve(
         task: str,

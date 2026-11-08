@@ -135,6 +135,8 @@ hub/.env
 !unimem/interactions.py
 !unimem/interference.py
 !unimem/jobs.py
+!unimem/learning.py
+!unimem/learning_contract.py
 !unimem/kg_similarity.py
 !unimem/knowledge_pages.py
 !unimem/lesson_admission.py

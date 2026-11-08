@@ -39,3 +39,6 @@ export type {
   MastraProcessOutputArgs,
   MastraRequestContext,
 } from "./memory.js";
+
+export { LearningClient, LEARNING_SCHEMA } from "./learning.js";
+export type { LearningReply, LearningCapabilities, LearningOperation, LearningOutcome } from "./learning.js";

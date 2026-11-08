@@ -17,13 +17,22 @@ impl MemoryClient {
         let http=Http::builder().timeout(Duration::from_secs(30)).redirect(Policy::none()).build()?;
         Ok(Self {base:base.trim_end_matches('/').into(),token:token.into(),context,http})
     }
-    pub fn call(&self,operation:&str,mut data:Value)->Result<Value>{
+    pub fn call(&self,operation:&str,data:Value)->Result<Value>{
         if !matches!(operation,"add"|"batch"|"search"|"profile"|"reflect"|"outcome"|"check-action"|"propose"|"turn"|"record-put"|"record-search"|"record-forget"|"record-reap-due") {
             return Err("Unknown memory operation".into());
         }
+        self.request("memory",operation,data)
+    }
+    fn request(&self,category:&str,operation:&str,mut data:Value)->Result<Value>{
         let map=data.as_object_mut().ok_or("Request must be a JSON object")?;
         map.insert("context".into(),json!(self.context));
-        let mut request=self.http.post(format!("{}/v1/memory/{operation}",self.base)).json(&data);
+        let endpoint=format!("{}/v1/{category}/{operation}",self.base);
+        let mut request=if category=="learning" && matches!(operation,"capabilities"|"status") {
+            let query:Vec<(&str,&str)>=self.context.iter().map(|label|("context",label.as_str())).collect();
+            let mut request=self.http.get(endpoint).query(&query);
+            if let Some(experiment)=data.get("experiment_id") {request=request.query(&[("experiment_id",experiment.as_str().ok_or("Experiment must be a string")?)]);}
+            request
+        } else {self.http.post(endpoint).json(&data)};
         if !self.token.is_empty(){request=request.bearer_auth(&self.token);}
         let response=request.send()?;
         if !response.status().is_success(){return Err(format!("Gateway HTTP {}",response.status()).into());}
@@ -76,6 +85,50 @@ impl MemoryClient {
         body.insert("session_id".into(),json!(session));
         body.insert("query".into(),json!(query));
         self.call("turn",options)
+    }
+}
+pub const LEARNING_SCHEMA:&str="unimem.learning.v1";
+pub struct LearningClient<'a> { client:&'a MemoryClient }
+impl MemoryClient { pub fn learning(&self)->LearningClient<'_>{LearningClient{client:self}} }
+impl LearningClient<'_> {
+    pub fn capabilities(&self)->Result<Value>{ self.checked("capabilities",json!({})) }
+    fn checked(&self,operation:&str,body:Value)->Result<Value>{
+        let value=self.client.request("learning",operation,body)?;
+        if value["schema"]!=LEARNING_SCHEMA{return Err("Peer does not support unimem.learning.v1".into());}
+        Ok(value)
+    }
+    pub fn call(&self,operation:&str,body:Value)->Result<Value>{
+        if operation=="capabilities"{return self.capabilities();}
+        if !matches!(operation,"configure"|"assign"|"delivery"|"outcome"|"run"|"status"|"rollback"){return Err("Unknown learning operation".into());}
+        let capabilities=self.capabilities()?;
+        if !capabilities["operations"].as_array().is_some_and(|ops|ops.iter().any(|op|op==operation)) {
+            return Err("Unsupported learning operation".into());
+        }
+        self.checked(operation,body)
+    }
+    pub fn configure(&self,mode:&str,mut options:Value)->Result<Value>{
+        options.as_object_mut().ok_or("Options must be an object")?.insert("mode".into(),json!(mode));
+        self.call("configure",options)
+    }
+    pub fn assign(&self,occasion:&str,ids:&[String],mut options:Value)->Result<Value>{
+        let body=options.as_object_mut().ok_or("Options must be an object")?;
+        body.insert("occasion_id".into(),json!(occasion));body.insert("memory_ids".into(),json!(ids));
+        self.call("assign",options)
+    }
+    pub fn delivery(&self,occasion:&str,ids:&[String],experiment:&str)->Result<Value>{
+        self.call("delivery",json!({"occasion_id":occasion,"memory_ids":ids,"experiment_id":experiment}))
+    }
+    pub fn outcome(&self,occasion:&str,mut outcome:Value,experiment:&str)->Result<Value>{
+        let body=outcome.as_object_mut().ok_or("Outcome must be an object")?;
+        if body.len()!=1 || !body.keys().all(|k|matches!(k.as_str(),"succeeded"|"reward"|"metrics")){return Err("Exactly one learning outcome required".into());}
+        body.insert("occasion_id".into(),json!(occasion));body.insert("experiment_id".into(),json!(experiment));
+        self.call("outcome",outcome)
+    }
+    pub fn run(&self,options:Value)->Result<Value>{self.call("run",options)}
+    pub fn status(&self)->Result<Value>{self.call("status",json!({}))}
+    pub fn status_experiment(&self,experiment:&str)->Result<Value>{self.call("status",json!({"experiment_id":experiment}))}
+    pub fn rollback(&self,reason:&str,mut options:Value)->Result<Value>{
+        options.as_object_mut().ok_or("Options must be an object")?.insert("reason".into(),json!(reason));self.call("rollback",options)
     }
 }
 #[cfg(test)] mod tests {

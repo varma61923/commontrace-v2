@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode
 /** Kotlin facade; the same pinned context, redirect policy and JSON contracts. */
 class KotlinMemoryClient(url: String, token: String = "", agent: String = "", context: List<String> = emptyList()) {
     private val memory = MemoryClient(url, token, agent, context)
+    val learning: MemoryClient.LearningClient get() = memory.learning
     fun add(text: String): JsonNode = memory.add(text)
     fun search(query: String): JsonNode = memory.search(query)
     fun profile(query: String = ""): JsonNode = memory.profile(query)

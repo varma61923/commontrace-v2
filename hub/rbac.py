@@ -72,6 +72,14 @@ ROLE_SCOPES: dict[str, tuple[str, ...]] = {
 }
 
 TOOL_CAPABILITY: dict[str, str] = {
+    "learning_capabilities": CAP_VIEW,
+    "learning_status": CAP_VIEW,
+    "learning_assign": CAP_VIEW,
+    "learning_delivery": CAP_ANALYZE,
+    "learning_outcome": CAP_ANALYZE,
+    "learning_configure": CAP_MANAGE_USERS,
+    "learning_run": CAP_MANAGE_USERS,
+    "learning_rollback": CAP_MANAGE_USERS,
     "get_traces_batch": CAP_VIEW,
     "contribute_traces_batch": CAP_CURATE,
     "delete_traces_batch": CAP_SECURITY,

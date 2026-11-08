@@ -21,6 +21,14 @@ TARGETS = [
 ]
 
 _HUB_TOOLS = [
+    "learning_capabilities",
+    "learning_configure",
+    "learning_assign",
+    "learning_delivery",
+    "learning_outcome",
+    "learning_run",
+    "learning_status",
+    "learning_rollback",
     "get_traces_batch",
     "contribute_traces_batch",
     "delete_traces_batch",
@@ -86,6 +94,16 @@ lesson that helps from one that merely fires on hard tasks.
 
 Both tiers support it, and in both the agent's job is the same: honour
 what is withheld, and report how the task went.
+
+**Versioned learning.** When the application supplies canonical candidate IDs,
+`learning_capabilities` discovers `unimem.learning.v1`. Use `learning_assign`
+before reading those source bodies; render only its selected `memories`,
+acknowledge the IDs actually delivered with `learning_delivery` (including an
+empty control receipt), then report exactly one success, reward or metrics
+outcome with `learning_outcome`. Pin the assignment's `experiment_id` on delayed
+receipts and outcomes. Configuration and policy administration belong to the
+owner. Use one assignment protocol per occasion; reading withheld content via
+another search would invalidate the comparison.
 
 **Hub tier.** Pass your own `occasion_id` to `search_traces`. If an
 operator has started an experiment, the response carries a `holdout`

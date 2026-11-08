@@ -433,6 +433,9 @@ def add_rest_routes(
     if not hasattr(app.state, "memory_projection_factory"):
         app.state.memory_projection_factory = ProjectionFactory(session_factory, config.database_url)
     add_memory_routes(app, session_factory, authenticate=_authenticate, require_scope=_require_scope)
+    from hub.learning import add_routes as add_learning_routes
+
+    add_learning_routes(app, session_factory, authenticate=_authenticate, require_scope=_require_scope)
     add_market_routes(app, session_factory, config=config, authenticate=_authenticate, require_scope=_require_scope)
     from hub import transparency
 

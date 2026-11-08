@@ -572,6 +572,15 @@ class Gateway:
                 lambda body, query, op=operation: self._memory_operation(op, body),
                 summary="Scoped memory " + operation + ".",
             )
+        from unimem.learning_contract import OPERATIONS as learning_operations
+
+        for operation in learning_operations:
+            self._route(
+                "GET" if operation in ("capabilities", "status") else "POST",
+                "/v1/learning/" + operation,
+                lambda body, query, op=operation: self._learning_operation(op, body, query),
+                summary="Measured learning " + operation + ".",
+            )
         self._route("GET", "/v1/palace", self._palace, summary="Overview, attention and memory suggestions.")
         for operation in ("directive", "question", "refresh", "reject-proposal", "review-foresight", "skill-review"):
             self._route(
@@ -920,7 +929,11 @@ class Gateway:
             path = split.path
             if not trusted and not self._host_ok(headers):
                 raise ApiError(403, "bad_host", "the Host header is not allowed")
-            if not trusted and method == "POST" and path.startswith(("/v1/agent/", "/v1/memory/", "/v1/control/")):
+            if (
+                not trusted
+                and method == "POST"
+                and path.startswith(("/v1/agent/", "/v1/memory/", "/v1/control/", "/v1/learning/"))
+            ):
                 lowered = {k.lower(): v for k, v in headers.items()}
                 request_origin = lowered.get("origin")
                 host = lowered.get("host", "").lower()
@@ -957,6 +970,7 @@ class Gateway:
             handler, spec = entry
             if self._request_scope() and (
                 path.startswith("/v1/memory/")
+                or path.startswith("/v1/learning/")
                 or path.startswith("/v1/control/")
                 or path.startswith("/v1/agent/")
                 or path == "/v1/palace"
@@ -1012,7 +1026,10 @@ class Gateway:
                         )
                     raise ApiError(401, "unauthorized", "a valid Authorization: Bearer token is required")
                 if principal is not None:
-                    if not (path.startswith("/v1/memory/") or path in ("/v1/agent/plugin", "/v1/agent/heartbeat")):
+                    if not (
+                        path.startswith(("/v1/memory/", "/v1/learning/"))
+                        or path in ("/v1/agent/plugin", "/v1/agent/heartbeat")
+                    ):
                         raise ApiError(403, "agent_scope", "agent credential does not grant this operation")
                     if not principal.get("oauth"):
                         try:
@@ -1039,6 +1056,8 @@ class Gateway:
                 payload.pop("_principal", None)
                 if principal is not None:
                     payload["_principal"] = principal
+            elif principal is not None and path.startswith("/v1/learning/"):
+                payload["_principal"] = principal
             if path == "/v1/stream":
                 payload["_stream_cursor"] = next((v for k, v in headers.items() if k.lower() == "last-event-id"), "")
             from unimem import telemetry
@@ -1356,6 +1375,42 @@ class Gateway:
             return agent_registry.heartbeat(self.root, agent_id)
         except ValueError as exc:
             raise _bad(str(exc)) from exc
+
+    def _learning_operation(self, operation: str, body: dict, query: dict) -> dict:
+        from unimem import learning, memory_authority, memory_control
+
+        principal = body.get("_principal")
+        payload = {key: value for key, value in body.items() if key != "_principal"}
+        if operation in ("capabilities", "status"):
+            if set(query) - ({"context", "experiment_id"} if operation == "status" else {"context"}):
+                raise _bad("learning query contains undocumented fields")
+            payload["context"] = query.get("context", [])
+            if "experiment_id" in query:
+                if len(query["experiment_id"]) != 1:
+                    raise _bad("experiment_id must appear once")
+                payload["experiment_id"] = query["experiment_id"][0]
+        context = principal["scopes"] if principal else payload.get("context", [])
+        if (
+            not isinstance(context, list)
+            or len(context) > 128
+            or any(not isinstance(label, str) or not label or len(label) > 256 for label in context)
+        ):
+            raise _bad("context must contain at most 128 nonempty scope labels of at most 256 characters")
+        if principal:
+            context = [label for label in context if not label.startswith("agent:")] + ["agent:" + principal["id"]]
+        payload.pop("context", None)
+        actor = principal["id"] if principal else "gateway-owner"
+        token = memory_control.REQUIRED_PRINCIPAL_SCOPE.set("agent:" + actor if principal else "")
+        try:
+            with memory_authority.writer(actor, "agent" if principal else "operator"):
+                return learning.operate(self.root, operation, payload, context=context, untrusted=bool(principal))
+        except PermissionError as exc:
+            raise ApiError(403, "forbidden", str(exc)) from exc
+        except (ValueError, TypeError) as exc:
+            status = getattr(exc, "status_code", 400)
+            raise ApiError(status if status in (400, 404, 409) else 400, "learning_refused", str(exc)) from exc
+        finally:
+            memory_control.REQUIRED_PRINCIPAL_SCOPE.reset(token)
 
     def _memory_operation(self, operation: str, body: dict) -> dict:
         from unimem import memory_authority, memory_control, subject_policy, team_io, team_isolation
@@ -3053,7 +3108,12 @@ class Gateway:
         paths_doc: dict = {}
         for (method, path), (_h, spec) in sorted(self.routes.items()):
             memory = path.startswith("/v1/memory/")
-            entry = contract.memory_operation(path.rsplit("/", 1)[1]) if memory else contract.OPERATIONS[(method, path)]
+            if memory:
+                entry = contract.memory_operation(path.rsplit("/", 1)[1])
+            elif path.startswith("/v1/learning/"):
+                entry = contract.learning_operation(path.rsplit("/", 1)[1], method)
+            else:
+                entry = contract.OPERATIONS[(method, path)]
             op: dict = {
                 "operationId": entry.operation_id,
                 "tags": [entry.tag],
@@ -3119,7 +3179,9 @@ class Gateway:
                 "version": API_VERSION,
                 "description": "Did the memory change how the occasion went? Language-neutral.",
             },
-            "tags": [{"name": t} for t in sorted({e.tag for e in contract.OPERATIONS.values()} | {"Memory"})],
+            "tags": [
+                {"name": t} for t in sorted({e.tag for e in contract.OPERATIONS.values()} | {"Memory", "Learning"})
+            ],
             "paths": paths_doc,
             "components": {
                 "securitySchemes": {

@@ -2,13 +2,14 @@
 
 **The memory system for intelligent machines.**
 
-UniMem gives AI agents and robots a complete, governed memory: reusable lessons, facts that know when they were true, a temporal knowledge graph, conversations, core-memory blocks and procedures, recalled through one token budget. Then it does what no retrieval score can: it measures which memories actually improve outcomes, by withholding each one from a small random share of tasks, and acts on the evidence. Harmful memories are withdrawn, proven ones are always delivered, and every change is reviewable and reversible.
+UniMem gives AI agents and robots a complete, governed memory: reusable lessons, facts that know when they were true, a temporal knowledge graph, conversations, core-memory blocks and procedures, recalled through one token budget. Then it does what no retrieval score can: it measures which memories actually improve outcomes, by withholding each one from a small random share of tasks, and acts on the evidence. Harmful memories are withdrawn, proven ones are prioritized, and every change is reviewable and reversible.
 
 - **A complete memory.** Lessons, bitemporal facts (`as_of` / `known_at`), knowledge graph, conversations, memory blocks, procedural memory and knowledge pages. Hybrid lexical and dense retrieval, ten named retrievers including multi-hop graph walks, rerankers, and contradiction detection at write time.
 - **Measured, not assumed.** A randomized holdout per memory and per task gives a real cause-and-effect estimate, with anytime-valid confidence sequences and an integrity audit that refuses to print a number from a broken experiment.
 - **Governed.** Review receipts bound to exact content, tenant scopes on every write, harm withdrawal, preregistered promotion and rollback, transparency logs, and subject erasure.
 - **Fast and local-first.** Pure Python with one dependency (PyYAML), offline, no LLM required. On LoCoMo the gateway delivers the gold evidence for 95.8% of 1,540 questions at 152 ms p50 on CPU ([benchmarks](docs/memory-benchmarks.md)).
 - **Agent- and robot-native.** MCP server with 60+ tools, HTTP gateway, framework middleware, one-command installs for coding agents, and a ROS 2 bridge for physical AI.
+- **One learning protocol.** [Versioned assignments, delivery receipts, graded outcomes and reversible selection policies](docs/learning.md) across local stores, the hosted Hub and agent/robot clients.
 
 ### See the whole loop offline
 
@@ -51,8 +52,6 @@ unimem demo             # offline, no LLM, no API key
 ---
 
 ## Contents
-
-[Platform direction and roadmap](docs/platform-direction.md) describes the proposed universal memory and learning architecture, delivery gates, and customer strategy.
 
 - [See the whole loop offline](#see-the-whole-loop-offline)
 - [Quickstart](#quickstart)
@@ -303,15 +302,7 @@ flowchart LR
     Agent -->|"succeeded?"| Outcomes
 ```
 
-## Roadmaps
-
-The first roadmap (F1–F22) adds authenticated lineage and transparency,
-sequential release evidence, harm-budget admission, incident freezes, protected
-safety memory, utility retention, context economics, scoped recovery/spatial
-memory, valuation, targeting and optional robot/vendor integrations. The second
-roadmap (G1–G30) extends the same governance to skills, writers, optimizer edits,
-human help, team memory and robot fleets, and makes evidence portable across
-trust boundaries.
+## Advanced capabilities
 
 Start with the [feature status and workflow links](#project-status),
 [guarantees and assumptions](docs/guarantees.md), and

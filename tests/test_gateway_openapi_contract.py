@@ -303,5 +303,28 @@ def test_live_responses_match_the_declared_schemas(tmp_path):
         status=403,
     )
 
+    call("GET", "/v1/learning/capabilities")
+    call("POST", "/v1/learning/configure", {"mode": "observe"})
+    call(
+        "POST",
+        "/v1/memory/record-put",
+        {
+            "record": {
+                "id": "learning-source",
+                "kind": "fact",
+                "version": 1,
+                "payload": {"text": "Verify source citations."},
+            }
+        },
+    )
+    assigned = call(
+        "POST", "/v1/learning/assign", {"occasion_id": "learning-contract", "memory_ids": ["learning-source"]}
+    )
+    call("POST", "/v1/learning/delivery", {"occasion_id": "learning-contract", "memory_ids": assigned["inject"]})
+    call("POST", "/v1/learning/outcome", {"occasion_id": "learning-contract", "reward": 0.8})
+    call("POST", "/v1/learning/run", {})
+    call("POST", "/v1/learning/rollback", {"reason": "contract review"})
+    call("GET", "/v1/learning/status")
+
     routes = set(gw.routes)
     assert routes - checked == set(), sorted(routes - checked)

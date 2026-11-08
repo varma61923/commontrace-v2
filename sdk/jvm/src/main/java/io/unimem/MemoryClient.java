@@ -6,6 +6,8 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.io.IOException;
 import java.io.ByteArrayOutputStream;
 import java.net.URI;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -26,6 +28,8 @@ import java.util.concurrent.TimeoutException;
 
 /** The scoped memory API served by both the local binary and HTTP gateway. */
 public final class MemoryClient {
+    public final LearningClient learning = new LearningClient();
+    public LearningClient learning() { return learning; }
     private final URI base;
     private final String token;
     private final List<String> scopes;
@@ -57,11 +61,26 @@ public final class MemoryClient {
     }
     public JsonNode call(String operation, ObjectNode arguments) throws IOException, InterruptedException {
         if (!OPERATIONS.contains(operation)) throw new IllegalArgumentException("Unknown memory operation");
+        return request("memory", operation, arguments);
+    }
+    private JsonNode request(String category, String operation, ObjectNode arguments) throws IOException, InterruptedException {
         ObjectNode body = arguments.deepCopy();
         body.set("context", json.valueToTree(scopes));
-        HttpRequest.Builder request = HttpRequest.newBuilder(URI.create(base + "/v1/memory/" + operation))
-            .timeout(timeout).header("Content-Type", "application/json")
-            .POST(HttpRequest.BodyPublishers.ofString(json.writeValueAsString(body)));
+        boolean read = category.equals("learning") && Set.of("capabilities", "status").contains(operation);
+        String endpoint = base + "/v1/" + category + "/" + operation;
+        if (read) {
+            List<String> query = new ArrayList<>();
+            for (String label : scopes) query.add("context=" + URLEncoder.encode(label, StandardCharsets.UTF_8));
+            if (body.has("experiment_id")) {
+                if (!body.get("experiment_id").isTextual()) throw new IllegalArgumentException("experiment_id must be a string");
+                query.add("experiment_id=" + URLEncoder.encode(body.get("experiment_id").asText(), StandardCharsets.UTF_8));
+            }
+            endpoint += "?" + String.join("&", query);
+        }
+        HttpRequest.Builder request = HttpRequest.newBuilder(URI.create(endpoint))
+            .timeout(timeout).header("Content-Type", "application/json");
+        if (read) request.GET();
+        else request.POST(HttpRequest.BodyPublishers.ofString(json.writeValueAsString(body)));
         if (token != null && !token.isEmpty()) request.header("Authorization", "Bearer " + token);
         // An InputStream body completes send() when only the headers arrive.
         // Await a bounded subscriber instead, and cancel the exchange on deadline/interruption.
@@ -80,6 +99,57 @@ public final class MemoryClient {
         } catch (ExecutionException e) {
             if (e.getCause() instanceof IOException cause) throw cause;
             throw new IOException("Memory request failed", e.getCause());
+        }
+    }
+
+    /** Learning is explicitly negotiated; incompatible peers never receive legacy fallbacks. */
+    public final class LearningClient {
+        private JsonNode checked(String operation, ObjectNode body) throws IOException, InterruptedException {
+            JsonNode value = request("learning", operation, body);
+            if (!"unimem.learning.v1".equals(value.path("schema").asText())) {
+                throw new IOException("Peer does not support unimem.learning.v1");
+            }
+            return value;
+        }
+        public JsonNode capabilities() throws IOException, InterruptedException {
+            return checked("capabilities", json.createObjectNode());
+        }
+        public JsonNode call(String operation, ObjectNode body) throws IOException, InterruptedException {
+            if (operation.equals("capabilities")) return capabilities();
+            if (!Set.of("configure", "assign", "delivery", "outcome", "run", "status", "rollback").contains(operation)) {
+                throw new IllegalArgumentException("Unknown learning operation");
+            }
+            boolean supported = false;
+            for (JsonNode op : capabilities().path("operations")) if (operation.equals(op.asText())) supported = true;
+            if (!supported) throw new IOException("Peer does not support learning " + operation);
+            return checked(operation, body);
+        }
+        public JsonNode configure(String mode, ObjectNode options) throws IOException, InterruptedException {
+            return call("configure", options.deepCopy().put("mode", mode));
+        }
+        public JsonNode assign(String occasion, List<String> ids, ObjectNode options) throws IOException, InterruptedException {
+            ObjectNode body = options.deepCopy().put("occasion_id", occasion);
+            body.set("memory_ids", json.valueToTree(ids));
+            return call("assign", body);
+        }
+        public JsonNode delivery(String occasion, List<String> ids, String experiment) throws IOException, InterruptedException {
+            ObjectNode body = json.createObjectNode().put("occasion_id", occasion).put("experiment_id", experiment);
+            body.set("memory_ids", json.valueToTree(ids));
+            return call("delivery", body);
+        }
+        public JsonNode outcome(String occasion, ObjectNode outcome, String experiment) throws IOException, InterruptedException {
+            if (outcome.size() != 1 || !(outcome.has("succeeded") || outcome.has("reward") || outcome.has("metrics"))) {
+                throw new IllegalArgumentException("Exactly one learning outcome required");
+            }
+            return call("outcome", outcome.deepCopy().put("occasion_id", occasion).put("experiment_id", experiment));
+        }
+        public JsonNode run(ObjectNode options) throws IOException, InterruptedException { return call("run", options); }
+        public JsonNode status() throws IOException, InterruptedException { return call("status", json.createObjectNode()); }
+        public JsonNode status(String experiment) throws IOException, InterruptedException {
+            return call("status", json.createObjectNode().put("experiment_id", experiment));
+        }
+        public JsonNode rollback(String reason, ObjectNode options) throws IOException, InterruptedException {
+            return call("rollback", options.deepCopy().put("reason", reason));
         }
     }
 

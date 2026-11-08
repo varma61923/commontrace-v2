@@ -1,3 +1,4 @@
+import { LearningClient, learningOperations, type LearningOperation } from "./learning.js";
 /** The identical scoped memory API served by the local binary and HTTP gateway. */
 export interface MemoryClientOptions {
   url: string;
@@ -29,6 +30,7 @@ function outcomeBody(result: boolean | GradedOutcome): Record<string, unknown> {
 }
 export class MemoryClient {
   readonly context: string[];
+  readonly learning: LearningClient;
   private readonly url: string;
   private readonly token: string;
   private readonly transport: typeof globalThis.fetch;
@@ -43,11 +45,16 @@ export class MemoryClient {
     this.token = options.token ?? "";
     this.context = [...new Set([...(options.context ?? []), ...(options.agentId ? [`agent:${options.agentId}`] : [])])];
     this.transport = options.fetch ?? globalThis.fetch;
+    this.learning = new LearningClient((operation, body) => this.learningRequest(operation, body));
+  }
+  private async learningRequest(operation: LearningOperation, data: Record<string, unknown>): Promise<unknown> {
+    return this.request(operation, data, {}, true);
   }
   async request<T>(operation: string, data: Record<string, unknown>, options: {
     timeoutMs?: number; context?: string[];
-  } = {}): Promise<T> {
-    if (!["add", "batch", "search", "profile", "reflect", "outcome", "check-action", "propose", "turn", "record-put", "record-search", "record-forget", "record-reap-due"].includes(operation)) {
+  } = {}, learning = false): Promise<T> {
+    if (learning && !learningOperations.includes(operation as LearningOperation)) throw new Error("Unknown learning operation");
+    if (!learning && !["add", "batch", "search", "profile", "reflect", "outcome", "check-action", "propose", "turn", "record-put", "record-search", "record-forget", "record-reap-due"].includes(operation)) {
       throw new Error("Unknown memory operation");
     }
     const timeoutMs = options.timeoutMs ?? 30000;
@@ -55,10 +62,14 @@ export class MemoryClient {
       throw new RangeError("Memory request timeout must be an integer from 1 to 30000 milliseconds");
     }
     const context = [...new Set([...this.context, ...(options.context ?? [])])];
-    const response = await this.transport(`${this.url}/v1/memory/${operation}`, {
-      method: "POST", redirect: "manual", signal: AbortSignal.timeout(timeoutMs),
+    const read = learning && ["capabilities", "status"].includes(operation);
+    const query = new URLSearchParams(context.map(label => ["context", label]));
+    if (read && data.experiment_id !== undefined) query.set("experiment_id", String(data.experiment_id));
+    const suffix = read ? "?" + query.toString() : "";
+    const response = await this.transport(`${this.url}/v1/${learning ? "learning" : "memory"}/${operation}${suffix}`, {
+      method: read ? "GET" : "POST", redirect: "manual", signal: AbortSignal.timeout(timeoutMs),
       headers: {"Content-Type": "application/json", ...(this.token ? {Authorization: `Bearer ${this.token}`} : {})},
-      body: JSON.stringify({...data, context}),
+      ...(read ? {} : {body: JSON.stringify({...data, context})}),
     });
     if (!response.ok) {
       // Release unread error/redirect streams so repeated refusals do not retain sockets.
