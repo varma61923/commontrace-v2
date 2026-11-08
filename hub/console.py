@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from types import MappingProxyType
 from urllib.parse import quote as _url_quote
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -2049,21 +2049,38 @@ def add_console_routes(
             return None
         now = datetime.now(timezone.utc)
         async with session_scope(session_factory) as session:
-            row = (
+            rows = (
                 await session.execute(
-                    select(ApiKey.id, ApiKey.scopes, Organization.name, Organization.plan)
+                    select(
+                        ApiKey.id,
+                        ApiKey.scopes,
+                        Organization.name,
+                        Organization.plan,
+                        ApiKey.revoked_at,
+                        ApiKey.expires_at,
+                    )
                     .join(Organization, Organization.id == ApiKey.org_id)
                     .where(
                         ApiKey.org_id == str(claims["org"]),
                         ApiKey.key_prefix == prefix,
                         *((ApiKey.id == str(claims["kid"]),) if claims.get("kid") else ()),
-                        ApiKey.revoked_at.is_(None),
-                        or_(ApiKey.expires_at.is_(None), ApiKey.expires_at > now),
                     )
-                    .limit(1)
+                    .limit(2)
                 )
-            ).first()
-        if row is None or not scopes.satisfies(row[1], scopes.SCOPE_READ):
+            ).all()
+        # Old cookies carry only the displayed prefix, which is not unique.
+        # Count historical matches too: filtering revoked/expired keys first
+        # could rebind their old cookie to a live sibling. Exact-kid sessions
+        # still select their one original key, regardless of prefix collisions.
+        if len(rows) != 1:
+            return None
+        row = rows[0]
+        if (
+            row[4] is not None
+            or row[5] is not None
+            and row[5] <= now
+            or not scopes.satisfies(row[1], scopes.SCOPE_READ)
+        ):
             return None
         # Enrollment can change after sign-in. Recheck on every read and
         # mutation so an older cookie cannot bypass a delegate's narrowing.

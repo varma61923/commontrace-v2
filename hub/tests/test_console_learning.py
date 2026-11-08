@@ -7,6 +7,7 @@ import json
 import socket
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -398,3 +399,88 @@ async def test_live_learning_console_browser_flow(session_factory, config):
                 assert not thread.is_alive()
             await browser.close()
             await engine.dispose()
+
+
+async def colliding_keys(session_factory, monkeypatch):
+    values = iter(("unimem_live_SAME-admin-key", "unimem_live_SAME-reader-key"))
+    monkeypatch.setattr(auth, "generate_raw_key", lambda: next(values))
+    async with session_scope(session_factory) as session:
+        org = Organization(name="Legacy session collision")
+        session.add(org)
+        await session.flush()
+        admin = await auth.issue_api_key(session, org.id)
+        reader = await auth.issue_api_key(session, org.id, scopes=["read"])
+        assert admin.key_prefix == reader.key_prefix
+        return org.id, admin, reader
+
+
+@pytest.mark.parametrize("retired", ["live", "revoked", "expired"])
+async def test_ambiguous_legacy_cookie_never_binds_a_sibling_key(session_factory, config, monkeypatch, retired):
+    org, admin, reader = await colliding_keys(session_factory, monkeypatch)
+    if retired != "live":
+        async with session_scope(session_factory, org_id=org) as session:
+            values = (
+                {"revoked_at": datetime.now(timezone.utc)}
+                if retired == "revoked"
+                else {"expires_at": datetime.now(timezone.utc) - timedelta(seconds=1)}
+            )
+            await session.execute(update(ApiKey).where(ApiKey.id == reader.key_id).values(**values))
+    # A pre-kid cookie signed for the viewer is indistinguishable from one
+    # signed for the administrator: both contain the same org and prefix.
+    cookie = console.issue_session("console-learning-test-secret", org, reader.key_prefix)
+    async with client_for(session_factory, config) as client:
+        client.cookies.set(console.SESSION_COOKIE, cookie)
+        for path in ("/app/learning", "/app/users", "/app/keys"):
+            response = await client.get(path)
+            assert response.status_code == 303
+            assert response.headers["location"] == "/app/signin"
+        for path, form in (
+            ("/app/learning/configure", configuration()),
+            ("/app/keys/issue", {"scopes": ["read"]}),
+        ):
+            response = await client.post(path, data=form)
+            assert response.status_code == 303
+            assert response.headers["location"] == "/app/signin"
+    with pytest.raises(contract.LearningError):
+        await learning.operate(session_factory, org, "key:" + admin.key_id, "status")
+
+
+async def test_exact_kid_cookie_preserves_scope_and_revocation_despite_prefix_collision(
+    session_factory, config, monkeypatch
+):
+    org, admin, reader = await colliding_keys(session_factory, monkeypatch)
+    async with client_for(session_factory, config) as client:
+        # Actual sign-in chooses the full credential, and the resulting cookie
+        # pins its exact key even when the short displayed prefixes collide.
+        await sign_in(client, reader)
+        response = await client.get("/app/learning")
+        assert response.status_code == 200
+        assert "Read access" in response.text
+        assert (await client.post("/app/learning/configure", data=configuration())).status_code == 403
+        async with session_scope(session_factory, org_id=org) as session:
+            await session.execute(
+                update(ApiKey).where(ApiKey.id == reader.key_id).values(revoked_at=datetime.now(timezone.utc))
+            )
+        assert (await client.get("/app/learning")).status_code == 303
+        await sign_in(client, admin)
+        response = await client.post("/app/learning/configure", data=configuration())
+        assert response.status_code == 303
+        assert response.headers["location"].startswith("/app/learning?done=")
+
+
+async def test_unique_legacy_cookie_resolves_the_exact_learning_principal(session_factory, config, monkeypatch):
+    org, key = await identity(session_factory)
+    cookie = console.issue_session("console-learning-test-secret", org, key.key_prefix)
+    operate = learning.operate
+    seen = []
+
+    async def capture(*args, **kwargs):
+        seen.append(args[2])
+        return await operate(*args, **kwargs)
+
+    monkeypatch.setattr(learning, "operate", capture)
+    async with client_for(session_factory, config) as client:
+        client.cookies.set(console.SESSION_COOKIE, cookie)
+        assert (await client.get("/app/learning")).status_code == 200
+        assert (await client.post("/app/learning/configure", data=configuration())).status_code == 303
+    assert seen and set(seen) == {"key:" + key.key_id}
