@@ -544,8 +544,7 @@ def test_learning_ledger_value_design_forensics_and_digest(page: Page, console: 
         "link", name="Weekly digest", exact=True
     )
     pw.expect(digest_link).to_have_attribute("aria-current", "page")
-    bounds = digest_link.bounding_box()
-    assert bounds is not None and bounds["x"] >= 0 and bounds["x"] + bounds["width"] <= width + 1
+    pw.expect(digest_link).to_be_in_viewport(ratio=1)
     digest_content = page.get_by_role("region", name="Weekly digest content", exact=True)
     digest_content.focus()
     pw.expect(digest_content).to_be_focused()
