@@ -399,6 +399,32 @@ main.auth{max-width:none;margin:0;gap:0}
   border-radius:var(--radius);padding:.7rem 1rem}
 
 /* --- Responsive ------------------------------------------------------------- */
+/* --- Measured learning ----------------------------------------------------- */
+.learning-eyebrow{font-size:.68rem;font-weight:700;letter-spacing:.13em;color:var(--accent-text);margin:0 0 .45rem}
+.learning-hero{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:2rem;
+  padding:1.65rem;border:1px solid var(--rule);border-radius:var(--radius);
+  background:linear-gradient(120deg,var(--accent-soft),var(--surface) 65%);box-shadow:var(--shadow-sm)}
+.learning-hero h2{font-size:1.75rem;letter-spacing:-.025em;margin:.65rem 0 .4rem}
+.learning-hero p{max-width:58ch;font-size:.9rem}
+.learning-flow{list-style:none;display:grid;grid-template-columns:1fr 1fr;gap:1rem;padding:0;margin:0;align-self:center}
+.learning-flow li{display:flex;align-items:flex-start;gap:.7rem;font-weight:650;font-size:.86rem}
+.learning-flow b{display:grid;place-items:center;width:30px;height:30px;flex:none;
+  color:var(--accent-text);background:var(--surface);border:1px solid var(--rule);border-radius:8px;font-size:.7rem;font-family:var(--mono)}
+.learning-flow small{display:block;color:var(--muted);font-weight:400;font-size:.75rem;margin-top:.15rem}
+.learning-context{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem 1.2rem;font-size:.76rem;color:var(--muted);overflow-wrap:anywhere}
+.learning-context code{word-break:break-all}
+.learning-scope{font-size:.78rem}
+.learning-blockers{margin:.15rem 0;padding-left:1.1rem;color:var(--warn);font-size:.88rem}
+.learning-empty{padding:1.6rem .5rem;display:flex;flex-direction:column;align-items:center;gap:.5rem;text-align:center}
+.learning-empty svg{width:30px;height:30px;color:var(--accent-text);margin-bottom:.3rem}
+.learning-empty p{max-width:58ch;color:var(--muted);font-size:.86rem}
+.learning-decisions small{display:block;font-size:.73rem;color:var(--muted);margin-top:.2rem}
+.learning-decisions tbody th{text-transform:none;letter-spacing:normal;font-size:.85rem;font-weight:500;background:transparent}
+.learning-decisions code{overflow-wrap:anywhere;white-space:normal}
+.learning-table-hint{display:none;font-size:.76rem}
+.learning-confirm{display:flex!important;gap:.55rem;align-items:flex-start;line-height:1.5}
+.learning-confirm input{flex:none;margin-top:.1rem}
+.panel hr{border:0;border-top:1px solid var(--rule);margin:1rem 0;width:100%}
 @media (max-width:980px){
   .shell{grid-template-columns:minmax(0,1fr);background:var(--bg)}
   .side > *{min-width:0}
@@ -413,7 +439,11 @@ main.auth{max-width:none;margin:0;gap:0}
   .side nav a kbd{display:none}
   .side-foot{margin:0 0 0 auto;border:0;padding:0;flex-direction:row;align-items:center}
   .side-foot .plan{display:none}
-  .top{padding:.55rem 1rem;position:static}
+  .top{padding:.55rem 1rem;position:static;flex-wrap:wrap}
+  .crumbs{flex:1 1 100%;overflow:hidden;white-space:nowrap}
+  .crumbs > span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .top-actions{margin-left:0;flex-wrap:wrap}
+  .learning-hero{grid-template-columns:1fr;gap:1.3rem;padding:1.2rem}
   .search-btn{min-width:0}
   .search-btn span,.search-btn kbd{display:none}
   main{padding:1.1rem 1rem 3rem;gap:1.2rem}
@@ -422,6 +452,7 @@ main.auth{max-width:none;margin:0;gap:0}
   .forest .fh.ft-h{display:none}
 }
 @media (max-width:640px){
+  .learning-table-hint{display:block}
   .cmd{grid-template-columns:1fr}
   form.act input[type=text]{min-width:0;flex:1 1 9rem}
   .tile .v{font-size:1.35rem}
@@ -441,6 +472,9 @@ main.auth{max-width:none;margin:0;gap:0}
 
 
 _ICON_PATHS = {
+    "refresh": '<path d="M4 12a8 8 0 1 0 2.3-5.6"/><path d="M3 3v5h5"/>',
+    "learning": '<path d="M4 12a8 8 0 0 1 14-5M20 12a8 8 0 0 1-14 5"/><path d="M18 3v4h-4M6 21v-4h4"/>'
+    '<circle cx="12" cy="12" r="2.5"/>',
     "overview": '<rect x="3.5" y="3.5" width="7" height="7" rx="1.6"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.6"/>'
     '<rect x="3.5" y="13.5" width="7" height="7" rx="1.6"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.6"/>',
     "proof": '<circle cx="12" cy="12" r="8.5"/><path d="m8.5 12.3 2.4 2.4 4.7-5.2"/>',

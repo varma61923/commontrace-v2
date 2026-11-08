@@ -6533,6 +6533,408 @@
         ]
       }
     },
+    "/app/learning": {
+      "get": {
+        "description": "Shows active configuration, this key's scoped counts, evidence readiness and current delivery policy. Admin sessions see organisation-wide evaluation; read sessions receive only their visible cohorts. An unconfigured organisation receives onboarding rather than invented metrics.",
+        "operationId": "consoleLearning",
+        "parameters": [
+          {
+            "description": "Allowlisted result message.",
+            "in": "query",
+            "name": "done",
+            "required": false,
+            "schema": {
+              "enum": [
+                "configure",
+                "run",
+                "rollback"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The page."
+          },
+          "303": {
+            "$ref": "#/components/responses/SignInRedirect"
+          },
+          "503": {
+            "$ref": "#/components/responses/Overloaded"
+          },
+          "504": {
+            "$ref": "#/components/responses/Timeout"
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Measured learning evidence and policy controls",
+        "tags": [
+          "Console"
+        ]
+      }
+    },
+    "/app/learning/configure": {
+      "post": {
+        "description": "Requires a live console session whose API key has read and admin scopes. Cross-origin requests are refused. Rechecks key scopes and delegation enrollment on every request. Uses the canonical measured-learning transaction, including its audit record. Repeated or unknown fields are refused. Errors render an escaped HTML page.",
+        "operationId": "consoleLearningConfigure",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "confirm": {
+                    "description": "Explicit acknowledgement that saving creates a new experiment.",
+                    "enum": [
+                      "yes"
+                    ],
+                    "type": "string"
+                  },
+                  "holdout_rate": {
+                    "description": "Fraction withheld.",
+                    "maximum": 0.95,
+                    "minimum": 0.05,
+                    "type": "number"
+                  },
+                  "min_arm": {
+                    "description": "Minimum observations per arm.",
+                    "maximum": 10000,
+                    "minimum": 10,
+                    "type": "integer"
+                  },
+                  "mode": {
+                    "enum": [
+                      "off",
+                      "observe",
+                      "adaptive"
+                    ],
+                    "type": "string"
+                  },
+                  "utility": {
+                    "description": "Optional utility JSON, or blank for success/reward outcomes.",
+                    "maxLength": 32768,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "mode",
+                  "holdout_rate",
+                  "min_arm",
+                  "confirm"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "303": {
+            "description": "To /app/learning?done=configure|run|rollback after success, or /app/signin.",
+            "headers": {
+              "Location": {
+                "$ref": "#/components/headers/Location"
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Invalid or malformed form; no change accepted."
+          },
+          "403": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Admin permission is required, or the request was cross-origin."
+          },
+          "404": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The pinned experiment or policy revision does not exist in this organisation."
+          },
+          "409": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Learning evidence or the requested operation conflicts with current state."
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "503": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Learning is temporarily unavailable; retry shortly."
+          },
+          "504": {
+            "$ref": "#/components/responses/Timeout"
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Start a measured learning experiment (admin keys)",
+        "tags": [
+          "Console"
+        ]
+      }
+    },
+    "/app/learning/rollback": {
+      "post": {
+        "description": "Requires a live console session whose API key has read and admin scopes. Cross-origin requests are refused. Rechecks key scopes and delegation enrollment on every request. Uses the canonical measured-learning transaction, including its audit record. Repeated or unknown fields are refused. Errors render an escaped HTML page.",
+        "operationId": "consoleLearningRollback",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "decision_revision": {
+                    "description": "Revision to restore; blank defaults to the previous revision.",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "experiment_id": {
+                    "description": "Pinned experiment ID.",
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "reason": {
+                    "description": "Operator reason.",
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "experiment_id",
+                  "reason"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "303": {
+            "description": "To /app/learning?done=configure|run|rollback after success, or /app/signin.",
+            "headers": {
+              "Location": {
+                "$ref": "#/components/headers/Location"
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Invalid or malformed form; no change accepted."
+          },
+          "403": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Admin permission is required, or the request was cross-origin."
+          },
+          "404": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The pinned experiment or policy revision does not exist in this organisation."
+          },
+          "409": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Learning evidence or the requested operation conflicts with current state."
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "503": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Learning is temporarily unavailable; retry shortly."
+          },
+          "504": {
+            "$ref": "#/components/responses/Timeout"
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Restore a delivery policy as a new revision (admin keys)",
+        "tags": [
+          "Console"
+        ]
+      }
+    },
+    "/app/learning/run": {
+      "post": {
+        "description": "Requires a live console session whose API key has read and admin scopes. Cross-origin requests are refused. Rechecks key scopes and delegation enrollment on every request. Uses the canonical measured-learning transaction, including its audit record. Repeated or unknown fields are refused. Errors render an escaped HTML page.",
+        "operationId": "consoleLearningRun",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "experiment_id": {
+                    "description": "Pinned experiment ID.",
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "experiment_id"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "303": {
+            "description": "To /app/learning?done=configure|run|rollback after success, or /app/signin.",
+            "headers": {
+              "Location": {
+                "$ref": "#/components/headers/Location"
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Invalid or malformed form; no change accepted."
+          },
+          "403": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Admin permission is required, or the request was cross-origin."
+          },
+          "404": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The pinned experiment or policy revision does not exist in this organisation."
+          },
+          "409": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Learning evidence or the requested operation conflicts with current state."
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "503": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Learning is temporarily unavailable; retry shortly."
+          },
+          "504": {
+            "$ref": "#/components/responses/Timeout"
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Evaluate accepted learning evidence (admin keys)",
+        "tags": [
+          "Console"
+        ]
+      }
+    },
     "/app/memory": {
       "get": {
         "operationId": "consoleMemory",

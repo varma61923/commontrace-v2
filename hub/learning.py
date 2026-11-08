@@ -225,6 +225,15 @@ async def _operate(session_factory, org_id, principal, operation, payload=None, 
                     org_id=org_id, experiment_id=experiment_id, revision=0, decision={"policy": {}, "report": {}}
                 )
             )
+            await audit.record(
+                session,
+                actor=principal,
+                action="learning.configure",
+                org_id=org_id,
+                target_type="learning_experiment",
+                target_id=experiment_id,
+                summary=f"mode={config['mode']}; config_revision={config_revision}",
+            )
             return contract.response(experiment_id=experiment_id, config_revision=config_revision, config=config)
         experiment = await _experiment(session, org_id, payload.get("experiment_id"))
         config = experiment.config
@@ -259,7 +268,21 @@ async def _operate(session_factory, org_id, principal, operation, payload=None, 
                 failures=[work.failure] if work and work.failure else [],
             )
         if operation == "run":
-            return await _evaluate(session, org_id, experiment, limit=payload.get("limit", 10000))
+            result = await _evaluate(session, org_id, experiment, limit=payload.get("limit", 10000))
+            await audit.record(
+                session,
+                actor=principal,
+                action="learning.run",
+                org_id=org_id,
+                target_type="learning_experiment",
+                target_id=experiment.id,
+                summary=(
+                    f"applied={result.get('applied', False)}; "
+                    f"decision_revision={result.get('decision_revision', latest.revision if latest else 0)}; "
+                    f"evidence={result.get('evidence', 0)}; blocked={len(result.get('blocked', []))}"
+                ),
+            )
+            return result
         if operation == "rollback":
             target = payload.get("decision_revision", max(0, (latest.revision if latest else 0) - 1))
             stmt = select(LearningDecision).where(
@@ -277,6 +300,15 @@ async def _operate(session_factory, org_id, principal, operation, payload=None, 
             number = (latest.revision if latest else 0) + 1
             session.add(
                 LearningDecision(org_id=org_id, experiment_id=experiment.id, revision=number, decision=restored)
+            )
+            await audit.record(
+                session,
+                actor=principal,
+                action="learning.rollback",
+                org_id=org_id,
+                target_type="learning_experiment",
+                target_id=experiment.id,
+                summary=f"decision_revision={number}; restored_revision={target}",
             )
             return contract.response(
                 experiment_id=experiment.id,
@@ -335,7 +367,7 @@ async def _operate(session_factory, org_id, principal, operation, payload=None, 
                 )
             )
             return _public(assignment, sources)
-        if occasion is None:
+        if occasion is None or occasion.evidence.get("scope") != scope:
             raise _error("occasion assignment does not exist", status=404, code="not_found")
         evidence = copy.deepcopy(occasion.evidence)
         if operation == "delivery":
@@ -506,6 +538,15 @@ async def _evaluate(session, org_id, experiment, *, limit=10000):
                 revision=number,
                 decision={"policy": policy, "report": report},
             )
+        )
+        await audit.record(
+            session,
+            actor=policies.ACTOR.get(),
+            action="learning.policy_update",
+            org_id=org_id,
+            target_type="learning_experiment",
+            target_id=experiment.id,
+            summary=f"decision_revision={number}; policy_entries={len(policy)}",
         )
     experiment.checkpoint, experiment.report = checkpoint, report
     await _settle_work(session, org_id, experiment.id)

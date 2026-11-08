@@ -11,7 +11,15 @@ from starlette.applications import Starlette
 from hub import auth, crud, learning, rest
 from hub.abuse import make_rate_limiter
 from hub.db import session_scope
-from hub.models import HoldoutObservation, LearningDecision, LearningOccasion, LearningWork, Organization, Trace
+from hub.models import (
+    AuditLogEntry,
+    HoldoutObservation,
+    LearningDecision,
+    LearningOccasion,
+    LearningWork,
+    Organization,
+    Trace,
+)
 from unimem import learning_contract as contract
 
 pytestmark = pytest.mark.asyncio
@@ -72,6 +80,114 @@ async def test_retry_principal_scope_and_frozen_sources(session_factory):
     with pytest.raises(contract.LearningUnavailable):
         await assign(session_factory, other_id, source)
     assert experiment == first["experiment_id"]
+
+
+@pytest.mark.parametrize("wrong_scope", [{"agent": "b"}, {"agent": "a", "labels": ["other"]}, {}])
+async def test_delivery_and_outcome_cannot_cross_assignment_scope(session_factory, wrong_scope):
+    org, source, experiment = await setup(session_factory)
+    original_scope = {"agent": "a", "labels": ["first", "shared"]}
+    assignment = await learning.operate(
+        session_factory,
+        org,
+        "agent:1",
+        "assign",
+        {"occasion_id": "scoped", "memory_ids": [source]},
+        scope=original_scope,
+    )
+    for operation, body in (
+        ("delivery", {"memory_ids": assignment["inject"]}),
+        ("outcome", {"succeeded": True}),
+    ):
+        with pytest.raises(contract.LearningError) as refused:
+            await learning.operate(
+                session_factory,
+                org,
+                "agent:1",
+                operation,
+                {"occasion_id": "scoped", **body},
+                scope=wrong_scope,
+            )
+        assert refused.value.status_code == 404
+    async with session_scope(session_factory, org_id=org) as session:
+        row = await session.get(LearningOccasion, (org, experiment, "agent:1", "scoped"))
+        assert row.evidence["delivery"] is None and row.evidence["outcome"] is None
+        assert await session.get(LearningWork, (org, experiment)) is None
+    # Equivalent normalized label ordering is the original authority, not a new scope.
+    equivalent_scope = {"agent": "a", "labels": ["shared", "first"]}
+    for operation, body in (
+        ("delivery", {"memory_ids": assignment["inject"]}),
+        ("outcome", {"succeeded": True}),
+    ):
+        result = await learning.operate(
+            session_factory,
+            org,
+            "agent:1",
+            operation,
+            {"occasion_id": "scoped", **body},
+            scope=equivalent_scope,
+        )
+        assert result[operation] is not None
+
+
+async def test_admin_learning_actions_are_transactionally_audited_without_payloads(session_factory):
+    org, source, experiment = await setup(session_factory)
+    await assign(session_factory, org, source)
+    await learning.operate(session_factory, org, "owner:reviewer", "run", admin=True)
+    await learning.operate(
+        session_factory,
+        org,
+        "owner:reviewer",
+        "rollback",
+        {"reason": "sensitive operational details must stay in revision evidence"},
+        admin=True,
+    )
+    async with session_scope(session_factory, org_id=org) as session:
+        rows = (await session.execute(select(AuditLogEntry).order_by(AuditLogEntry.created_at))).scalars().all()
+        assert [row.action for row in rows] == ["learning.configure", "learning.run", "learning.rollback"]
+        assert [row.actor for row in rows] == ["agent:1", "owner:reviewer", "owner:reviewer"]
+        assert all(row.org_id == org and row.target_id == experiment for row in rows)
+        assert all(row.target_type == "learning_experiment" for row in rows)
+        summaries = " ".join(row.summary for row in rows)
+        assert "applied=False" in summaries and "restored_revision=0" in summaries
+        assert "sensitive" not in summaries and source not in summaries and "validate first" not in summaries
+    # Failed validation/authorization is not recorded as a successful mutation.
+    with pytest.raises(PermissionError):
+        await learning.operate(session_factory, org, "reader", "configure", {"mode": "adaptive"})
+    with pytest.raises(contract.LearningError):
+        await learning.operate(
+            session_factory, org, "owner:reviewer", "rollback", {"reason": "x", "decision_revision": 999}, admin=True
+        )
+    async with session_scope(session_factory, org_id=org) as session:
+        assert len((await session.execute(select(AuditLogEntry))).scalars().all()) == 3
+
+
+@pytest.mark.parametrize("operation", ["configure", "run", "rollback"])
+async def test_audit_failure_rolls_back_learning_administration(session_factory, monkeypatch, operation):
+    from hub.models import LearningExperiment
+
+    org, source, experiment = await setup(session_factory)
+    assignment = await assign(session_factory, org, source)
+    await learning.operate(
+        session_factory, org, "agent:1", "delivery", {"occasion_id": "o", "memory_ids": assignment["inject"]}
+    )
+    await learning.operate(session_factory, org, "agent:1", "outcome", {"occasion_id": "o", "succeeded": True})
+
+    async def unavailable(*args, **kwargs):
+        raise RuntimeError("audit unavailable")
+
+    monkeypatch.setattr(learning.audit, "record", unavailable)
+    body = (
+        {"mode": "adaptive"} if operation == "configure" else {"reason": "restore"} if operation == "rollback" else {}
+    )
+    with pytest.raises(RuntimeError, match="audit unavailable"):
+        await learning.operate(session_factory, org, "owner", operation, body, admin=True)
+    async with session_scope(session_factory, org_id=org) as session:
+        experiments = (await session.execute(select(LearningExperiment))).scalars().all()
+        assert len(experiments) == 1 and experiments[0].active
+        assert experiments[0].checkpoint is None and experiments[0].report is None
+        assert (await session.get(LearningWork, (org, experiment))).pending
+        assert len((await session.execute(select(LearningDecision))).scalars().all()) == 1
+        assert len((await session.execute(select(AuditLogEntry))).scalars().all()) == 1
 
 
 async def test_concurrent_outcome_exactly_once_and_lease_fencing(session_factory):
@@ -227,9 +343,15 @@ async def test_delayed_metrics_freeze_utility_and_worker_generation(session_fact
 
 
 @pytest.mark.parametrize(
-    "mode,harmful,applied", [("adaptive", False, True), ("adaptive", True, True), ("observe", False, False)]
+    "mode,harmful,applied,worker",
+    [
+        ("adaptive", False, True, False),
+        ("adaptive", True, True, False),
+        ("observe", False, False, False),
+        ("adaptive", True, True, True),
+    ],
 )
-async def test_actual_sql_measured_policy_and_context(session_factory, mode, harmful, applied):
+async def test_actual_sql_measured_policy_and_context(session_factory, mode, harmful, applied, worker):
     from hub.models import LearningExperiment
 
     org, source, experiment = await setup(session_factory, mode)
@@ -249,8 +371,26 @@ async def test_actual_sql_measured_policy_and_context(session_factory, mode, har
             "outcome",
             {"occasion_id": occasion, "succeeded": bool(assignment["inject"]) != harmful},
         )
-    report = await learning.operate(session_factory, org, "agent:1", "run", admin=True)
-    assert report["applied"] is applied, report
+    if worker:
+        claim = await learning.claim_work(session_factory)
+        assert claim and await learning.complete_work(session_factory, claim)
+        worker_status = await learning.operate(session_factory, org, "agent:1", "status")
+        assert worker_status["decision_revision"] == 1 and not worker_status["pending_work"]
+        report = worker_status["report"]
+    else:
+        report = await learning.operate(session_factory, org, "agent:1", "run", admin=True)
+        assert report["applied"] is applied, report
+    async with session_scope(session_factory, org_id=org) as session:
+        policy_audits = (
+            (await session.execute(select(AuditLogEntry).where(AuditLogEntry.action == "learning.policy_update")))
+            .scalars()
+            .all()
+        )
+        assert len(policy_audits) == int(applied)
+        if applied:
+            assert policy_audits[0].actor == ("service:internal" if worker else "agent:1")
+            assert policy_audits[0].target_id == experiment
+            assert "decision_revision=1" in policy_audits[0].summary and source not in policy_audits[0].summary
     status = await learning.operate(session_factory, org, "agent:1", "status")
     if applied:
         selected = next(iter(status["policy"].values()))

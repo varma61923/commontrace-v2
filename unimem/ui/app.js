@@ -12,10 +12,12 @@
   var tierChip = document.getElementById("tier");
   var commandLaunch = document.getElementById("command-launch");
   var disconnect = document.getElementById("disconnect");
+  var menuToggle = document.getElementById("menu-toggle");
   var token = "";
   var timer = null;
   var lastOk = 0;
   var state = { status: null, capabilities: null, memories: null, agents: null, events: null, lessons: null, lesson: null, commandCatalog: null, commandResult: null, explorer: null, reviewDraft: null, ledger: null, library: null, traces: null, trace: null, benchmarks: null };
+  ["learning", "learningCapabilities", "learningDraft", "learningBusy", "learningAction", "learningScope", "learningScopeText", "learningScopeEditing", "identity"].forEach(function (key) { state[key] = null; });
   var selected = {};   // slug -> true, the review queue's bulk selection; survives repaints
   var notice = null;   // { kind: "ok"|"crit", text } shown on the next paint of the review views
   var lastPaint = "";
@@ -111,7 +113,12 @@
   function api(path) {
     return fetch(path, { headers: { Authorization: "Bearer " + token }, cache: "no-store" }).then(function (r) {
       if (r.status === 401) { var e = new Error("auth"); e.auth = true; throw e; }
-      if (!r.ok) throw new Error("HTTP " + r.status);
+      if (!r.ok) {
+        return r.json().catch(function () { return {}; }).then(function (d) {
+          var err = new Error((d.error && d.error.message) || ("HTTP " + r.status));
+          err.status = r.status; err.code = d.error && d.error.code; throw err;
+        });
+      }
       return r.json();
     });
   }
@@ -120,9 +127,9 @@
       signal: signal,
       headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
       body: JSON.stringify(body) }).then(function (r) {
-      return r.json().catch(function () { return {}; }).then(function (d) {
+      return r.json().catch(function (error) { if (r.ok) throw error; return {}; }).then(function (d) {
         if (r.status === 401) { var e = new Error("auth"); e.auth = true; throw e; }
-        if (!r.ok) { var err = new Error((d.error && d.error.message) || ("HTTP " + r.status)); err.code = d.error && d.error.code; throw err; }
+        if (!r.ok) { var err = new Error((d && d.error && d.error.message) || ("HTTP " + r.status)); err.status = r.status; err.code = d && d.error && d.error.code; throw err; }
         return d;
       });
     });
@@ -140,6 +147,7 @@
 
   var ROUTES = [
     { id: "overview", label: "Overview", title: "Overview" },
+    { id: "learning", label: "Adaptive learning", title: "Adaptive learning" },
     { id: "palace", label: "Memory Palace", title: "Memory Palace" },
     { id: "explore", label: "Explore memory", title: "Explore memory" },
     { id: "memories", label: "Memories", title: "What each memory did" },
@@ -191,8 +199,18 @@
     var s = state.status, m = state.memories, a = state.agents;
     var root = h("div");
     root.appendChild(h("h1", { text: "Overview" }));
-    root.appendChild(h("p", { class: "lede", text: "Is the memory helping, can the measurement be trusted, and is anything hurting?" }));
+    root.appendChild(h("p", { class: "lede", text: "Understand what your agents remember. Measure what helps. Act on evidence." }));
     if (!s) return root.appendChild(h("p", { class: "muted", text: "Loading…" })), root;
+
+    root.appendChild(h("section", { class: "workspace-hero", "aria-labelledby": "workspace-title" },
+      h("div", null, h("p", { class: "eyebrow", text: "CONTINUOUS MEMORY IMPROVEMENT" }),
+        h("h2", { id: "workspace-title", text: "A learning loop for every agent." }),
+        h("p", { text: "Connect memory delivery to real outcomes, inspect the evidence, and control how selection adapts." }),
+        h("a", { class: "btn", href: "#/learning", text: "Open adaptive learning →" })),
+      h("ol", { class: "loop-steps", "aria-label": "Measured learning cycle" },
+        h("li", null, h("span", { text: "01" }), h("strong", { text: "Assign" }), "Freeze source revisions"),
+        h("li", null, h("span", { text: "02" }), h("strong", { text: "Observe" }), "Record delivery and outcomes"),
+        h("li", null, h("span", { text: "03" }), h("strong", { text: "Improve" }), "Evaluate, adapt, or roll back"))));
 
     var attention = h("div");
     var hurting = ((m && m.memories) || []).filter(function (x) { return x.verdict === "HURTS"; });
@@ -1273,6 +1291,197 @@
 
   var VIEWS = { library: viewLibrary, traces: viewTraces, trace: viewTrace, benchmarks: viewBenchmarks, ledger: viewLedger, overview: viewOverview, palace: viewPalace, explore: viewExplore, memories: viewMemories, review: viewReview, lesson: viewLesson, live: viewLive, fleet: viewFleet, commands: viewCommands, safety: viewSafety };
 
+  // Learning evidence is a separate, versioned experiment from legacy proof.
+  // A write is never retried automatically: a timeout can follow an accepted commit.
+  function learningWrite(operation, body) {
+    if (state.learningBusy) return;
+    body.context = (state.learningScope || []).slice();
+    var credential = token, generation = navigationGeneration, request = {};
+    var controller = new AbortController();
+    var timeout = setTimeout(function () { controller.abort(); }, 20000);
+    state.learningBusy = request; state.learningAction = null; paint(true);
+    function current() { return state.learningBusy === request && token === credential && navigationGeneration === generation; }
+    post("/v1/learning/" + operation, body, controller.signal).then(function (data) {
+      if (state.learningBusy !== request || token !== credential) return;
+      if (!data || data.schema !== "unimem.learning.v1" || operation === "configure" && !data.config) throw new Error("Invalid learning reply");
+      if (operation === "configure") { state.learningDraft = null; state.learning = null; }
+      if (operation === "rollback" && state.learningDraft) { state.learningDraft.reason = ""; state.learningDraft.revision = ""; }
+      if (!current()) return;
+      state.learningAction = { kind: "good", text: operation === "configure"
+        ? "New experiment created. Earlier evidence remains in its original experiment."
+        : operation === "rollback" ? "Policy restored as revision " + data.decision_revision + ". Evidence was retained."
+          : "Evaluation completed. Inspect decisions and any blocked evidence below." };
+    }).catch(function (error) {
+      if (!current()) return;
+      if (error.auth) {
+        token = ""; clearCredentialState();
+        try { sessionStorage.removeItem("unimem-token"); } catch (e) { /* private mode */ }
+        refresh();
+        return;
+      }
+      state.learningAction = { kind: "crit", text: !error.status
+        ? "The request could not be confirmed. It may have been accepted. Refresh and check the experiment or policy revision before retrying."
+        : "Request refused: " + error.message };
+    }).finally(function () {
+      clearTimeout(timeout);
+      // Clearing credentials clears all state; a stale request cannot clear a new request's latch.
+      if (state.learningBusy !== request || token !== credential) return;
+      state.learningBusy = false;
+      if (currentRoute().id === "learning") { paint(true); refresh(); }
+    });
+  }
+
+  function viewLearning() {
+    var data = state.learning, caps = state.learningCapabilities;
+    var root = h("div", { class: "learning-page" }, h("h1", { text: "Adaptive learning" }),
+      h("p", { class: "lede", text: "Turn real outcomes into better memory selection. Every decision stays inspectable and reversible." }));
+    if (state.learningAction) root.appendChild(h("p", { class: "alert " + state.learningAction.kind,
+      role: state.learningAction.kind === "crit" ? "alert" : "status", text: state.learningAction.text }));
+    var scopeInput = h("input", { id: "learning-scope", type: "text", maxlength: "32768", disabled: !!state.learningBusy,
+      value: state.learningScopeText || "", "aria-describedby": "learning-scope-help" });
+    scopeInput.addEventListener("input", function () { state.learningScopeText = scopeInput.value; });
+    var scopeForm = h("form", { class: "card learning-scope" },
+      h("div", null, h("label", { for: "learning-scope", text: "Learning scope labels" }), scopeInput,
+        h("p", { id: "learning-scope-help", class: "muted small", text: "Match your runtime’s exact scope, for example agent:robot-1, project:warehouse. Comma-separated; leave empty for the gateway owner." })),
+      h("button", { class: "btn secondary", type: "submit", disabled: !!state.learningBusy, text: "Switch scope" }));
+    scopeForm.addEventListener("submit", function (event) {
+      event.preventDefault(); if (state.learningBusy) return;
+      var labels = scopeInput.value.split(",").map(function (label) { return label.trim(); }).filter(Boolean);
+      if (labels.length > 128 || labels.some(function (label) { return label.length > 256; })) {
+        state.learningAction = { kind: "crit", text: "Use at most 128 scope labels, each no longer than 256 characters." }; paint(true); return;
+      }
+      state.learningScope = Array.from(new Set(labels)).sort(); state.learningScopeText = state.learningScope.join(", ");
+      state.learningScopeEditing = false;
+      state.learning = null; state.learningDraft = null; state.learningAction = null;
+      paint(true); refresh();
+    });
+    var scopeDetails = h("details", { class: "learning-scope-switcher", open: !!state.learningScopeEditing },
+      h("summary", { text: "Learning scope · " + ((state.learningScope || []).join(", ") || "Gateway owner") + " · Change" }), scopeForm);
+    scopeDetails.addEventListener("toggle", function () { state.learningScopeEditing = scopeDetails.open; });
+    root.appendChild(scopeDetails);
+    if (!data || !caps) { root.appendChild(h("p", { role: "status", text: "Loading learning state…" })); return root; }
+    if (caps.unavailable || caps.schema !== "unimem.learning.v1" || data.unavailable && data.unavailable !== 404) {
+      root.appendChild(empty("Learning state unavailable", data.message || caps.message || "This gateway does not expose a compatible learning API."));
+      var retry = h("button", { class: "btn secondary", type: "button", text: "Retry loading" });
+      retry.addEventListener("click", function () { refresh(); }); root.appendChild(retry); return root;
+    }
+    var configured = !data.unavailable, config = data.config || {}, report = data.report || {};
+    var admin = state.identity && state.identity.role === "admin";
+    var modeNames = { off: "Off", observe: "Observe", adaptive: "Adaptive" };
+    var head = h("section", { class: "learning-banner", "aria-label": "Experiment state" },
+      h("div", null, h("span", { class: "chip", text: configured ? modeNames[config.mode] || config.mode : "Not configured" }),
+        h("h2", { text: configured ? config.mode === "adaptive" ? "Selection adapts when the evidence supports it." : config.mode === "observe"
+          ? "Measure first. Keep selection under your control." : "Learning holdouts are off." : "Start with observation. Build evidence you can trust." }),
+        h("p", { text: "Assignment → delivery → outcome → evaluation. Protected memories remain outside randomized holdouts." })),
+      h("a", { href: "#/explore", class: "btn secondary", text: "Explore memory →" }));
+    root.appendChild(head);
+    if (configured) {
+      var metrics = h("div", { class: "learning-metrics" });
+      [["Occasions assigned", num(data.occasions), "Current experiment"],
+        ["Policy revision", num(data.decision_revision), "Rollback appends a new revision"],
+        ["Holdout rate", plain(config.holdout_rate), "For eligible memories at assignment"],
+        ["Worker state", data.pending_work ? "Pending" : "Settled", "Refreshes every five seconds"]].forEach(function (item) {
+        metrics.appendChild(h("section", { class: "card" }, h("p", { class: "metric-label", text: item[0] }),
+          h("p", { class: "big", text: item[1] }), h("p", { class: "muted small", text: item[2] })));
+      });
+      root.appendChild(metrics);
+      root.appendChild(h("p", { class: "experiment-id muted small", text: "Experiment " + data.experiment_id + " · configuration revision " + data.config_revision }));
+      var evidence = h("section", { class: "card evidence-section" },
+        h("div", { class: "section-title" }, h("div", null, h("p", { class: "eyebrow", text: "EVIDENCE BEFORE ACTION" }),
+          h("h2", { text: "Evaluation and decisions" })), h("span", { class: "chip", text: config.mode === "adaptive" ? "Adaptive policy" : "Report only" })));
+      if (!data.report) evidence.appendChild(h("p", { class: "muted", text: "No evaluation yet. Connect an agent, record delivery and outcomes, then evaluate the accepted evidence." }));
+      else evidence.appendChild(h("p", { class: "muted", text: num(report.evidence) + " occasions examined. Decisions require complete delivery receipts, outcomes, and sufficient valid evidence in both arms." }));
+      var reasons = { incomplete_delivery: "Delivery receipts are missing or partial.", pending_outcomes: "Some occasions still need an outcome.",
+        integrity_weakened: "The evidence does not yet meet the integrity requirements.", integrity_compromised: "Integrity checks failed; investigate the source evidence.",
+        evidence_budget_exceeded: "This experiment exceeded the evaluation budget. Create a new experiment to continue.",
+        stale_sources: "Some source revisions changed or became unavailable.", original_authority_unavailable: "The original source authority is no longer available." };
+      if ((report.blocked || []).length) {
+        var blocked = h("div", { class: "alert warn" }, h("strong", { text: "Some evidence is blocked" }));
+        var list = h("ul"); report.blocked.forEach(function (reason) { list.appendChild(h("li", { text: reasons[reason] || reason })); });
+        blocked.appendChild(list); evidence.appendChild(blocked);
+      }
+      if ((data.stale_sources || []).length || data.source_scan_truncated) evidence.appendChild(h("p", { class: "alert warn", text:
+        num((data.stale_sources || []).length) + " stale source IDs detected." + (data.source_scan_truncated ? " Source scan was bounded; additional sources were not checked." : "") }));
+      (data.failures || []).forEach(function (failure) { evidence.appendChild(h("p", { class: "alert crit", text: "Worker " + failure.status + " after " + failure.attempts + " attempts. " + (failure.error || "Inspect worker logs.") })); });
+      var decisions = report.decisions || [];
+      if (decisions.length) {
+        var table = h("table", null, h("caption", { text: "Evaluated source revisions and task contexts" }),
+          h("thead", null, h("tr", null, h("th", { scope: "col", text: "Source / context" }), h("th", { scope: "col", text: "Verdict" }),
+            h("th", { scope: "col", text: "Effect · 95% interval" }), h("th", { scope: "col", text: "Injected / withheld" }))));
+        var rows = h("tbody"); decisions.forEach(function (d) {
+          rows.appendChild(h("tr", null, h("td", { class: "wrap" }, h("strong", { text: d.id }), h("p", { class: "muted small", text: "Revision " + d.revision + " · " + (d.task_context || "Default context") })),
+            h("td", null, verdictChip(d.verdict)), h("td", { text: pct(d.effect) + " · " + pct(d.ci_low) + " to " + pct(d.ci_high) }),
+            h("td", { text: num(d.n_injected) + " / " + num(d.n_withheld) })));
+        }); table.appendChild(rows); evidence.appendChild(h("div", { class: "table-wrap", tabindex: "0", role: "region", "aria-label": "Learning decisions" }, table));
+      }
+      var policies = Object.keys(data.policy || {});
+      evidence.appendChild(h("p", { class: "muted small", text: num(policies.length) + " active policy entries. " + (config.mode === "adaptive"
+        ? "Evidence may change selection for a particular source revision and task context." : "This mode does not apply new adaptive selection changes.") }));
+      if (policies.length) {
+        var policyDetails = h("details", null, h("summary", { text: "Inspect current selection policy" }));
+        policyDetails.appendChild(h("pre", { text: JSON.stringify(data.policy, null, 2) })); evidence.appendChild(policyDetails);
+      }
+      if (admin) {
+        var run = h("button", { class: "btn", id: "learning-run", type: "button", disabled: !!state.learningBusy, text: state.learningBusy ? "Request in progress…" : "Evaluate evidence" });
+        run.addEventListener("click", function () { learningWrite("run", { experiment_id: data.experiment_id }); }); evidence.appendChild(run);
+      }
+      root.appendChild(evidence);
+    }
+    var layout = h("div", { class: "learning-layout" });
+    if (admin) {
+      if (!state.learningDraft) state.learningDraft = { mode: config.mode || "observe", rate: String(config.holdout_rate === undefined ? 50 : config.holdout_rate * 100),
+        minimum: String(config.min_arm || 10), utility: config.utility ? JSON.stringify(config.utility, null, 2) : "", reason: "", revision: "" };
+      var draft = state.learningDraft;
+      function field(tag, name, label, attrs) {
+        var input = h(tag, Object.assign({ id: "learning-" + name, name: name }, attrs || {}));
+        input.disabled = !!state.learningBusy;
+        input.addEventListener("input", function () { draft[name] = input.value; });
+        return { input: input, node: h("div", { class: "learning-field" }, h("label", { for: "learning-" + name, text: label }), input) };
+      }
+      var mode = field("select", "mode", "Learning mode");
+      [["off", "Off — pause new learning"], ["observe", "Observe — measure without adapting"], ["adaptive", "Adaptive — apply supported decisions"]].forEach(function (m) { mode.input.appendChild(h("option", { value: m[0], text: m[1] })); }); mode.input.value = draft.mode;
+      var rate = field("input", "rate", "Holdout rate (%)", { type: "number", min: "5", max: "95", step: "any", required: true, value: draft.rate });
+      var minimum = field("input", "minimum", "Minimum observations per arm", { type: "number", min: "10", max: "10000", step: "1", required: true, value: draft.minimum });
+      var utility = field("textarea", "utility", "Utility definition (optional JSON)", { rows: "4", spellcheck: "false", "aria-describedby": "learning-utility-help" }); utility.input.value = draft.utility;
+      var configForm = h("form", { class: "card learning-form" }, h("p", { class: "eyebrow", text: "EXPERIMENT SETTINGS" }),
+        h("h2", { text: configured ? "Create a new experiment" : "Configure learning" }),
+        h("p", { class: "muted small", text: "Each save starts a new experiment with frozen settings. Earlier evidence and pending outcomes remain tied to their original experiment." }),
+        mode.node, h("div", { class: "learning-form-row" }, rate.node, minimum.node),
+        h("details", { open: !!draft.utility }, h("summary", { text: "Metric-based outcomes" }), utility.node,
+          h("p", { id: "learning-utility-help", class: "muted small", text: "Leave blank for success or reward outcomes. Keep the existing definition when using metric outcomes; utility is frozen at assignment time." })),
+        h("button", { class: "btn", type: "submit", disabled: !!state.learningBusy, text: configured ? "Create experiment" : "Start experiment" }));
+      configForm.addEventListener("submit", function (event) {
+        event.preventDefault();
+        var body = { mode: mode.input.value, holdout_rate: Number(rate.input.value) / 100, min_arm: Number(minimum.input.value) };
+        try { if (utility.input.value.trim()) body.utility = JSON.parse(utility.input.value); }
+        catch (e) { state.learningAction = { kind: "crit", text: "Utility definition must be valid JSON. Your draft has been retained." }; paint(true); return; }
+        learningWrite("configure", body);
+      }); layout.appendChild(configForm);
+      if (configured) {
+        var reason = field("input", "reason", "Reason for rollback", { type: "text", required: true, maxlength: "256", value: draft.reason });
+        var revision = field("input", "revision", "Restore policy revision (optional)", { type: "number", min: "0", max: String(data.decision_revision), step: "1", value: draft.revision });
+        var rollback = h("form", { class: "card learning-form" }, h("p", { class: "eyebrow", text: "RECOVERY" }), h("h2", { text: "Roll back selection policy" }),
+          h("p", { class: "muted small", text: "Restores a prior policy as a new revision. Leave revision blank for the preceding policy. Source access and current revisions are checked again on delivery." }),
+          reason.node, revision.node, h("button", { class: "btn secondary", type: "submit", disabled: !!state.learningBusy, text: "Restore policy" }));
+        rollback.addEventListener("submit", function (event) {
+          event.preventDefault(); var body = { experiment_id: data.experiment_id, reason: reason.input.value.trim() };
+          if (revision.input.value !== "") body.decision_revision = Number(revision.input.value);
+          learningWrite("rollback", body);
+        }); layout.appendChild(rollback);
+      }
+    } else layout.appendChild(empty("View access", "An administrator can configure experiments, evaluate evidence, and restore policies. Your credential retains its existing permissions."));
+    root.appendChild(layout);
+    root.appendChild(h("section", { class: "card learning-connect" }, h("h2", { text: "Connect your runtime" }),
+      h("p", { class: "muted", text: "Use the learning client in an agent, LLM application, or robot bridge. Keep the same occasion and experiment IDs through the entire cycle." }),
+      h("ol", { class: "integration-steps" }, h("li", null, h("strong", { text: "Assign" }), "Request eligible source IDs before execution."),
+        h("li", null, h("strong", { text: "Deliver" }), "Report exactly the memories serialized into context."),
+        h("li", null, h("strong", { text: "Report" }), "Send success, reward, or configured metrics."),
+        h("li", null, h("strong", { text: "Evaluate" }), "Workers process evidence; inspect decisions here.")),
+      h("p", { class: "muted small", text: "API: /v1/learning · MCP: learning_* · SDKs: Python, TypeScript, Go, Rust, Java and Kotlin" })));
+    return root;
+  }
+  VIEWS.learning = viewLearning;
+
   function viewAuth(message) {
     var input = h("input", { id: "tok", type: "password", autocomplete: "off", spellcheck: "false", "aria-describedby": "tok-help" });
     var form = h("form", null,
@@ -1300,7 +1509,8 @@
   function paint(force) {
     var route = currentRoute();
     var sig = route.id + "|" + location.hash + "|" + JSON.stringify([state.status, state.capabilities, state.memories, state.agents, state.events,
-      state.lessons, state.lesson, state.commandCatalog, state.commandResult, state.explorer, state.reviewDraft, state.ledger, state.library, state.traces, state.trace, state.benchmarks, selected, notice]);
+      state.lessons, state.lesson, state.commandCatalog, state.commandResult, state.explorer, state.reviewDraft, state.ledger, state.library, state.traces, state.trace, state.benchmarks,
+      state.learning, state.learningCapabilities, state.learningBusy, state.learningAction, state.identity, selected, notice]);
     if (!force && sig === lastPaint) return;
     if (!force && editing()) return;
     lastPaint = sig;
@@ -1363,6 +1573,9 @@
     if (route === "overview" || route === "memories" || route === "lesson") wants.push("memories");
     if (route === "overview" || route === "fleet" || route === "safety") wants.push("agents");
     if (route === "live") wants.push("occasions");
+    var learningStatusPath = "learning/status";
+    if ((state.learningScope || []).length) learningStatusPath += "?" + state.learningScope.map(function (label) { return "context=" + encodeURIComponent(label); }).join("&");
+    if (route === "learning") wants.push("learning/capabilities", learningStatusPath, "whoami");
     if (route === "palace") wants.push("palace");
     var reviewOffset = Number(hashQuery("offset"));
     if (!Number.isSafeInteger(reviewOffset) || reviewOffset < 0) reviewOffset = 0;
@@ -1383,9 +1596,15 @@
       capabilities: "capabilities", occasions: "events", "lessons?status=review": "lessons",
       "command-catalog": "commandCatalog"
     };
+    keys["learning/capabilities"] = "learningCapabilities"; keys[learningStatusPath] = "learning"; keys.whoami = "identity";
     keys[reviewPath] = "lessons";
     keys[libraryPath] = "library"; keys[tracesPath] = "traces"; keys[tracePath] = "trace"; keys["benchmark-history"] = "benchmarks";
-    return Promise.all(wants.map(function (w) { return api("/v1/" + w).then(function (d) { return [w, d]; }); }))
+    return Promise.all(wants.map(function (w) {
+      return api("/v1/" + w).then(function (d) { return [w, d]; }).catch(function (error) {
+        if (error.auth || route !== "learning" || w.indexOf("learning/") !== 0 && w !== "whoami") throw error;
+        return [w, { unavailable: error.status || 503, message: error.message }];
+      });
+    }))
       .then(function (pairs) {
         // A slow poll from an earlier page or credential must never replace
         // newer results, or turn a valid new connection into a signed-out one.
@@ -1422,6 +1641,19 @@
   var saved = load("unimem-theme") || "system";
   themeSel.value = saved; applyTheme(saved);
   themeSel.addEventListener("change", function () { store("unimem-theme", themeSel.value); applyTheme(themeSel.value); });
+  function closeMenu() {
+    if (!menuToggle) return;
+    menuToggle.setAttribute("aria-expanded", "false");
+    document.body.classList.remove("menu-open");
+  }
+  if (menuToggle) menuToggle.addEventListener("click", function () {
+    var open = menuToggle.getAttribute("aria-expanded") !== "true";
+    menuToggle.setAttribute("aria-expanded", String(open));
+    document.body.classList.toggle("menu-open", open);
+  });
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape" && document.body.classList.contains("menu-open")) { closeMenu(); menuToggle.focus(); }
+  });
   if (commandLaunch) commandLaunch.addEventListener("click", function () { location.hash = "#/commands"; });
   if (disconnect) disconnect.addEventListener("click", function () {
     token = "";
@@ -1460,6 +1692,7 @@
   });
   window.addEventListener("hashchange", function () {
     navigationGeneration++;
+    closeMenu();
     state.library = null; state.traces = null; state.trace = null; state.benchmarks = null;
     render(); main.focus(); refresh();
   });

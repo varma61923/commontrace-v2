@@ -1035,6 +1035,30 @@ def _console_post(
     )
 
 
+def _console_learning_post(operation_id: str, summary: str, *, fields: dict, required: tuple) -> dict:
+    return _op(
+        operation_id,
+        "Console",
+        summary,
+        security=CONSOLE,
+        body=_form_body(fields, required),
+        description=(
+            "Requires a live console session whose API key has read and admin scopes. "
+            "Cross-origin requests are refused. Rechecks key scopes and delegation enrollment on every request. "
+            "Uses the canonical measured-learning transaction, including its audit record. "
+            "Repeated or unknown fields are refused. Errors render an escaped HTML page."
+        ),
+        responses={
+            "303": _see_other("To /app/learning?done=configure|run|rollback after success, or /app/signin."),
+            "400": _html("Invalid or malformed form; no change accepted."),
+            "403": _html("Admin permission is required, or the request was cross-origin."),
+            "404": _html("The pinned experiment or policy revision does not exist in this organisation."),
+            "409": _html("Learning evidence or the requested operation conflicts with current state."),
+            "503": _html("Learning is temporarily unavailable; retry shortly."),
+        },
+    )
+
+
 def _api(
     operation_id: str,
     tag: str,
@@ -1821,6 +1845,46 @@ def _operations() -> dict[tuple[str, str], dict]:
             },
         ),
         ("GET", "/app"): _console_page("consoleOverview", "Fleet overview"),
+        ("GET", "/app/learning"): _console_page(
+            "consoleLearning",
+            "Measured learning evidence and policy controls",
+            parameters=(_query("done", _string(enum=["configure", "run", "rollback"]), "Allowlisted result message."),),
+            description=(
+                "Shows active configuration, this key's scoped counts, evidence readiness and current delivery policy. "
+                "Admin sessions see organisation-wide evaluation; read sessions receive only their visible cohorts. "
+                "An unconfigured organisation receives onboarding rather than invented metrics."
+            ),
+        ),
+        ("POST", "/app/learning/configure"): _console_learning_post(
+            "consoleLearningConfigure",
+            "Start a measured learning experiment (admin keys)",
+            fields={
+                "mode": _string(enum=["off", "observe", "adaptive"]),
+                "holdout_rate": _number("Fraction withheld.", minimum=0.05, maximum=0.95),
+                "min_arm": _integer("Minimum observations per arm.", minimum=10, maximum=10000),
+                "utility": _string("Optional utility JSON, or blank for success/reward outcomes.", maxLength=32768),
+                "confirm": _string("Explicit acknowledgement that saving creates a new experiment.", enum=["yes"]),
+            },
+            required=("mode", "holdout_rate", "min_arm", "confirm"),
+        ),
+        ("POST", "/app/learning/run"): _console_learning_post(
+            "consoleLearningRun",
+            "Evaluate accepted learning evidence (admin keys)",
+            fields={"experiment_id": _string("Pinned experiment ID.", minLength=1, maxLength=256)},
+            required=("experiment_id",),
+        ),
+        ("POST", "/app/learning/rollback"): _console_learning_post(
+            "consoleLearningRollback",
+            "Restore a delivery policy as a new revision (admin keys)",
+            fields={
+                "experiment_id": _string("Pinned experiment ID.", minLength=1, maxLength=256),
+                "reason": _string("Operator reason.", minLength=1, maxLength=256),
+                "decision_revision": _integer(
+                    "Revision to restore; blank defaults to the previous revision.", minimum=0
+                ),
+            },
+            required=("experiment_id", "reason"),
+        ),
         ("GET", "/app/proof"): _console_page(
             "consoleProof",
             "Proof of value",

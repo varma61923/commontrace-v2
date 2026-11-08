@@ -253,3 +253,77 @@ main { max-width: 86rem; padding-top: 1.75rem; }
 .history-line { stroke: var(--accent); stroke-width: 2; }
 .history-dot { fill: var(--accent); }
 nav[aria-label="History pages"] { display: flex; gap: 1.5rem; padding: 1rem 0; }
+
+/* Outcome learning: a compact control plane, backed entirely by live evidence. */
+.menu-toggle { display: none; }
+.workspace-hero, .learning-banner { display: flex; justify-content: space-between; align-items: center; gap: 2rem; padding: 1.75rem; border: 1px solid var(--line); border-radius: var(--radius); background: linear-gradient(125deg, var(--surface), var(--accent-soft)); margin: 1.5rem 0; }
+.workspace-hero > div { max-width: 36rem; }
+.workspace-hero h2, .learning-banner h2 { font-size: clamp(1.3rem, 2.1vw, 1.8rem); line-height: 1.25; letter-spacing: -.025em; margin: .6rem 0; }
+.workspace-hero p, .learning-banner p { color: var(--text-2); max-width: 55ch; }
+.workspace-hero .btn { display: inline-flex; align-items: center; text-decoration: none; margin-top: .8rem; }
+.loop-steps { list-style: none; padding: 0; margin: 0; display: grid; gap: 1rem; flex: 0 0 16rem; }
+.loop-steps li { display: grid; grid-template-columns: 2rem 1fr; column-gap: .75rem; font-size: .8rem; color: var(--text-2); }
+.loop-steps li > span { grid-row: span 2; display: grid; place-items: center; font: .75rem var(--mono); color: var(--accent-text); border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.loop-steps strong { font-size: .9rem; color: var(--text); }
+.learning-banner { padding: 1.5rem; }
+.learning-banner .btn { display: inline-flex; align-items: center; text-decoration: none; flex-shrink: 0; }
+.learning-banner h2 { max-width: 28ch; }
+.learning-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1rem; }
+.metric-label { font-size: .8rem; color: var(--text-2); margin: 0; }
+.learning-metrics .big { font-size: 1.8rem; margin: .75rem 0; }
+.learning-metrics .small { font-size: .75rem; margin: 0; }
+.experiment-id { overflow-wrap: anywhere; margin: .8rem 0 1.5rem; font-family: var(--mono); font-size: .7rem; }
+.evidence-section { margin: 1.25rem 0; }
+.section-title { display: flex; justify-content: space-between; align-items: center; gap: .75rem; flex-wrap: wrap; margin-bottom: .75rem; }
+.section-title h2 { margin: .35rem 0; }
+.section-title .eyebrow { margin: 0; }
+.learning-layout { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; align-items: start; margin: 1.25rem 0; }
+.learning-form { display: grid; gap: 1rem; }
+.learning-form > h2, .learning-form > p { margin: 0; }
+.learning-form .eyebrow { font-size: .65rem; }
+.learning-form label { font-size: .8rem; }
+.learning-form input, .learning-form select, .learning-form textarea { width: 100%; min-width: 0; min-height: 44px; padding: .6rem .7rem; margin: 0; border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--text); background: var(--surface); font: inherit; }
+.learning-form select { font-size: .85rem; }
+.learning-form input:focus-visible, .learning-form select:focus-visible, .learning-form textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.learning-form textarea { font: .8rem/1.6 var(--mono); }
+.learning-form-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8rem; }
+.learning-field { min-width: 0; }
+.learning-form details summary, .evidence-section details summary { min-height: 44px; padding: .6rem 0; cursor: pointer; font-weight: 600; font-size: .85rem; }
+.learning-connect { margin: 1.5rem 0; }
+.learning-scope { display: flex; align-items: start; gap: 1rem; margin-top: 1.25rem; }
+.learning-scope > div { flex: 1; min-width: 0; }
+.learning-scope input { width: 100%; min-height: 44px; padding: .6rem .7rem; border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--text); background: var(--surface); font: inherit; }
+.learning-scope .btn { margin-top: 1.6rem; flex-shrink: 0; }
+.learning-scope .small { font-size: .75rem; }
+.learning-scope-switcher { margin: 1rem 0; }
+.learning-scope-switcher summary { min-height: 44px; padding: .6rem 0; font-size: .8rem; color: var(--text-2); cursor: pointer; overflow-wrap: anywhere; }
+.learning-scope-switcher .learning-scope { margin-top: .25rem; }
+.integration-steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); list-style: none; padding: 0; gap: 1rem; counter-reset: integration; margin: 1.25rem 0; }
+.integration-steps li { border-top: 2px solid var(--line); padding-top: .75rem; font-size: .8rem; color: var(--text-2); }
+.integration-steps strong { display: block; margin-bottom: .4rem; color: var(--text); font-size: .9rem; }
+.integration-steps strong::before { counter-increment: integration; content: "0" counter(integration) " / "; font: .75rem var(--mono); color: var(--accent-text); }
+@media (max-width: 75rem) { .learning-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .workspace-hero { align-items: start; } .loop-steps { flex-basis: 12rem; } }
+@media (max-width: 52rem) {
+  .bar { padding: .65rem .75rem; gap: .5rem; min-height: 0; }
+  .bar .spacer, .bar .tier-chip { display: none; }
+  .bar .conn { margin-left: 0; font-size: .7rem; flex: 1; white-space: normal; }
+  .bar .brand { margin-right: auto; }
+  .bar .brand small { display: none; }
+  .bar #disconnect { min-height: 36px; font-size: .75rem; padding-inline: .65rem; }
+  .bar #theme { min-height: 36px; max-width: 5.5rem; font-size: .75rem; }
+  .menu-toggle { display: inline-block; padding-inline: .65rem; }
+  .console-sidebar { display: none; }
+  .menu-open .console-sidebar { display: block; }
+  .console-sidebar .tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .workspace-hero, .learning-banner { padding: 1.25rem; display: block; }
+  .loop-steps { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 1.5rem; gap: .7rem; }
+  .loop-steps li { display: block; }
+  .loop-steps li > span { display: inline-grid; width: 2rem; height: 2rem; margin-bottom: .5rem; }
+  .loop-steps strong { display: block; margin-bottom: .3rem; }
+  .learning-layout { grid-template-columns: 1fr; }
+  .learning-scope { display: block; }
+  .learning-scope .btn { margin-top: .5rem; }
+  .learning-banner .btn { margin-top: .5rem; }
+  .integration-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 24rem) { .learning-metrics, .learning-form-row { grid-template-columns: 1fr; } }

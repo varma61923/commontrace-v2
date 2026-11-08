@@ -50,6 +50,7 @@ function api(path) {requested.push(path); return Promise.resolve({path});}
     [
         ("overview", ["status", "memories", "agents"]),
         ("explore", ["status"]),
+        ("learning", ["status", "learning/capabilities", "learning/status", "whoami"]),
         ("memories", ["status", "memories"]),
         ("live", ["status", "occasions"]),
         ("fleet", ["status", "agents"]),

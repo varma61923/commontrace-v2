@@ -20,12 +20,15 @@ from unimem import (
     gateway,
     hierarchical,
     holdout_io,
+    learning,
     memory_control,
     paths,
     proof,
     templates,
 )
 from unimem.fact_evidence import bind_evidence
+from unimem.memory_journal import Journal
+from unimem.memory_record import MemoryRecord
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -116,6 +119,9 @@ def connect(page: Page, console: Console) -> None:
 
 
 def navigate(page: Page, label: str) -> None:
+    menu = page.get_by_role("button", name="Menu", exact=True)
+    if menu.is_visible() and menu.get_attribute("aria-expanded") != "true":
+        menu.click()
     page.get_by_role("navigation", name="Console sections").get_by_role("link", name=label, exact=True).click()
     heading = "Review queue" if label == "Review" else label
     pw.expect(page.get_by_role("heading", name=heading, exact=True)).to_be_visible()
@@ -172,6 +178,8 @@ def test_navigation_keyboard_theme_and_literal_review_evidence(page: Page, conso
     errors: list[str] = []
     page.on("pageerror", lambda error: errors.append(str(error)))
     connect(page, console)
+    if page.get_by_role("button", name="Menu", exact=True).is_visible():
+        page.get_by_role("button", name="Menu", exact=True).click()
     links = page.get_by_role("navigation", name="Console sections").get_by_role("link")
     for link in links.all():
         bounds = link.bounding_box()
@@ -187,7 +195,9 @@ def test_navigation_keyboard_theme_and_literal_review_evidence(page: Page, conso
     review = page.get_by_role("navigation", name="Console sections").get_by_role("link", name="Review", exact=True)
     review.focus()
     review.press("Enter")
-    pw.expect(review).to_have_attribute("aria-current", "page")
+    # Mobile navigation collapses after activating a route; its current-page
+    # marker remains available when the disclosure is opened again.
+    pw.expect(page.locator('#nav a[href="#/review"]')).to_have_attribute("aria-current", "page")
     pw.expect(page.get_by_text("Literal review evidence " + MARKUP, exact=True)).to_be_visible()
     assert page.locator("main img").count() == 0
     assert page.evaluate("() => window.auditExecuted === undefined")
@@ -563,3 +573,184 @@ def test_lesson_trace_and_benchmark_history_are_real_redacted_and_accessible(
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
     assert page.evaluate("window.auditExecuted") is None
     assert errors == []
+
+
+@pytest.mark.parametrize("width", [390, 1440])
+def test_learning_configuration_evaluation_and_recovery_use_real_evidence(
+    page: Page, console: Console, width: int
+) -> None:
+    page.set_viewport_size({"width": width, "height": 1000})
+    Journal(console.root).put(MemoryRecord("learning-source", "fact", 1, {"text": "Check sensor calibration."}))
+    connect(page, console)
+    navigate(page, "Adaptive learning")
+    page.get_by_label("Holdout rate (%)", exact=True).fill("35")
+    page.get_by_role("button", name="Start experiment", exact=True).click()
+    pw.expect(page.get_by_role("button", name="Evaluate evidence", exact=True)).to_be_enabled()
+    status = learning.operate(console.root, "status")
+    assert status["config"]["mode"] == "observe" and status["config"]["holdout_rate"] == 0.35
+    learning.operate(console.root, "assign", {"occasion_id": "episode-1", "memory_ids": ["learning-source"]})
+    page.get_by_role("button", name="Evaluate evidence", exact=True).click()
+    pw.expect(page.get_by_text("Delivery receipts are missing or partial.", exact=True)).to_be_visible()
+    pw.expect(page.get_by_text("Some occasions still need an outcome.", exact=True)).to_be_visible()
+    assert learning.operate(console.root, "status")["policy"] == {}
+    page.get_by_label("Reason for rollback", exact=True).fill("Operator review " + MARKUP)
+    page.get_by_role("button", name="Restore policy", exact=True).click()
+    pw.expect(page.get_by_role("status").filter(has_text="Policy restored as revision 1")).to_be_visible()
+    status = learning.operate(console.root, "status")
+    assert status["decision_revision"] == 1 and status["occasions"] == 1
+    assert page.evaluate("() => window.auditExecuted === undefined")
+    assert not page.evaluate("() => document.documentElement.scrollWidth > innerWidth")
+    assert page.locator("main img").count() == 0
+
+
+def test_learning_draft_survives_changed_poll_and_invalid_json(page: Page, console: Console) -> None:
+    learning.operate(console.root, "configure", {"mode": "observe"})
+    Journal(console.root).put(MemoryRecord("learning-source", "fact", 1, {"text": "Verify retry identity."}))
+    connect(page, console)
+    navigate(page, "Adaptive learning")
+    page.get_by_label("Holdout rate (%)", exact=True).fill("25")
+    page.get_by_label("Reason for rollback", exact=True).fill("Keep this unsent explanation")
+    page.get_by_role("heading", name="Adaptive learning", exact=True).click()
+    learning.operate(console.root, "assign", {"occasion_id": "late-episode", "memory_ids": ["learning-source"]})
+    # A changed real status response triggers a repaint while no input has focus.
+    page.wait_for_timeout(5500)
+    pw.expect(page.get_by_label("Holdout rate (%)", exact=True)).to_have_value("25")
+    pw.expect(page.get_by_label("Reason for rollback", exact=True)).to_have_value("Keep this unsent explanation")
+    page.get_by_text("Metric-based outcomes", exact=True).click()
+    page.get_by_label("Utility definition (optional JSON)", exact=True).fill("{invalid")
+    before = learning.operate(console.root, "status")["experiment_id"]
+    page.get_by_role("button", name="Create experiment", exact=True).click()
+    pw.expect(page.get_by_role("alert")).to_contain_text("must be valid JSON")
+    assert learning.operate(console.root, "status")["experiment_id"] == before
+    pw.expect(page.get_by_label("Utility definition (optional JSON)", exact=True)).to_have_value("{invalid")
+
+
+@pytest.mark.parametrize("replacement", [False, True])
+def test_learning_write_cannot_restore_old_session_or_block_future_actions(
+    page: Page, console: Console, replacement: bool
+) -> None:
+    held: list[tuple[Route, APIResponse]] = []
+
+    def hold(route: Route) -> None:
+        held.append((route, route.fetch()))
+
+    connect(page, console)
+    navigate(page, "Adaptive learning")
+    page.route("**/v1/learning/configure", hold)
+    page.get_by_role("button", name="Start experiment", exact=True).click()
+    deadline = time.monotonic() + 10
+    while not held and time.monotonic() < deadline:
+        page.wait_for_timeout(25)
+    assert len(held) == 1 and held[0][1].status == 200
+    if replacement:
+        page.get_by_role("button", name="Disconnect", exact=True).click()
+        pw.expect(page.get_by_label("Access token", exact=True)).to_be_visible()
+        console.credential[0] = "browser-contract-credential-replacement"
+        page.get_by_label("Access token", exact=True).fill(console.credential[0])
+        page.get_by_role("button", name="Connect", exact=True).click()
+    else:
+        navigate(page, "Review")
+    navigate(page, "Adaptive learning")
+    held[0][0].fulfill(response=held[0][1])
+    pw.expect(page.get_by_role("button", name="Evaluate evidence", exact=True)).to_be_enabled()
+    pw.expect(
+        page.get_by_text("New experiment created. Earlier evidence remains in its original experiment.", exact=True)
+    ).not_to_be_visible()
+    assert page.evaluate("() => sessionStorage.getItem('unimem-token')") == console.credential[0]
+
+
+def test_learning_access_refusal_is_visible_without_false_offline_state(page: Page, console: Console) -> None:
+    connect(page, console)
+    page.route(
+        "**/v1/learning/status",
+        lambda route: route.fulfill(
+            status=403,
+            content_type="application/json",
+            body='{"error":{"message":"Learning status requires permission"}}',
+        ),
+    )
+    navigate(page, "Adaptive learning")
+    pw.expect(page.get_by_role("heading", name="Learning state unavailable", exact=True)).to_be_visible()
+    pw.expect(page.get_by_text("Learning status requires permission", exact=True)).to_be_visible()
+    pw.expect(page.locator("#conn")).to_have_attribute("data-state", "ok")
+    assert page.get_by_role("button", name="Start experiment", exact=True).count() == 0
+
+
+def test_mobile_navigation_disclosure_supports_keyboard_and_escape(page: Page, console: Console) -> None:
+    page.set_viewport_size({"width": 390, "height": 844})
+    connect(page, console)
+    menu = page.get_by_role("button", name="Menu", exact=True)
+    pw.expect(menu).to_have_attribute("aria-expanded", "false")
+    pw.expect(page.get_by_role("heading", name="Overview", exact=True)).to_be_in_viewport()
+    menu.focus()
+    menu.press("Enter")
+    pw.expect(menu).to_have_attribute("aria-expanded", "true")
+    link = page.get_by_role("link", name="Adaptive learning", exact=True)
+    link.focus()
+    link.press("Escape")
+    pw.expect(menu).to_be_focused()
+    pw.expect(menu).to_have_attribute("aria-expanded", "false")
+    navigate(page, "Adaptive learning")
+    pw.expect(menu).to_have_attribute("aria-expanded", "false")
+    pw.expect(page.locator("main")).to_be_focused()
+
+
+def test_learning_actions_preserve_drafts_and_load_new_configuration(page: Page, console: Console) -> None:
+    learning.operate(console.root, "configure", {"mode": "observe"})
+    connect(page, console)
+    navigate(page, "Adaptive learning")
+    page.get_by_label("Learning mode", exact=True).select_option("adaptive")
+    page.get_by_label("Holdout rate (%)", exact=True).fill("35")
+    page.get_by_role("button", name="Create experiment", exact=True).click()
+    pw.expect(page.get_by_role("button", name="Evaluate evidence", exact=True)).to_be_enabled()
+    pw.expect(page.get_by_label("Learning mode", exact=True)).to_have_value("adaptive")
+    pw.expect(page.get_by_label("Holdout rate (%)", exact=True)).to_have_value("35")
+    page.get_by_label("Holdout rate (%)", exact=True).fill("22")
+    page.get_by_label("Reason for rollback", exact=True).fill("Unsent recovery reason")
+    page.get_by_role("button", name="Evaluate evidence", exact=True).click()
+    pw.expect(page.get_by_role("button", name="Evaluate evidence", exact=True)).to_be_enabled()
+    pw.expect(page.get_by_label("Holdout rate (%)", exact=True)).to_have_value("22")
+    pw.expect(page.get_by_label("Reason for rollback", exact=True)).to_have_value("Unsent recovery reason")
+    assert learning.operate(console.root, "status")["config"]["holdout_rate"] == 0.35
+
+
+def test_learning_owner_controls_exact_robot_scope(page: Page, console: Console) -> None:
+    from unimem.learning_contract import LearningUnavailable
+
+    connect(page, console)
+    navigate(page, "Adaptive learning")
+    page.locator(".learning-scope-switcher > summary").click()
+    page.get_by_label("Learning scope labels", exact=True).fill("project:warehouse, agent:robot-1")
+    page.get_by_role("button", name="Switch scope", exact=True).click()
+    page.get_by_role("button", name="Start experiment", exact=True).click()
+    pw.expect(page.get_by_role("button", name="Evaluate evidence", exact=True)).to_be_enabled()
+    context = ["agent:robot-1", "project:warehouse"]
+    configured = learning.operate(console.root, "status", context=context)
+    with pytest.raises(LearningUnavailable):
+        learning.operate(console.root, "status")
+    page.get_by_role("button", name="Evaluate evidence", exact=True).click()
+    pw.expect(page.get_by_role("button", name="Evaluate evidence", exact=True)).to_be_enabled()
+    page.get_by_label("Reason for rollback", exact=True).fill("Robot operator review")
+    page.get_by_role("button", name="Restore policy", exact=True).click()
+    pw.expect(page.get_by_role("status").filter(has_text="Policy restored as revision 1")).to_be_visible()
+    assert learning.operate(console.root, "status", context=context)["decision_revision"] == 1
+    assert learning.operate(console.root, "status", context=context)["experiment_id"] == configured["experiment_id"]
+    page.locator(".learning-scope-switcher > summary").click()
+    page.get_by_label("Learning scope labels", exact=True).fill("")
+    page.get_by_role("button", name="Switch scope", exact=True).click()
+    pw.expect(page.get_by_role("button", name="Start experiment", exact=True)).to_be_enabled()
+    assert page.get_by_role("button", name="Evaluate evidence", exact=True).count() == 0
+
+
+def test_learning_lost_success_response_reports_uncertain_commit(page: Page, console: Console) -> None:
+    def lose_reply(route: Route) -> None:
+        assert route.fetch().status == 200
+        route.abort("failed")
+
+    connect(page, console)
+    navigate(page, "Adaptive learning")
+    page.route("**/v1/learning/configure", lose_reply)
+    page.get_by_role("button", name="Start experiment", exact=True).click()
+    pw.expect(page.get_by_role("alert")).to_contain_text("It may have been accepted")
+    pw.expect(page.get_by_role("button", name="Evaluate evidence", exact=True)).to_be_enabled()
+    assert learning.operate(console.root, "status")["config"]["mode"] == "observe"
