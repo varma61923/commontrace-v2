@@ -52,6 +52,8 @@ unimem demo             # offline, no LLM, no API key
 
 ## Contents
 
+[Platform direction and roadmap](docs/platform-direction.md) describes the proposed universal memory and learning architecture, delivery gates, and customer strategy.
+
 - [See the whole loop offline](#see-the-whole-loop-offline)
 - [Quickstart](#quickstart)
 - [Prove that memory helps](#prove-that-memory-helps)
