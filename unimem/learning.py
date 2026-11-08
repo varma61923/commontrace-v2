@@ -17,7 +17,7 @@ from unimem import capabilities as authority
 from unimem import learning_contract as contract
 from unimem import memory_authority, purpose
 from unimem.memory_journal import Journal
-from unimem.record_visibility import scope_from_labels
+from unimem.record_visibility import now, scope_from_labels
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS learning_experiments (
@@ -350,6 +350,7 @@ def operate(
                     task_context=body.get("task_context", ""),
                     policy=json.loads(locked[1]),
                 )
+                assignment["at"] = now()
                 assignment["policy_revision"] = locked[2]
                 assignment["_authority"] = original_authority
                 # Never retain copied source content after consent revocation/erasure.

@@ -2,6 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from datetime import datetime
 
 import pytest
 
@@ -51,6 +52,7 @@ def test_source_admission_and_scope_are_not_caller_overridable(root):
 
 def test_retries_are_durable_but_changed_input_and_outcome_conflict(root):
     first = assign(root)
+    assert datetime.fromisoformat(first["at"]).tzinfo is not None
     assert assign(root) == first
     with pytest.raises(LearningConflict):
         assign(root, task_context="new")

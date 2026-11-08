@@ -109,16 +109,19 @@ class RobotLearningClient:
 
     def __init__(self, bridge: "RobotBridge") -> None:
         self._bridge = bridge
-        self._assignments: dict[str, dict] = {}
-        self._capabilities: dict | None = None
+        self._assignments: dict[str, dict[str, Any]] = {}
+        self._capabilities: dict[str, Any] | None = None
 
-    def _get(self, path: str, context: list[str]) -> dict:
+    def _get(self, path: str, context: list[str]) -> dict[str, Any]:
         read = getattr(self._bridge.transport, "get", None)
         if not callable(read):
             raise RuntimeError("robot transport does not support learning capability negotiation")
-        return read(path, context)
+        result = read(path, context)
+        if not isinstance(result, dict):
+            raise ValueError("robot learning transport returned a non-object")
+        return result
 
-    def capabilities(self) -> dict:
+    def capabilities(self) -> dict[str, Any]:
         from unimem.client import learning_capabilities_reply
 
         self._capabilities = learning_capabilities_reply(
@@ -126,7 +129,7 @@ class RobotLearningClient:
         )
         return self._capabilities
 
-    def _call(self, operation: str, body: dict) -> dict:
+    def _call(self, operation: str, body: dict[str, Any]) -> dict[str, Any]:
         from unimem.client import learning_reply
 
         if operation not in self.capabilities().get("operations", []):
@@ -136,10 +139,10 @@ class RobotLearningClient:
             return learning_reply(self._get("/v1/learning/status", body["context"]))
         return learning_reply(self._bridge.transport.post("/v1/learning/" + operation, body))
 
-    def status(self) -> dict:
+    def status(self) -> dict[str, Any]:
         return self._call("status", {})
 
-    def assign(self, occasion_id: str, memory_ids: list[str], *, experiment_id: str | None = None) -> dict:
+    def assign(self, occasion_id: str, memory_ids: list[str], *, experiment_id: str | None = None) -> dict[str, Any]:
         if occasion_id not in self._assignments and len(self._assignments) >= 128:
             raise ValueError("too many unfinished robot learning assignments")
         body = {"occasion_id": occasion_id, "memory_ids": memory_ids, "task_context": self._bridge.context}
@@ -153,7 +156,7 @@ class RobotLearningClient:
         self._bridge._recalls[occasion_id] = {"deliver": []}
         return result
 
-    def _pinned(self, occasion_id: str, experiment_id: str | None) -> dict:
+    def _pinned(self, occasion_id: str, experiment_id: str | None) -> dict[str, Any]:
         pinned = self._assignments.get(occasion_id, {}).get("experiment_id")
         if pinned and experiment_id and pinned != experiment_id:
             raise ValueError("experiment conflicts with pinned robot assignment")
@@ -162,7 +165,7 @@ class RobotLearningClient:
             raise ValueError("learning requires a pinned experiment_id")
         return {"occasion_id": occasion_id, "experiment_id": experiment}
 
-    def delivery(self, occasion_id: str, memory_ids: list[str], *, experiment_id: str | None = None) -> dict:
+    def delivery(self, occasion_id: str, memory_ids: list[str], *, experiment_id: str | None = None) -> dict[str, Any]:
         result = self._call("delivery", {**self._pinned(occasion_id, experiment_id), "memory_ids": memory_ids})
         assignment = self._assignments.get(occasion_id, {})
         self._bridge._recalls[occasion_id] = {
@@ -178,7 +181,7 @@ class RobotLearningClient:
         reward: float | None = None,
         metrics: dict[str, float] | None = None,
         experiment_id: str | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         body = self._pinned(occasion_id, experiment_id)
         if sum(value is not None for value in (succeeded, reward, metrics)) != 1:
             raise ValueError("learning outcome requires exactly one outcome")

@@ -34,6 +34,17 @@ def bridge(transport, queue):
     return RobotBridge(transport, embodiment="arm", site="lab", skill="pick", robot="r1", outcome_queue=queue)
 
 
+@pytest.mark.parametrize("reply", [None, [], True, "{}"])
+def test_robot_rejects_non_object_negotiation_before_sending_assignment(tmp_path, monkeypatch, reply):
+    transport = Transport()
+    monkeypatch.setattr(transport, "get", lambda path, context: reply)
+    robot = bridge(transport, OutcomeQueue(str(tmp_path)))
+    with pytest.raises(ValueError, match="non-object"):
+        robot.learning.assign("pick-1", ["m"])
+    assert transport.calls == []
+    assert robot._recalls == {}
+
+
 def test_learning_robot_offline_replay_pins_experiment_and_route(tmp_path):
     transport = Transport()
     queue = OutcomeQueue(str(tmp_path))

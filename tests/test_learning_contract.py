@@ -137,7 +137,7 @@ def test_all_hypotheses_use_one_multiplicity_corrected_analysis(monkeypatch):
     ],
 )
 def test_openapi_discovery_schema_rejects_runtime_invalid_wire_shapes(operation, payload):
-    from openapi_schema_validator import OAS30Validator
+    OAS30Validator = pytest.importorskip("openapi_schema_validator").OAS30Validator
 
     assert list(OAS30Validator(c.request_schema(operation)).iter_errors(payload))
     with pytest.raises(ValueError):
@@ -156,7 +156,7 @@ def test_openapi_discovery_schema_rejects_runtime_invalid_wire_shapes(operation,
     ],
 )
 def test_openapi_discovery_schema_accepts_runtime_valid_wire_shapes(operation, payload):
-    from openapi_schema_validator import OAS30Validator
+    OAS30Validator = pytest.importorskip("openapi_schema_validator").OAS30Validator
 
     OAS30Validator(c.request_schema(operation)).validate(payload)
     c.validate_request(operation, payload)
