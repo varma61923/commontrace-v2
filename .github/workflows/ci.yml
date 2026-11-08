@@ -100,7 +100,6 @@ jobs:
     timeout-minutes: 15
     env:
       UNIMEM_REQUIRE_BROWSER: "1"
-      UNIMEM_AXE_SCRIPT: ${{ runner.temp }}/console-a11y/node_modules/axe-core/axe.min.js
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -123,6 +122,8 @@ jobs:
         run: python -m playwright install --with-deps chromium --only-shell
 
       - name: Exercise both consoles and command-palette accessibility
+        env:
+          UNIMEM_AXE_SCRIPT: ${{ runner.temp }}/console-a11y/node_modules/axe-core/axe.min.js
         run: python -m pytest tests/test_ui_browser.py hub/tests/test_console_accessibility.py -q
 
   test-dev:
