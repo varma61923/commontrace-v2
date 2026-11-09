@@ -25,6 +25,13 @@ The CI lookup uses a read-only Actions token, a bounded response and a network
 timeout. It does not follow redirects with credentials. No package publication
 or production deployment is performed by local verification commands.
 
+The local gateway bounds active connections and request bodies. Its
+`make_http_server(..., request_timeout=10)` timeout is a total input budget for
+each request's headers and body; trickling bytes cannot extend it. Persistent
+connections receive a new input budget for each request. Application execution
+uses its own operation limits, and response socket writes retain their normal
+timeout. Size reverse-proxy limits and client upload expectations accordingly.
+
 ## Bootstrap the Hub
 
 - Provision PostgreSQL and a migration owner separately from the serving role.

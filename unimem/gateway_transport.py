@@ -7,12 +7,15 @@ The gateway's public factory functions are compatibility facades.
 
 from __future__ import annotations
 
+import io
 import json
 import logging
 import math
 import re
+import socket
 import ssl
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, Any, TextIO
 from urllib.parse import urlencode, urlsplit
@@ -23,6 +26,47 @@ if TYPE_CHECKING:
 logger = logging.getLogger("unimem.gateway")
 
 __all__ = ["make_http_server", "serve_stdio"]
+
+
+class _DeadlineReader(io.RawIOBase):
+    """Bound all socket reads for one request, including headers and body.
+
+    BufferedReader retains normal HTTP framing and pipelining. Enforcing the
+    deadline at readinto covers readline/read without extra timer threads.
+    """
+
+    def __init__(self, connection: socket.socket, seconds: float) -> None:
+        super().__init__()
+        self._connection = connection
+        self._stream = connection.makefile("rb", buffering=0)
+        self._seconds = seconds
+        self.reset_deadline()
+
+    def reset_deadline(self) -> None:
+        self._deadline = time.monotonic() + self._seconds
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: Any) -> int | None:
+        remaining = self._deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("gateway request input deadline exceeded")
+        previous = self._connection.gettimeout()
+        try:
+            self._connection.settimeout(min(previous, remaining) if previous is not None else remaining)
+            count = self._stream.readinto(buffer)
+            if time.monotonic() > self._deadline:
+                raise TimeoutError("gateway request input deadline exceeded")
+            return count
+        finally:
+            self._connection.settimeout(previous)
+
+    def close(self) -> None:
+        try:
+            self._stream.close()
+        finally:
+            super().close()
 
 
 def make_http_server(
@@ -38,6 +82,8 @@ def make_http_server(
 
     Excess connections close immediately, without allocating waiting workers.
     Persistent connections retain their slot until completion or idle timeout.
+    Each request has one total input deadline for headers and body; application
+    work and the next persistent request do not share that input budget.
     """
     from unimem.gateway import MAX_BODY_BYTES, _json
 
@@ -52,6 +98,17 @@ def make_http_server(
         # Headers and small JSON bodies are separate writes. On persistent
         # connections Nagle can hold the body for the peer's delayed ACK.
         disable_nagle_algorithm = True
+
+        def setup(self) -> None:
+            super().setup()
+            self.rfile.close()
+            self._input = _DeadlineReader(self.connection, request_timeout)
+            self.rfile = io.BufferedReader(self._input)
+
+        def handle_one_request(self) -> None:
+            # Persistent connections receive a fresh input budget each request.
+            self._input.reset_deadline()
+            super().handle_one_request()
 
         def log_message(self, format: str, *args: Any) -> None:
             logger.debug("Gateway HTTP: %s", format % args)
