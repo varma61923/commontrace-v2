@@ -10,11 +10,16 @@ reviewed overlay is trialled, so harmful or stale rewrites fall back immediately
 from __future__ import annotations
 
 import copy
+import hashlib
 import math
 import os
+import tempfile
 from collections import OrderedDict
+from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any, Sequence
+from functools import wraps
+from typing import Any, ParamSpec, Sequence, TypeVar, cast
 
 from unimem import aipw, evidence, experiment, frontmatter, holdout_io, lesson_io, lineage, safety
 from unimem import frontier_protocol as fp
@@ -97,11 +102,23 @@ def dream_budget(items: Sequence[dict[str, Any]], *, tokens: int, protected: set
 
 
 REWRITES = "dream-rewrites.jsonl"
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+def _rewrite_operation(method: Callable[_P, _R]) -> Callable[_P, _R]:
+    @wraps(method)
+    def guarded(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        from unimem import _jsonl, incident
+
+        root = cast(str, args[0] if args else kwargs.get("root"))
+        with incident.protect(root), _jsonl.locked(fp.filename(root, REWRITES) + ".write"):
+            return method(*args, **kwargs)
+
+    return guarded
 
 
 def _blob_path(root: str, digest: str) -> str:
-    import os
-
     from unimem import paths
 
     if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
@@ -113,29 +130,33 @@ def _blob_path(root: str, digest: str) -> str:
 
 def _put_blob(root: str, text: str) -> str:
     """Content-addressed rewrite text, kept outside the signed journal so erasure can delete it."""
-    import hashlib
-    import os
-
     data = text.encode("utf-8")
+    if len(data) > 256_000:
+        raise ValueError("rewrite text exceeds 256000 bytes")
     digest = hashlib.sha256(data).hexdigest()
     path = _blob_path(root, digest)
-    if not os.path.exists(path):
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        staging = path + ".partial"
-        with open(staging, "wb") as stream:
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    fd, staging = tempfile.mkstemp(prefix=".rewrite-", suffix=".tmp", dir=os.path.dirname(path))
+    try:
+        with os.fdopen(fd, "wb") as stream:
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(staging, path)
+    except BaseException:
+        with suppress(OSError):
+            os.unlink(staging)
+        raise
     return digest
 
 
 def _text(root: str, row: dict[str, Any], field: str) -> str:
     """A proposal's text; legacy rows carried it inline, current rows by digest."""
-    import hashlib
-
     if field in row:
-        return str(row[field])
+        value = row[field]
+        if not isinstance(value, str) or len(value.encode("utf-8")) > 256_000:
+            raise ValueError("invalid legacy rewrite text")
+        return value
     try:
         with open(_blob_path(root, row[field + "_digest"]), "rb") as stream:
             data = stream.read(256_001)
@@ -146,27 +167,63 @@ def _text(root: str, row: dict[str, Any], field: str) -> str:
     return data.decode("utf-8")
 
 
+@_rewrite_operation
 def erase_rewrites(root: str, slugs: set[str]) -> list[str]:
     """Delete rewrite texts of erased lessons; journal rows keep only hash tombstones."""
+    events = [row for row in fp.journal(root, REWRITES) if row.get("kind") != "rotation"]
+    erased = {row["id"] for row in events if row["kind"] == "erased"}
+    targets = {row["id"] for row in events if row["kind"] == "proposal" and row["slug"] in slugs}
+    # Tombstones revoke the proposal even when another live proposal owns the
+    # same text blob. Commit them before physical deletion can partially fail.
+    for row in events.copy():
+        if row["kind"] == "proposal" and row["id"] in targets - erased:
+            marker = {"kind": "erased", "id": row["id"], "slug": row["slug"]}
+            fp.append(root, REWRITES, marker)
+            events.append(marker)
+    erased |= targets
+    live_digests = {
+        row[field]
+        for row in events
+        if row["kind"] == "proposal" and row["id"] not in erased
+        for field in ("original_digest", "body_digest")
+        if field in row
+    }
+    wanted = {
+        row[field]
+        for row in events
+        if row["kind"] == "proposal" and row["id"] in targets
+        for field in ("original_digest", "body_digest")
+        if field in row
+    }
+    # Historical proposals stored plaintext inline. A signed rotation retires
+    # those bytes while preserving their digest and the erased proposal identity.
+    legacy = False
+    for row in events:
+        if row["kind"] == "proposal" and row["id"] in targets:
+            for field in ("original", "body"):
+                if field in row:
+                    row[field + "_digest"] = hashlib.sha256(str(row.pop(field)).encode()).hexdigest()
+                    wanted.add(row[field + "_digest"])
+                    legacy = True
+    if legacy:
+        fp.rotate(root, REWRITES, events)
     removed = []
-    for row in fp.journal(root, REWRITES):
-        if row["kind"] != "proposal" or row["slug"] not in slugs:
-            continue
-        for field in ("original_digest", "body_digest"):
-            if field in row:
-                try:
-                    os.unlink(_blob_path(root, row[field]))
-                    removed.append(row[field])
-                except FileNotFoundError:
-                    pass
+    for digest in sorted(wanted - live_digests):
+        try:
+            os.unlink(_blob_path(root, digest))
+            removed.append(digest)
+        except FileNotFoundError:
+            pass
     with fp._GUARD:
         _TRIALS.pop(os.path.realpath(root), None)
     return removed
 
 
+@_rewrite_operation
 def propose(root: str, slug: str, body: str, *, author: str) -> dict[str, Any]:
     safety.assert_mutable(root, [slug])
     fp.text(body, "rewrite", 64_000)
+    fp.text(author, "author")
     path = lesson_io.lesson_path(root, slug)
     if path is None:
         raise ValueError("rewrite original does not exist")
@@ -177,20 +234,32 @@ def propose(root: str, slug: str, body: str, *, author: str) -> dict[str, Any]:
         raise ValueError("rewrite original must pass current governed admission")
     revision = lesson_io.current_revision(path)
     identity = "rewrite-" + fp.digest({"slug": slug, "revision": revision, "body": body})[:24]
-    if any(row.get("id") == identity for row in fp.journal(root, REWRITES)):
-        raise ValueError("rewrite proposal already exists")
     record = {
         "kind": "proposal",
         "id": identity,
         "slug": slug,
         "original_revision": revision,
-        "original_digest": _put_blob(root, original),
-        "body_digest": _put_blob(root, body),
-        "author": fp.text(author),
+        "original_digest": hashlib.sha256(original.encode("utf-8")).hexdigest(),
+        "body_digest": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+        "author": author,
         "sources": [slug],
     }
-    lineage.attest(root, record, fp.sign(root, record), inputs=[slug], operation="causal-dream-rewrite")
-    return fp.append(root, REWRITES, record)
+    events = fp.journal(root, REWRITES)
+    if any(row["kind"] == "erased" and row["id"] == identity for row in events):
+        raise ValueError("rewrite proposal was erased")
+    prior = [row for row in events if row["kind"] == "proposal" and row["id"] == identity]
+    if prior:
+        if len(prior) != 1 or any(prior[0].get(field) != value for field, value in record.items()):
+            raise ValueError("rewrite proposal already exists with different metadata")
+        signed = fp.sign(root, prior[0])
+    else:
+        lineage.attest(root, record, fp.sign(root, record), inputs=[slug], operation="causal-dream-rewrite")
+        signed = fp.append(root, REWRITES, record)
+    # Durable ownership precedes plaintext copies. A retry can finish interrupted
+    # materialization, and erasure can find every possibly written digest.
+    _put_blob(root, original)
+    _put_blob(root, body)
+    return signed
 
 
 def review(root: str, identity: str, *, reviewer: str) -> dict[str, Any]:
@@ -198,22 +267,53 @@ def review(root: str, identity: str, *, reviewer: str) -> dict[str, Any]:
 
     if not memory_authority.is_operator():
         raise PermissionError("rewrite review requires an operator")
-    proposals = [row for row in fp.journal(root, REWRITES) if row["kind"] == "proposal" and row["id"] == identity]
+    fp.text(reviewer, "reviewer")
+    return _review(root, identity, reviewer=reviewer)
+
+
+@_rewrite_operation
+def _review(root: str, identity: str, *, reviewer: str) -> dict[str, Any]:
+    events = fp.journal(root, REWRITES)
+    if any(row["kind"] == "erased" and row["id"] == identity for row in events):
+        raise ValueError("rewrite proposal was erased")
+    proposals = [row for row in events if row["kind"] == "proposal" and row["id"] == identity]
     if len(proposals) != 1 or proposals[0]["author"] == reviewer:
         raise ValueError("an independent reviewer must approve an existing rewrite")
+    if _original_revision(root, proposals[0]["slug"]) != proposals[0]["original_revision"]:
+        raise ValueError("rewrite original has changed or is no longer admitted")
+    _text(root, proposals[0], "original")
+    _text(root, proposals[0], "body")
     return fp.append(root, REWRITES, {"kind": "review", "id": identity, "reviewer": fp.text(reviewer)})
 
 
+def _original_revision(root: str, slug: str) -> str | None:
+    """Current source admission wins over a historical rewrite approval."""
+    from unimem import lesson_cache
+
+    path = lesson_io.lesson_path(root, slug)
+    if path is None:
+        return None
+    try:
+        fm, body = frontmatter.read(path)
+        if not lesson_cache.fresh_eligible(path, fm, slug, body=body, root=root):
+            return None
+        return lesson_io.current_revision(path)
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+@_rewrite_operation
 def choose(root: str, identity: str, occasion: str) -> dict[str, Any]:
     events = fp.journal(root, REWRITES)
+    if any(row["kind"] == "erased" and row["id"] == identity for row in events):
+        raise ValueError("rewrite proposal was erased")
     proposals = [r for r in events if r["kind"] == "proposal" and r["id"] == identity]
     if len(proposals) != 1 or not any(r["kind"] == "review" and r["id"] == identity for r in events):
         raise ValueError("a reviewed rewrite proposal is required")
     proposal = proposals[0]
     safety.assert_mutable(root, [proposal["slug"]])
-    path = lesson_io.lesson_path(root, proposal["slug"])
-    if path is None or lesson_io.current_revision(path) != proposal["original_revision"]:
-        raise ValueError("rewrite original has changed; propose and test a fresh rewrite")
+    if _original_revision(root, proposal["slug"]) != proposal["original_revision"]:
+        raise ValueError("rewrite original has changed or is no longer admitted; propose and test a fresh rewrite")
     original_text, rewrite_text = _text(root, proposal, "original"), _text(root, proposal, "body")
     analysis = evidence.analyse(root)
     report = analysis.report
@@ -272,9 +372,10 @@ def trials(root: str) -> dict[str, list[dict[str, Any]]]:
             return copy.deepcopy(cached[1])
         events = fp.journal(root, REWRITES) if checkpoint[0] else []
         reviewed = {r["id"] for r in events if r["kind"] == "review"}
+        erased = {r["id"] for r in events if r["kind"] == "erased"}
         result: dict[str, list[dict[str, Any]]] = {}
         for row in reversed(events):
-            if row["kind"] == "proposal" and row["id"] in reviewed:
+            if row["kind"] == "proposal" and row["id"] in reviewed - erased:
                 result.setdefault(row["slug"], []).append(row)
         _TRIALS[key] = (checkpoint, result)
         _TRIALS.move_to_end(key)
@@ -292,13 +393,19 @@ def overlay(root: str, slug: str, occasion: str | None) -> dict[str, Any] | None
     a running experiment, the original is served: an untested rewrite is never
     delivered unrandomized. Hazards are never rewritten.
     """
+    if not trials(root).get(slug):
+        return None
+    return _overlay(root, slug, occasion)
+
+
+@_rewrite_operation
+def _overlay(root: str, slug: str, occasion: str | None) -> dict[str, Any] | None:
     candidates = trials(root).get(slug)
     if not candidates or slug in safety.protected(root):
         return None
-    path = lesson_io.lesson_path(root, slug)
-    if path is None:
+    revision = _original_revision(root, slug)
+    if revision is None:
         return None
-    revision = lesson_io.current_revision(path)
     proposal = next((row for row in candidates if row["original_revision"] == revision), None)
     if proposal is None:
         return None
@@ -344,18 +451,24 @@ def selected(root: str, slug: str) -> dict[str, Any] | None:
     As soon as the evidence no longer supports HELPS, this returns None and the
     original is served again.
     """
+    if not trials(root).get(slug):
+        return None
+    return _selected(root, slug)
+
+
+@_rewrite_operation
+def _selected(root: str, slug: str) -> dict[str, Any] | None:
     if slug in safety.protected(root):
         return None
     candidates = trials(root).get(slug)
-    path = lesson_io.lesson_path(root, slug)
-    if not candidates or path is None:
+    revision = _original_revision(root, slug)
+    if not candidates or revision is None:
         return None
     analysis = evidence.analyse(root)
     report = analysis.report
     if report is None or not report.readable:
         return None
     helps = {effect.lesson_slug for effect in analysis.effects if effect.verdict == experiment.VERDICT_HELPS}
-    revision = lesson_io.current_revision(path)
     for row in candidates:
         if row["id"] in helps and row["original_revision"] == revision:
             try:

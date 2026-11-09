@@ -7,6 +7,208 @@ import pytest
 from unimem import aipw, holdout_io, retention
 
 
+def test_rewrite_blob_staging_cannot_follow_a_symlink_outside_the_store(tmp_path):
+    import hashlib
+    from pathlib import Path
+
+    root = str(tmp_path / "store")
+    payload = "Approved private rewrite."
+    digest = hashlib.sha256(payload.encode()).hexdigest()
+    target = Path(retention._blob_path(root, digest))
+    target.parent.mkdir(parents=True)
+    outside = tmp_path / "unrelated.txt"
+    outside.write_text("untouched")
+    target.with_suffix(".txt.partial").symlink_to(outside)
+    retention._put_blob(root, payload)
+    assert outside.read_text() == "untouched"
+    assert target.read_text() == payload
+
+
+def test_concurrent_rewrite_blob_writers_do_not_share_a_staging_file(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    root = str(tmp_path)
+    ready = Barrier(2)
+    replace = retention.os.replace
+
+    def simultaneous(source, target):
+        ready.wait(timeout=5)
+        replace(source, target)
+
+    monkeypatch.setattr(retention.os, "replace", simultaneous)
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        results = list(workers.map(lambda _: retention._put_blob(root, "same private original"), range(2)))
+    assert results[0] == results[1]
+
+
+def test_rewrite_blobs_are_owner_only(tmp_path):
+    from pathlib import Path
+
+    root = str(tmp_path)
+    digest = retention._put_blob(root, "Private original.")
+    path = Path(retention._blob_path(root, digest))
+    path.chmod(0o644)  # A file created by an older release or a permissive umask.
+    retention._put_blob(root, "Private original.")
+    assert path.stat().st_mode & 0o077 == 0
+
+
+def test_failed_blob_replacement_cleans_staging_and_preserves_committed_text(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    root = str(tmp_path)
+    digest = retention._put_blob(root, "Committed original.")
+    existing = Path(retention._blob_path(root, digest))
+
+    def unavailable(*_):
+        raise OSError("replace unavailable")
+
+    monkeypatch.setattr(retention.os, "replace", unavailable)
+    with pytest.raises(OSError, match="replace unavailable"):
+        retention._put_blob(root, "Uncommitted replacement.")
+    assert list(existing.parent.iterdir()) == [existing]
+    assert existing.read_text() == "Committed original."
+
+
+def proposals(root, slugs=("a", "b")):
+    pytest.importorskip("mcp")
+    from tests.test_mcp_server import _write_lesson
+
+    holdout_io.configure(root, rate=0.5, salt="rewrite-erasure")
+    result = []
+    for slug in slugs:
+        _write_lesson(root, slug, body="Use the shared original safely.")
+        row = retention.propose(root, slug, "Use the same approved rewrite.", author="author")["record"]
+        retention.review(root, row["id"], reviewer="reviewer")
+        result.append(row)
+    return result
+
+
+def test_erasure_preserves_other_proposals_shared_blobs_but_revokes_the_target(tmp_path):
+    from pathlib import Path
+
+    root = str(tmp_path)
+    first, second = proposals(root)
+    assert first["original_digest"] == second["original_digest"]
+    assert first["body_digest"] == second["body_digest"]
+    assert set(retention.trials(root)) == {"a", "b"}
+    assert retention.erase_rewrites(root, {"a"}) == []
+    assert set(retention.trials(root)) == {"b"}
+    with pytest.raises(ValueError, match="erased"):
+        retention.choose(root, first["id"], "erased")
+    with pytest.raises(ValueError, match="erased"):
+        retention.review(root, first["id"], reviewer="new-reviewer")
+    assert retention.choose(root, second["id"], "retained")["body"]
+    assert set(retention.erase_rewrites(root, {"b"})) == {second["original_digest"], second["body_digest"]}
+    assert not Path(retention._blob_path(root, second["original_digest"])).exists()
+    assert not Path(retention._blob_path(root, second["body_digest"])).exists()
+
+
+def test_erasure_redacts_legacy_inline_text_from_the_signed_journal(tmp_path):
+    from unimem import frontier_protocol as fp
+
+    root = str(tmp_path)
+    fp.append(
+        root,
+        retention.REWRITES,
+        {
+            "kind": "proposal",
+            "id": "legacy",
+            "slug": "a",
+            "author": "author",
+            "original": "sensitive original content",
+            "body": "sensitive rewritten content",
+        },
+    )
+    retention.erase_rewrites(root, {"a"})
+    with open(fp.filename(root, retention.REWRITES), encoding="utf-8") as stream:
+        raw = stream.read()
+    assert "sensitive original content" not in raw and "sensitive rewritten content" not in raw
+    assert any(row.get("kind") == "erased" and row["id"] == "legacy" for row in fp.journal(root, retention.REWRITES))
+    with pytest.raises(ValueError, match="erased"):
+        retention.choose(root, "legacy", "replay")
+
+
+def test_withdrawn_source_cannot_be_served_under_an_old_rewrite_approval(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from unimem import evidence, experiment, lesson_admission, lesson_io
+
+    root = str(tmp_path)
+    [proposal] = proposals(root, ("a",))
+    analysis = SimpleNamespace(
+        report=SimpleNamespace(readable=True),
+        effects=[SimpleNamespace(lesson_slug=proposal["id"], verdict=experiment.VERDICT_HELPS)],
+    )
+    monkeypatch.setattr(evidence, "analyse", lambda _: analysis)
+    assert retention.selected(root, "a") is not None
+    lesson_admission.revoke(root, lesson_io.lesson_path(root, "a"), actor="operator")
+    assert retention.selected(root, "a") is None
+    assert retention.overlay(root, "a", "new-occasion") is None
+    with pytest.raises(ValueError, match="no longer admitted"):
+        retention.choose(root, proposal["id"], "direct")
+
+
+def test_concurrent_identical_proposals_have_one_durable_identity(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    pytest.importorskip("mcp")
+    from tests.test_mcp_server import _write_lesson
+    from unimem import frontier_protocol as fp
+
+    root = str(tmp_path)
+    _write_lesson(root, "a", body="Use the shared original safely.")
+    ready = Barrier(4)
+
+    def propose(_):
+        ready.wait(timeout=5)
+        return retention.propose(root, "a", "Use the same approved rewrite.", author="author")["record"]
+
+    with ThreadPoolExecutor(max_workers=4) as workers:
+        result = list(workers.map(propose, range(4)))
+    assert all(row == result[0] for row in result)
+    assert len([row for row in fp.journal(root, retention.REWRITES) if row["kind"] == "proposal"]) == 1
+
+
+@pytest.mark.parametrize("recovery", ["retry", "erase"])
+def test_interrupted_proposal_tracks_plaintext_for_retry_or_erasure(tmp_path, monkeypatch, recovery):
+    from pathlib import Path
+
+    pytest.importorskip("mcp")
+    from tests.test_mcp_server import _write_lesson
+    from unimem import frontier_protocol as fp
+
+    root = str(tmp_path)
+    _write_lesson(root, "a", body="Private original.")
+    put = retention._put_blob
+    calls = []
+
+    def unavailable(root, text):
+        calls.append(text)
+        if len(calls) == 2:
+            raise OSError("body storage unavailable")
+        return put(root, text)
+
+    monkeypatch.setattr(retention, "_put_blob", unavailable)
+    with pytest.raises(OSError, match="body storage unavailable"):
+        retention.propose(root, "a", "Private replacement.", author="author")
+    [row] = [r for r in fp.journal(root, retention.REWRITES) if r["kind"] == "proposal"]
+    original = Path(retention._blob_path(root, row["original_digest"]))
+    assert original.exists()
+    with pytest.raises(ValueError):
+        retention.review(root, row["id"], reviewer="reviewer")
+    assert retention.trials(root) == {}
+    if recovery == "erase":
+        assert retention.erase_rewrites(root, {"a"}) == [row["original_digest"]]
+        assert not original.exists()
+    else:
+        monkeypatch.setattr(retention, "_put_blob", put)
+        assert retention.propose(root, "a", "Private replacement.", author="author")["record"] == row
+        retention.review(root, row["id"], reviewer="reviewer")
+        assert retention.trials(root)["a"][0]["id"] == row["id"]
+
+
 def test_seeded_randomized_utility_beats_judgment_only_budget():
     rng = random.Random(10)
     observations, features = [], []
