@@ -10,8 +10,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from pydantic import StrictBool, StrictFloat, StrictInt
-from sqlalchemy import func, or_, select, update
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import any_, bindparam, func, or_, select, update
+from sqlalchemy.dialects.postgresql import ARRAY, insert
 
 from hub import audit, auth, delegation, policies
 from hub.db import session_scope
@@ -77,7 +77,9 @@ async def _sources(session, session_factory, org_id, identities, scope, *, allow
                 select(Trace)
                 .where(
                     Trace.org_id == org_id,
-                    Trace.id.in_(trace_ids),
+                    # Worker cohorts combine many individually bounded assignments.
+                    # One typed array avoids asyncpg's 32,767-argument ceiling.
+                    Trace.id == any_(bindparam(None, trace_ids, type_=ARRAY(Trace.id.type))),
                     Trace.quarantined.is_(False),
                     Trace.superseded_at.is_(None),
                     delegation.trace_predicate(),
@@ -108,7 +110,8 @@ async def _sources(session, session_factory, org_id, identities, scope, *, allow
                 select(MemoryRecordProjection)
                 .where(
                     MemoryRecordProjection.org_id == org_id,
-                    MemoryRecordProjection.id.in_(identities),
+                    MemoryRecordProjection.id
+                    == any_(bindparam(None, identities, type_=ARRAY(MemoryRecordProjection.id.type))),
                     delegation.record_predicate(),
                     MemoryRecordProjection.scope.op("<@")(context),
                 )

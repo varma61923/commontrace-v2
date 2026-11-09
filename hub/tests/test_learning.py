@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -49,6 +50,17 @@ async def assign(session_factory, org_id, source_id, occasion="o", principal="ag
     return await learning.operate(
         session_factory, org_id, principal, "assign", {"occasion_id": occasion, "memory_ids": [source_id], **extra}
     )
+
+
+async def test_worker_revalidates_large_source_sets_without_exceeding_driver_bind_limits(session_factory):
+    org, source, _ = await setup(session_factory)
+    # Evaluation groups sources from many valid <=100-source assignments.
+    # Historical IDs remain in evidence after source erasure.
+    identities = [str(uuid.UUID(int=index + 1)) for index in range(33000)]
+    identities.insert(17000, source)
+    async with session_scope(session_factory, org_id=org) as session:
+        resolved = await learning._sources(session, session_factory, org, identities, {}, allow_missing=True)
+        assert [row["id"] for row in resolved] == [source]
 
 
 async def test_retry_principal_scope_and_frozen_sources(session_factory):
