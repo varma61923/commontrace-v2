@@ -689,6 +689,8 @@ def check_learning_lifecycle(*, profiles: tuple[str, ...] = ("embedded", "http",
                     invoke(profile, operation, payload)
                 except (ValueError, ConnectionError, urllib.error.HTTPError) as exc:
                     status = getattr(exc, "status_code", getattr(exc, "status", getattr(exc, "code", None)))
+                    if isinstance(exc, urllib.error.HTTPError):
+                        exc.close()
                     if isinstance(exc, GatewayRefused):
                         status = exc.status
                     if status in statuses:
