@@ -415,6 +415,52 @@ def test_the_http_transport_tells_a_refusal_from_an_outage():
         server.server_close()
 
 
+@pytest.mark.parametrize("endpoint", ["https:///path", "https://host:0", "https://host:bad", "https://host:65536"])
+def test_gateway_rejects_invalid_hosts_and_ports(endpoint):
+    with pytest.raises(ValueError):
+        bridge.HTTPGateway(endpoint, TOKEN)
+
+
+@pytest.mark.parametrize("status", [200, 409, 503])
+def test_gateway_bounds_body_reads_and_closes_responses(monkeypatch, status):
+    from urllib.error import HTTPError
+
+    from unimem import retry
+
+    clock = [0.0]
+
+    class Response:
+        closed = False
+
+        def read1(self, n):
+            clock[0] += 0.6
+            return b"x"
+
+        def close(self):
+            self.closed = True
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            self.close()
+
+    response = Response()
+
+    class Opener:
+        def open(self, *_args, **_kwargs):
+            if status != 200:
+                raise HTTPError("https://gateway", status, "failure", {}, response)
+            return response
+
+    monkeypatch.setattr(bridge, "build_opener", lambda *_: Opener())
+    monkeypatch.setattr(retry.time, "monotonic", lambda: clock[0])
+    transport = bridge.HTTPGateway("https://gateway", TOKEN, timeout=1)
+    with pytest.raises(bridge.GatewayRefused if status == 409 else ConnectionError):
+        transport.post("/v1/outcome", {"occasion_id": "task", "reward": 1})
+    assert response.closed and clock[0] == pytest.approx(1.2)
+
+
 def test_a_replayed_outcome_after_a_power_loss_completes_through_the_gateway(tmp_path, monkeypatch):
     from unimem import rewards
 

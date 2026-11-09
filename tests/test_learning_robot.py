@@ -72,6 +72,219 @@ def test_learning_robot_offline_replay_pins_experiment_and_route(tmp_path):
     assert queue.pending() == []
 
 
+def test_assignment_retry_preserves_acknowledged_delivery(tmp_path):
+    robot = bridge(Transport(), OutcomeQueue(str(tmp_path)))
+    robot.learning.assign("task", ["m"])
+    robot.learning.delivery("task", ["m"])
+    delivered = robot._recalls["task"]
+    robot.learning.assign("task", ["m"])
+    assert robot._recalls["task"] == delivered
+    assert robot._recalls["task"]["deliver"][0]["id"] == "m"
+
+
+def test_locally_durable_outcome_releases_slots_and_action_context(tmp_path):
+    transport = Transport()
+    queue = OutcomeQueue(str(tmp_path))
+    robot = bridge(transport, queue)
+    robot.learning.assign("task", ["m"])
+    robot.learning.delivery("task", ["m"])
+    transport.offline = True
+    assert robot.learning.outcome("task", True)["queued"]
+    assert robot.learning._assignments == {}
+    assert robot._recalls == {}
+    assert len(queue.pending()) == 1
+
+
+def test_learning_queue_roundtrips_character_bounded_unicode_identity(tmp_path):
+    queue = OutcomeQueue(str(tmp_path))
+    identity = "🦾" * 200
+    body = {"occasion_id": identity, "experiment_id": "e", "succeeded": True}
+    queue.enqueue(body, path="/v1/learning/outcome")
+    assert queue.flush(lambda path, body: {"schema": LEARNING_SCHEMA}) == 1
+    assert queue.pending() == []
+
+
+def test_learning_outcomes_cannot_be_settled_by_a_pre_rotation_reply(tmp_path, monkeypatch):
+    from unimem.robotics import edge
+
+    queue = OutcomeQueue(str(tmp_path))
+    original = {"occasion_id": "task", "experiment_id": "e", "reward": 0.25}
+    replacement = {**original, "reward": 0.75}
+    key = queue.enqueue(original, path="/v1/learning/outcome")
+    monkeypatch.setattr(edge, "ROTATE_OUTCOMES_AFTER", 1)
+
+    def delayed_reply(path, body):
+        # Another flusher has already settled this generation and rotated it.
+        queue.acknowledge("task", queue_id=key)
+        queue.enqueue(replacement, path=path)
+        return {"schema": LEARNING_SCHEMA}
+
+    assert queue.flush(delayed_reply) == 1
+    assert queue.pending() == [replacement]
+
+
+def test_request_inputs_cannot_change_during_capability_negotiation(tmp_path, monkeypatch):
+    transport = Transport()
+    robot = bridge(transport, OutcomeQueue(str(tmp_path)))
+    ids = ["m"]
+    original = transport.get
+
+    def negotiate(path, context):
+        ids.append("not-selected")
+        return original(path, context)
+
+    monkeypatch.setattr(transport, "get", negotiate)
+    robot.learning.assign("task", ids)
+    assert transport.calls[-1][1]["memory_ids"] == ["m"]
+
+
+def test_delivery_bookkeeping_uses_the_ids_actually_sent(tmp_path, monkeypatch):
+    transport = Transport()
+    robot = bridge(transport, OutcomeQueue(str(tmp_path)))
+    robot.learning.assign("task", ["m"])
+    ids = ["m"]
+    original = transport.get
+
+    def negotiate(path, context):
+        ids.clear()
+        return original(path, context)
+
+    monkeypatch.setattr(transport, "get", negotiate)
+    robot.learning.delivery("task", ids)
+    assert transport.calls[-1][1]["memory_ids"] == ["m"]
+    assert robot._recalls["task"]["deliver"][0]["id"] == "m"
+
+
+def test_concurrent_assignments_reserve_capacity_before_network_io(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    entered, release = Event(), Event()
+
+    class BlockingTransport(Transport):
+        def post(self, path, body):
+            if path.endswith("assign") and body["occasion_id"] == "pending":
+                entered.set()
+                assert release.wait(5)
+            return super().post(path, body)
+
+    transport = BlockingTransport()
+    robot = bridge(transport, OutcomeQueue(str(tmp_path)))
+    for index in range(127):
+        robot.learning.assign(str(index), ["m"])
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        pending = workers.submit(robot.learning.assign, "pending", ["m"])
+        try:
+            assert entered.wait(5)
+            with pytest.raises(ValueError, match="too many unfinished"):
+                robot.learning.assign("overflow", ["m"])
+            with pytest.raises(ValueError, match="operation is in progress"):
+                robot.learning.outcome("pending", reward=1, experiment_id="experiment-1")
+            # An unrelated episode can finish while another request is blocked.
+            robot.learning.outcome("0", reward=1)
+            robot.learning.assign("replacement", ["m"])
+        finally:
+            release.set()
+        assert pending.result()["experiment_id"] == "experiment-1"
+    assert len(robot.learning._assignments) == 128
+    assert "overflow" not in robot.learning._assignments
+
+
+def test_legacy_and_learning_tasks_cannot_replace_each_others_action_context(tmp_path):
+    robot = bridge(Transport(), OutcomeQueue(str(tmp_path)))
+    robot.learning.assign("learning", ["m"])
+    robot.learning.delivery("learning", ["m"])
+    with pytest.raises(ValueError, match="active learning"):
+        robot.start("learning", "pick")
+    with pytest.raises(ValueError, match="active learning"):
+        robot.finish("learning", True)
+    robot.start("legacy", "pick")
+    with pytest.raises(ValueError, match="active legacy"):
+        robot.learning.assign("legacy", ["m"])
+    assert robot._recalls["learning"]["deliver"][0]["id"] == "m"
+
+
+def test_restarted_robot_can_deliver_and_finish_with_an_explicit_experiment(tmp_path):
+    robot = bridge(Transport(), OutcomeQueue(str(tmp_path)))
+    robot.learning.delivery("resumed", ["m"], experiment_id="experiment-1")
+    with pytest.raises(ValueError, match="active learning"):
+        robot.finish("resumed", True)
+    robot.learning.outcome("resumed", reward=1, experiment_id="experiment-1")
+    assert not robot._recalls and not robot._slots
+
+
+def test_assignment_reply_cannot_change_the_requested_experiment(tmp_path, monkeypatch):
+    transport = Transport()
+    robot = bridge(transport, OutcomeQueue(str(tmp_path)))
+    with pytest.raises(ValueError, match="changed the requested experiment"):
+        robot.learning.assign("task", ["m"], experiment_id="other")
+    assert not robot._recalls and not robot.learning._assignments and not robot._slots
+    robot.learning.assign("task", ["m"])
+    robot.learning.delivery("task", ["m"])
+    monkeypatch.setattr(transport, "post", lambda *_: {"schema": LEARNING_SCHEMA, "experiment_id": "other"})
+    with pytest.raises(ValueError, match="unfinished robot assignment"):
+        robot.learning.assign("task", ["m"])
+    assert robot._recalls["task"]["deliver"][0]["id"] == "m"
+    assert robot.learning._assignments["task"]["experiment_id"] == "experiment-1"
+
+
+def test_capability_reply_mutation_cannot_disable_outcome_support(tmp_path):
+    robot = bridge(Transport(), OutcomeQueue(str(tmp_path)))
+    robot.learning.assign("task", ["m"])
+    capabilities = robot.learning.capabilities()
+    capabilities["operations"].clear()
+    assert robot.learning.outcome("task", reward=1)["schema"] == LEARNING_SCHEMA
+
+
+def test_offline_legacy_completion_releases_action_context(tmp_path, monkeypatch):
+    transport = Transport()
+    monkeypatch.setattr(transport, "post", lambda *_: {"deliver": [{"id": "m"}]})
+    robot = bridge(transport, OutcomeQueue(str(tmp_path)))
+    recalled = robot.start("task", "pick")
+    recalled["deliver"].clear()
+
+    def monitor(_):
+        return {"verdict": "safe", "action": "continue"}
+
+    assert robot.authorize_action("task", {"move": 1}, spec_id="s", trace=[], monitor=monitor)["allowed"]
+
+    def offline(*_):
+        raise ConnectionError("offline")
+
+    monkeypatch.setattr(transport, "post", offline)
+    assert robot.finish("task", True)["queued"]
+    assert not robot._slots
+    assert not robot.authorize_action("task", {"move": 1}, spec_id="s", trace=[], monitor=monitor)["allowed"]
+
+
+def test_flush_batches_journal_validation_and_preserves_a_completed_prefix(tmp_path, monkeypatch):
+    queue = OutcomeQueue(str(tmp_path))
+    for index in range(70):
+        queue.enqueue({"occasion_id": str(index), "succeeded": True})
+    original = queue._state
+    validations = []
+
+    def state():
+        validations.append(True)
+        return original()
+
+    monkeypatch.setattr(queue, "_state", state)
+
+    def post(path, body):
+        if body["occasion_id"] == "35":
+            raise ConnectionError("offline")
+        return {"recorded": True}
+
+    with pytest.raises(ConnectionError, match="offline"):
+        queue.flush(post)
+    assert len(validations) == 3  # Snapshot, full batch, completed tail before timeout.
+    assert [body["occasion_id"] for body in OutcomeQueue(str(tmp_path)).pending()] == [str(i) for i in range(35, 70)]
+    validations.clear()
+    assert queue.flush(lambda *_: {"recorded": True}) == 35
+    assert len(validations) == 3
+    assert OutcomeQueue(str(tmp_path)).pending() == []
+
+
 def test_queue_keeps_legacy_and_learning_outcomes_distinct_and_conflicts_fail_closed(tmp_path):
     queue = OutcomeQueue(str(tmp_path))
     legacy = {"occasion_id": "legacy", "reward": 0.25}

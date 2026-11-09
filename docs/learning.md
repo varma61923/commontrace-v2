@@ -197,6 +197,23 @@ the preceding entry. Retryable HTTP errors preserve their status through
 `GatewayUnavailable` and retain the queued measurement for credential renewal,
 late assignment arrival or service recovery.
 
+Each enqueue also receives a generation receipt. A delayed reply from before
+journal rotation cannot acknowledge a newly queued measurement with the same
+logical identity. Replay commits completed replies in batches of at most 32;
+if a later request fails, the completed prefix remains settled. A process crash
+before a batch commits can resend that batch, using the server's immutable,
+idempotent outcome contract. Existing journals retain their original receipts.
+
+The robot bridge holds at most 128 unfinished tasks, including requests in
+flight. Capacity exhaustion and overlapping operations on the same occasion
+raise `ValueError`; callers can retry after the active operation finishes.
+Different occasions can make network calls concurrently. Legacy tasks and
+learning tasks cannot share an active occasion. Successful completion or a
+durably queued offline outcome releases local task state and its action context;
+a failed request without a durable queue retains the task for retry. Learning
+assignment retries preserve acknowledged delivery. After restart, pass the
+original `experiment_id` explicitly when recording delivery or outcome.
+
 ## Reproducible learning evaluation
 
 ```bash

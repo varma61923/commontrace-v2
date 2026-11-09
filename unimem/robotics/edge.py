@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import secrets
 from typing import Any, Callable, Sequence
 
-from unimem import _jsonl, evidence, safety, search_recipes
+from unimem import _jsonl, evidence, learning_contract, safety, search_recipes
 from unimem import frontier_protocol as fp
 from unimem import transparency_log as log
 
@@ -123,6 +124,7 @@ class EdgeCache:
 
 COMPACT_AFTER = 32
 ROTATE_OUTCOMES_AFTER = 4096
+OUTCOME_SETTLEMENT_BATCH = 32
 
 
 def _hazards(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -152,7 +154,7 @@ def _outcome_key(body: dict[str, Any], path: str) -> str:
     if not isinstance(context, list) or len(context) > 128:
         raise ValueError("queued learning scope must be an array of at most 128 labels")
     for label in context:
-        fp.text(label, "scope label", 256)
+        learning_contract.validate_identifier(label, "scope label")
     return fp.digest(["learning", body["experiment_id"], sorted(set(context)), body["occasion_id"]])
 
 
@@ -168,14 +170,25 @@ class OutcomeQueue:
         entries: dict[str, dict[str, Any]] = {}
         settled: set[str] = set()
         rejected = []
+        identities: dict[str, str] = {}
         for row in fp.journal(self.root, "edge-outcomes.jsonl"):
             if row.get("kind") == "enqueue":
-                key = _outcome_key(row["body"], row.get("path", "/v1/outcome"))
-                if row.get("queue_id", key) != key:
-                    raise ValueError("queued outcome identity does not match its body")
-                if key in entries and fp.wire(entries[key]["body"]) != fp.wire(row["body"]):
+                identity = _outcome_key(row["body"], row.get("path", "/v1/outcome"))
+                if "identity" in row:
+                    if row["identity"] != identity:
+                        raise ValueError("queued outcome identity does not match its body")
+                    if not isinstance(row.get("queue_id"), str):
+                        raise ValueError("queue receipt must be a string")
+                    key = fp.text(row["queue_id"], "queue receipt", 64)
+                else:
+                    key = row.get("queue_id", identity)
+                    if key != identity:
+                        raise ValueError("queued outcome identity does not match its body")
+                prior = identities.get(identity)
+                if prior is not None and (prior != key or fp.wire(entries[prior]["body"]) != fp.wire(row["body"])):
                     raise OutcomeConflict("conflicting queued outcome history")
-                entries[key] = {**row, "queue_id": key}
+                entries[key] = {**row, "queue_id": key, "identity": identity}
+                identities[identity] = key
             elif row.get("kind") in {"ack", "reject"}:
                 settlement_id = row.get("queue_id")
                 if settlement_id is None:
@@ -227,7 +240,7 @@ class OutcomeQueue:
 
     def reject(self, occasion: str, status: int, code: str = "", *, queue_id: str | None = None) -> None:
         """Settle a pending outcome the gateway refused, so it never blocks the outcomes queued after it."""
-        fp.text(occasion)
+        fp.text(occasion, "occasion", 1024)
         with _jsonl.locked(fp.filename(self.root, "edge-outcomes.jsonl")):
             self._settle(occasion, "reject", queue_id, status=int(status), code=str(code))
 
@@ -242,21 +255,24 @@ class OutcomeQueue:
         if path not in {"/v1/outcome", "/v1/learning/outcome"}:
             raise ValueError("unsupported queued outcome endpoint")
         if path == "/v1/learning/outcome":
-            experiment = body.get("experiment_id")
-            if not isinstance(experiment, str):
+            if not isinstance(body.get("experiment_id"), str):
                 raise ValueError("learning outcome requires a pinned experiment_id")
-            fp.text(experiment, "pinned experiment_id", 256)
-        identity = fp.text(body["occasion_id"])
+            learning_contract.validate_request("outcome", {k: v for k, v in body.items() if k != "context"})
+            identity = body["occasion_id"]
+        else:
+            if not isinstance(body.get("occasion_id"), str):
+                raise ValueError("occasion must be a string")
+            identity = fp.text(body["occasion_id"])
         kinds = [k for k in ("succeeded", "reward", "metrics") if k in body]
         binary = kinds == ["succeeded"] and type(body["succeeded"]) is bool
         graded = kinds == ["reward"] and type(body["reward"]) in (int, float) and 0 <= body["reward"] <= 1
         measured = kinds == ["metrics"] and isinstance(body["metrics"], dict)
-        if not (binary or graded or measured) or len(fp.wire(body)) > 4096:
+        if not (binary or graded or measured):
             raise ValueError("outcome queue requires one bounded outcome: succeeded, reward or metrics")
         key = _outcome_key(body, path)
         with _jsonl.locked(fp.filename(self.root, "edge-outcomes.jsonl")):
             entries, settled, _ = self._state()
-            prior = entries.get(key)
+            prior = next((row for row in entries.values() if row["identity"] == key), None)
             if prior:
                 before, after = prior["body"], body
                 if path == "/v1/learning/outcome":
@@ -264,22 +280,51 @@ class OutcomeQueue:
                     after = {**after, "context": sorted(set(after.get("context", [])))}
                 if fp.wire(before) != fp.wire(after) or prior.get("path", "/v1/outcome") != path:
                     raise OutcomeConflict("conflicting queued outcome")
-                return key
+                return fp.text(prior["queue_id"], "queue receipt", 64)
             fp.count(sum(k not in settled for k in entries), 0, 1999, "pending outcomes")
+            receipt = secrets.token_hex(32)
             fp.append(
                 self.root,
                 "edge-outcomes.jsonl",
-                {"kind": "enqueue", "occasion_id": identity, "body": body, "path": path, "queue_id": key},
+                {
+                    "kind": "enqueue",
+                    "occasion_id": identity,
+                    "body": body,
+                    "path": path,
+                    "queue_id": receipt,
+                    "identity": key,
+                },
             )
-        return key
+        return receipt
 
     def acknowledge(self, occasion: str, *, queue_id: str | None = None) -> None:
-        fp.text(occasion)
+        fp.text(occasion, "occasion", 1024)
         with _jsonl.locked(fp.filename(self.root, "edge-outcomes.jsonl")):
             self._settle(occasion, "ack", queue_id)
             # Acknowledged outcomes live in the gateway; once nothing is pending the
             # queue restarts so a long-lived robot never fills its bounded journal.
             if not self.pending() and fp.checkpoint(self.root, "edge-outcomes.jsonl")[0] >= ROTATE_OUTCOMES_AFTER:
+                fp.rotate(self.root, "edge-outcomes.jsonl", [])
+
+    def _settle_batch(self, rows: list[dict[str, Any]]) -> None:
+        """Commit a replay prefix against its original enqueue generations."""
+        if not rows:
+            return
+        with _jsonl.locked(fp.filename(self.root, "edge-outcomes.jsonl")):
+            entries, settled, _ = self._state()
+            for row in rows:
+                key = row["queue_id"]
+                if key not in entries or key in settled:
+                    continue  # Another flusher settled/rotated this generation.
+                if entries[key]["occasion_id"] != row["occasion_id"]:
+                    raise ValueError("outcome settlement has no matching queued identity")
+                fp.append(self.root, "edge-outcomes.jsonl", row)
+                settled.add(key)
+            if (
+                any(row["kind"] == "ack" for row in rows)
+                and not entries.keys() - settled
+                and fp.checkpoint(self.root, "edge-outcomes.jsonl")[0] >= ROTATE_OUTCOMES_AFTER
+            ):
                 fp.rotate(self.root, "edge-outcomes.jsonl", [])
 
     def flush(self, post: Callable[[str, dict[str, Any]], Any]) -> int:
@@ -296,20 +341,28 @@ class OutcomeQueue:
         with _jsonl.locked(fp.filename(self.root, "edge-outcomes.jsonl")):
             entries, settled, _ = self._state()
             pending = [(key, row) for key, row in entries.items() if key not in settled]
-        for key, entry in pending:
-            body = entry["body"]
-            path = entry.get("path", "/v1/outcome")
-            if path not in {"/v1/outcome", "/v1/learning/outcome"}:
-                raise ValueError("unsupported queued outcome endpoint")
-            try:
-                reply = post(path, body)
-                if path == "/v1/learning/outcome":
-                    from unimem.client import learning_reply
+        settlements: list[dict[str, Any]] = []
+        try:
+            for key, entry in pending:
+                body = entry["body"]
+                path = entry.get("path", "/v1/outcome")
+                if path not in {"/v1/outcome", "/v1/learning/outcome"}:
+                    raise ValueError("unsupported queued outcome endpoint")
+                settlement: dict[str, Any] = {"kind": "ack", "occasion_id": body["occasion_id"], "queue_id": key}
+                try:
+                    reply = post(path, body)
+                    if path == "/v1/learning/outcome":
+                        from unimem.client import learning_reply
 
-                    learning_reply(reply)
-            except GatewayRefused as exc:
-                self.reject(body["occasion_id"], exc.status, exc.code, queue_id=key)
-                continue
-            self.acknowledge(body["occasion_id"], queue_id=key)
-            sent += 1
+                        learning_reply(reply)
+                    sent += 1
+                except GatewayRefused as exc:
+                    settlement.update(kind="reject", status=exc.status, code=exc.code)
+                settlements.append(settlement)
+                if len(settlements) >= OUTCOME_SETTLEMENT_BATCH:
+                    self._settle_batch(settlements)
+                    settlements.clear()
+        finally:
+            # Even a later timeout/cancellation must not lose completed replies.
+            self._settle_batch(settlements)
         return sent

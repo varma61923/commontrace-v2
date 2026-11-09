@@ -85,7 +85,7 @@ _FIELDS = {
 }
 
 
-def _identifier(value: Any, name: str) -> str:
+def validate_identifier(value: Any, name: str) -> str:
     if not isinstance(value, str) or not value.strip() or len(value) > 256 or any(ord(c) < 32 for c in value):
         raise LearningError(f"{name} must be a nonempty string of at most 256 characters")
     return value
@@ -103,7 +103,7 @@ def validate_request(operation: str, payload: dict | None) -> None:
         raise LearningError("unknown learning fields: " + ", ".join(sorted(unknown)))
     for name in ("occasion_id", "experiment_id"):
         if name in payload:
-            _identifier(payload[name], name)
+            validate_identifier(payload[name], name)
     if operation in ("assign", "delivery", "outcome") and "occasion_id" not in payload:
         raise LearningError("occasion_id is required")
     if operation in ("assign", "delivery"):
@@ -112,7 +112,7 @@ def validate_request(operation: str, payload: dict | None) -> None:
         if not isinstance(ids, list) or not minimum <= len(ids) <= 100:
             raise LearningError(f"memory_ids must contain {minimum} to 100 IDs")
         for identity in ids:
-            _identifier(identity, "memory_id")
+            validate_identifier(identity, "memory_id")
         if len(set(ids)) != len(ids):
             raise LearningError("memory_ids must be unique")
     if "task_context" in payload:
@@ -126,7 +126,7 @@ def validate_request(operation: str, payload: dict | None) -> None:
     ):
         raise LearningError("limit must be an integer from 1 to 10000")
     if operation == "rollback":
-        _identifier(payload.get("reason"), "reason")
+        validate_identifier(payload.get("reason"), "reason")
         if "decision_revision" in payload and (
             type(payload["decision_revision"]) is not int or payload["decision_revision"] < 0
         ):

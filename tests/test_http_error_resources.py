@@ -12,6 +12,13 @@ from unimem.connectors import web_crawler
 from unimem.robotics import bridge
 
 
+def test_robot_redirect_refusal_closes_the_original_response():
+    body = io.BytesIO(b"redirect")
+    with pytest.raises(ValueError, match="redirects are refused"):
+        bridge._NoRedirect().redirect_request(None, body, 307, "redirect", {}, "https://other-origin")
+    assert body.closed
+
+
 def test_redirect_refuses_non_ip_socket_address_families(monkeypatch):
     monkeypatch.setattr(web_crawler.socket, "getaddrinfo", lambda *args, **kwargs: [(0, 1, 0, "", (123, b"address"))])
     assert not web_crawler._redirect_target_is_public("https://example.com/page")

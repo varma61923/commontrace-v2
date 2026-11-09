@@ -34,6 +34,26 @@ def test_a_plain_reader_without_read1_is_supported():
     assert read_within(Plain(b"hello"), 10, 5) == b"hello"
 
 
+@pytest.mark.parametrize("chunk", [b"", b"complete"])
+@pytest.mark.parametrize("buffered", [True, False])
+def test_a_final_read_cannot_succeed_after_the_deadline(monkeypatch, chunk, buffered):
+    from unimem import retry
+
+    clock = [0.0]
+
+    class LateResponse:
+        def read(self, n):
+            clock[0] = 2.0
+            return chunk
+
+    response = LateResponse()
+    if buffered:
+        response.read1 = response.read
+    monkeypatch.setattr(retry.time, "monotonic", lambda: clock[0])
+    with pytest.raises(TimeoutError, match="within 1s"):
+        read_within(response, 100, 1)
+
+
 @pytest.fixture
 def trickle_server():
     """An HTTP server that sends headers, then one body byte every 0.2 s."""

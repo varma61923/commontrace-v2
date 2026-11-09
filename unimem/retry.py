@@ -114,13 +114,19 @@ def read_within(response: Any, limit: int, seconds: float) -> bytes:
     if read is None:
         # Not an http.client response (a wrapper or test double): keep the
         # historical single bounded read, whose stream semantics are unknown.
-        return bytes(response.read(limit + 1))
+        started = time.monotonic()
+        result = bytes(response.read(limit + 1))
+        if time.monotonic() - started > seconds:
+            raise TimeoutError(f"response body not received within {seconds:g}s")
+        return result
     deadline = time.monotonic() + seconds
     body = bytearray()
     while len(body) <= limit:
         if time.monotonic() > deadline:
             raise TimeoutError(f"response body not received within {seconds:g}s")
         chunk = read(min(65536, limit + 1 - len(body)))
+        if time.monotonic() > deadline:
+            raise TimeoutError(f"response body not received within {seconds:g}s")
         if not chunk:
             break
         body += chunk
