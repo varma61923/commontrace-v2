@@ -97,6 +97,47 @@ def test_sources_are_revalidated_on_retry_delivery_and_run(root):
     assert not report["applied"]
 
 
+@pytest.mark.parametrize("operation", ["assign", "delivery", "run"])
+@pytest.mark.parametrize("parent_status", ["active", "retired"])
+def test_source_grounding_is_rechecked_under_the_write_fence(root, monkeypatch, operation, parent_status):
+    journal = Journal(root)
+    parent = journal.put(MemoryRecord("parent", "fact", 1, {"text": "evidence"}))
+    journal.put(
+        MemoryRecord(
+            "derived",
+            "fact",
+            1,
+            {"text": "derived secret"},
+            relations={"derives": ["parent"]},
+            provenance={"source_versions": {"parent": 1}},
+        )
+    )
+    payload = {"occasion_id": "derived-o", "memory_ids": ["derived"]}
+    if operation != "assign":
+        assigned = learning.operate(root, "assign", payload)
+        payload["memory_ids"] = assigned["inject"]
+
+    # The leaf revision stays unchanged while one of its prerequisites is
+    # revised or withdrawn after optimistic admission, before the transaction.
+    original = learning._original_permits if operation == "run" else learning._sources
+
+    def revoke_after_admission(*args, **kwargs):
+        result = original(*args, **kwargs)
+        journal.put(replace(parent, version=2, status=parent_status))
+        return result
+
+    monkeypatch.setattr(learning, "_original_permits" if operation == "run" else "_sources", revoke_after_admission)
+    with pytest.raises(LearningConflict):
+        learning.operate(root, operation, {} if operation == "run" else payload)
+    with journal.connect() as db:
+        if operation == "assign":
+            assert db.execute("SELECT COUNT(*) FROM learning_assignments").fetchone()[0] == 0
+        elif operation == "delivery":
+            assert db.execute("SELECT json_extract(body,'$.delivery') FROM learning_assignments").fetchone()[0] is None
+        else:
+            assert db.execute("SELECT checkpoint FROM learning_experiments").fetchone()[0] is None
+
+
 def test_explicit_control_delivery_and_partial_receipts(root):
     assignments = [assign(root, str(i)) for i in range(20)]
     control = next(a for a in assignments if not a["inject"])
@@ -205,6 +246,24 @@ def test_budget_never_selectively_drops_incomplete_evidence(root):
     assert status["report"]["evidence"] == 2
     assert learning.run_pending(root) == {"processed": 1, "failed": 0}
     assert not learning.operate(root, "status")["pending_work"]
+
+
+def test_concurrent_cohort_growth_cannot_checkpoint_a_bounded_prefix(root, monkeypatch):
+    finish(root, assign(root, "seed"))
+    original = learning._original_permits
+
+    def append_after_admission(*args, **kwargs):
+        result = original(*args, **kwargs)
+        assign(root, "concurrent-1")
+        assign(root, "concurrent-2")
+        return result
+
+    monkeypatch.setattr(learning, "_original_permits", append_after_admission)
+    with pytest.raises(LearningConflict, match="evidence changed"):
+        learning.operate(root, "run", {"limit": 1})
+    status = learning.operate(root, "status")
+    assert status["occasions"] == 3 and status["pending_work"]
+    assert status["decision_revision"] == 0 and status["report"] is None
 
 
 @pytest.mark.parametrize("context", ["agent:a", [None], [1], [""], ["agent:"], ["x" * 257], ["a"] * 129])

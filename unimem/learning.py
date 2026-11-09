@@ -17,7 +17,8 @@ from unimem import capabilities as authority
 from unimem import learning_contract as contract
 from unimem import memory_authority, purpose
 from unimem.memory_journal import Journal
-from unimem.record_visibility import now, scope_from_labels
+from unimem.memory_record import MemoryRecord
+from unimem.record_visibility import now, scope_from_labels, visible
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS learning_experiments (
@@ -181,17 +182,24 @@ def _sources(journal: Journal, identities: list[str], scope: dict) -> list[dict]
     return [_source(journal, identity, scope) for identity in identities]
 
 
-def _check_revisions(db, sources: list[dict]) -> None:
+def _check_revisions(journal: Journal, db, sources: list[dict], scope: dict) -> None:
+    """Revalidate the complete grounding closure on the locked canonical snapshot.
+
+    An unchanged leaf version does not establish that its parents remain active,
+    revision-compatible or authorized. Use the same admission as ordinary reads
+    while BEGIN IMMEDIATE prevents canonical writers from changing that evidence.
+    """
+    reference = now()
     for source in sources:
         row = db.execute("SELECT body FROM records WHERE id=?", (source["id"],)).fetchone()
-        current = json.loads(row[0]) if row else None
+        current = MemoryRecord(**json.loads(row[0])) if row else None
         if (
             current is None
-            or current["version"] != source["revision"]
-            or current["status"] != "active"
-            or not current["is_latest"]
+            or current.version != source["revision"]
+            or not visible(current, scope, at=reference)
+            or not journal._grounded(db, current, scope, statuses=("active",), at=reference)
         ):
-            raise contract.LearningConflict("source changed during learning operation")
+            raise contract.LearningConflict("source or its grounding changed during learning operation")
 
 
 def _public(assignment: dict, sources: list[dict] | None = None) -> dict:
@@ -260,8 +268,6 @@ def operate(
         raise contract.LearningError("principal scope labels require a nonempty value")
     actual_scope = scope_from_labels(context or []) if scope is None else scope
     # Reuse record validation so malformed or unrecognized scope keys fail closed.
-    from unimem.memory_record import MemoryRecord
-
     MemoryRecord(id="scope-validation", kind="fact", version=1, payload={}, scope=actual_scope)
     actual_scope = json.loads(_json(actual_scope))
     if "labels" in actual_scope:
@@ -325,7 +331,7 @@ def operate(
         )
         with journal.connect(write=True) as db:
             _, locked = _experiment(db, namespace, experiment_id)
-            _check_revisions(db, sources)
+            _check_revisions(journal, db, sources, actual_scope)
             existing = db.execute(
                 "SELECT request_digest,body FROM learning_assignments "
                 "WHERE namespace=? AND experiment=? AND occasion=?",
@@ -373,7 +379,7 @@ def operate(
         with journal.connect(write=True) as db:
             assignment = _load_assignment(db, namespace, experiment_id, body["occasion_id"])
             if sources:
-                _check_revisions(db, sources)
+                _check_revisions(journal, db, sources, actual_scope)
             if assignment[operation] is not None and assignment[operation] != value:
                 raise contract.LearningConflict(f"conflicting {operation} retry")
             if assignment[operation] is None:
@@ -510,13 +516,13 @@ def operate(
         current_assignments = [
             json.loads(item[0])
             for item in db.execute(
-                "SELECT body FROM learning_assignments WHERE namespace=? AND experiment=? ORDER BY rowid",
-                (namespace, experiment_id),
+                "SELECT body FROM learning_assignments WHERE namespace=? AND experiment=? ORDER BY rowid LIMIT ?",
+                (namespace, experiment_id, body.get("limit", 10000) + 1),
             ).fetchall()
         ]
         if contract.digest(current_assignments) != contract.digest(assignments):
             raise contract.LearningConflict("learning evidence changed; retry bounded pass")
-        _check_revisions(db, admitted)
+        _check_revisions(journal, db, admitted, actual_scope)
         checkpoint = contract.digest(
             [assignments, sorted(stale), sorted((s["id"], s["revision"]) for s in admitted), sorted(original_blocked)]
         )

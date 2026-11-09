@@ -40,6 +40,26 @@ def test_a_reward_must_be_a_finite_fraction(reward):
         rewards.realize("s", "o", reward)
 
 
+@pytest.mark.parametrize("smallest", [1e-200, 1e-310])
+def test_raw_reward_effects_preserve_weight_ratios_at_extreme_propensities(monkeypatch, smallest):
+    rows = [
+        causal_gate.Row("m", "treated-1", True, True, 0.5),
+        causal_gate.Row("m", "treated-2", True, True, 0.5),
+        causal_gate.Row("m", "control-1", False, False, smallest),
+        causal_gate.Row("m", "control-2", False, True, 2 * smallest),
+    ]
+    monkeypatch.setattr(causal_gate, "current_rows", lambda root: rows)
+    monkeypatch.setattr(
+        rewards, "load", lambda root: {row.occasion_id: {"reward": float(row.succeeded)} for row in rows}
+    )
+    result = rewards.effects("unused")[0]
+    assert result["mean_injected"] == 1.0
+    assert result["mean_withheld"] == pytest.approx(1 / 3)
+    assert result["effect"] == pytest.approx(2 / 3)
+    assert result["se"] == pytest.approx(math.sqrt(8 / 81))
+    assert all(math.isfinite(result[field]) for field in ("effect", "se", "ci_low", "ci_high"))
+
+
 def test_the_extremes_are_certain():
     assert all(rewards.realize("s", f"o{i}", 1.0) for i in range(200))
     assert not any(rewards.realize("s", f"o{i}", 0.0) for i in range(200))

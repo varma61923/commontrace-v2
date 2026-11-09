@@ -431,21 +431,25 @@ def effects(root: str) -> list[dict[str, Any]]:
     """Per-memory Hajek effects on the raw reward, over occasions that recorded one."""
     from unimem import causal_gate
 
-    rewards = {k: float(v["reward"]) for k, v in load(root).items() if "reward" in v}
+    rewards = {k: _fraction(v["reward"], "committed reward") for k, v in load(root).items() if "reward" in v}
     arms: dict[str, dict[bool, list[tuple[float, float]]]] = defaultdict(lambda: {True: [], False: []})
     for r in causal_gate.current_rows(root):
         if r.occasion_id in rewards:
-            arms[r.lesson][r.injected].append((1.0 / r.propensity, rewards[r.occasion_id]))
+            arms[r.lesson][r.injected].append((r.propensity, rewards[r.occasion_id]))
     out = []
     for lesson, by_arm in sorted(arms.items()):
         stats = []
         for injected in (True, False):
             rows = by_arm[injected]
-            total = math.fsum(w for w, _y in rows)
-            if not rows or total <= 0:
+            if not rows:
                 break
-            mean = math.fsum(w * y for w, y in rows) / total
-            var = math.fsum((w * (y - mean)) ** 2 for w, y in rows) / total**2
+            # Common scaling preserves the Hajek mean and its variance. Never
+            # form 1/p (which may overflow), or square an unbounded weight.
+            smallest = min(p for p, _y in rows)
+            weighted = [(smallest / p, y) for p, y in rows]
+            total = math.fsum(w for w, _y in weighted)
+            mean = math.fsum(w * y for w, y in weighted) / total
+            var = math.fsum((w * (y - mean)) ** 2 for w, y in weighted) / total**2
             stats.append((mean, var, len(rows)))
         if len(stats) < 2:
             continue
