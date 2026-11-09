@@ -134,6 +134,15 @@ pool saturation, CPU/RSS and disk growth at the expected corpus size and peak
 concurrency. Retain results for the exact image and configuration. Performance
 figures in [the research report](performance-research.md) are workload-specific.
 
+For an authentication and rate-limiter load smoke, use a disposable database:
+
+```bash
+python -m hub.bench_concurrency --clients 1,4,8 --requests 64 --backend both --json
+```
+
+This exercises key verification and limiter decisions; it excludes network/TLS
+and application queries and does not establish serving capacity.
+
 ## Back up and rehearse recovery
 
 Define acceptable data loss (RPO), recovery time (RTO), ownership and retention
@@ -154,64 +163,3 @@ search/recall, outcome recording and governed erasure. Retain encryption/signing
 keys separately under the same recovery controls; a database restore cannot
 reconstruct destroyed keys. Record recovery duration and failures, then remove
 the isolated drill resources according to the retention policy.
-
-## Verification for this change
-
-Starting commit: `518bf5a`. The changes add exact-commit release evidence,
-bounded dependency probes, independent authenticated metrics, complete engine
-lifecycle ownership, startup/termination guards, immutable image references,
-shared standalone rate limits, and security-setting propagation through Compose.
-The three Prometheus regression scenarios fail with the original rules and pass
-with the corrected rules: probe-only traffic, idle counters, and failing user
-traffic diluted by successful probes.
-
-| Verification | Completed result |
-| --- | --- |
-| Full Hub suite on real PostgreSQL 16 | **2,804 passed, 24 skipped**, warnings treated as errors. |
-| End-to-end, deployment, installer and release selection | **344 passed, 13 skipped**, warnings treated as errors. |
-| Chromium desktop/mobile console journeys | **22 passed**, browser required rather than skipped. |
-| TypeScript SDK build/tests | **42 passed**. |
-| Final release/deployment contract selection | **50 passed, 2 Terraform-tool skips**, warnings treated as errors. |
-| Concurrency benchmark regressions | **24 passed**, including exact request counts and cleanup isolation. |
-| Fresh database migration | Upgraded from an empty database to head `ff58bac2d4f6`; subsequent schema verification passed. |
-| Isolated database recovery | Dump and restore succeeded; a real trace survived, forced RLS remained enabled, and the runtime role saw zero rows from the other tenant. This was a tiny drill, not a production RTO measurement. |
-| Installed wheel, core dependencies only | Offline init → write fact → recall passed inside a clean environment with a 60-second journey deadline. |
-| Static and package checks | Repository lint/format, full 637-file type check, strict types for both release scripts, both OpenAPI drift checks, wheel/sdist builds and Helm lint/render passed. |
-| Security and architecture scans | Bandit found zero medium/high issues in runtime and release scripts; Graphify integrity/budget checks passed with 402 modules, 291 candidates and zero missing endpoints. |
-
-Counts overlap; do not add the selections together. The initial Hub attempt was
-discarded after the execution environment filled its disk. Obsolete task caches
-were removed before the fresh, completed run reported above.
-The full Hub run covered the final application runtime; subsequent changes to
-the load harness were covered by its complete 24-test selection. No application
-runtime behavior changed after that full run.
-
-The local concurrency smoke used an empty ASGI handler behind real key
-verification and limiter decisions against PostgreSQL, with auth caching off
-and a stable test pepper. Each level had 64 measured requests plus separate
-warm-ups. It excludes network/TLS and application query work:
-
-| Limiter backend | Concurrent clients | Completed requests | Failures | p95 ms |
-| --- | ---: | ---: | ---: | ---: |
-| Memory | 1 / 4 / 8 | 64 at each level | 0 | 7.38 / 7.38 / 18.76 |
-| PostgreSQL | 1 / 4 / 8 | 64 at each level | 0 | 9.08 / 22.64 / 32.87 |
-
-The load harness now distributes remainders exactly, rejects nonpositive load,
-cleans up only its own limiter namespace, and disposes its engine even when
-setup/cleanup fails. Use only a disposable database when reproducing it:
-
-```bash
-python -m hub.bench_concurrency --clients 1,4,8 --requests 64 --backend both --json
-```
-
-This is a local correctness/load smoke, not a serving-capacity claim. The full
-unchanged local-engine suite's earlier results are in
-[the audit report](effect-field-audit.md); it was not rerun wholesale for this
-Hub/deployment change. Terraform provider execution, PostgreSQL 18 container
-startup, a real cluster/ingress failover, production-sized load/recovery and
-account-level release policies still require target-environment acceptance.
-The PostgreSQL 18 image could not be unpacked within this workspace's local disk
-budget; PostgreSQL 16 tests are not presented as a successful Compose-18 run.
-Remote CI, package publication and production deployment were not performed by
-these local checks. The release gate requires successful remote CI before any
-publication can proceed.
