@@ -669,7 +669,9 @@ async def test_http_to_mcp_retry_same_uuid_principal_and_strict_parameters(sessi
     "kind,payload",
     [
         ("directive", {"text": "Never leak secrets"}),
+        ("fact", {"text": "Explicitly protected", "protected": True}),
         ("profile", {"text": "Critical limit", "critical": True}),
+        ("profile", {"text": "Critical legacy limit", "critical": "required"}),
         ("lesson", {"text": "Safe action", "lesson_kind": "directive"}),
     ],
 )

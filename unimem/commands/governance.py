@@ -181,7 +181,7 @@ def conformance_add_parser(subparsers: argparse._SubParsersAction) -> None:
     e.add_argument(
         "--only",
         default=None,
-        help="Comma-separated ops to check (assign,ledger,digest,revision): "
+        help="Comma-separated ops to check (assign,ledger,digest,revision,allocate,learning): "
         "an implementation may cover a subset, and the report says which.",
     )
     e.add_argument("--json", action="store_true")
@@ -195,6 +195,15 @@ def conformance_add_parser(subparsers: argparse._SubParsersAction) -> None:
     g.add_argument("--token", required=True)
     g.add_argument("--json", action="store_true")
     g.set_defaults(func=conformance_run_gateway)
+    learning = sub.add_parser(
+        "learning", help="Verify learning across isolated real runtimes; no existing store is modified."
+    )
+    learning.add_argument(
+        "--profiles", default="embedded,http,robot", help="embedded,http,robot,mcp or all; MCP requires the mcp extra."
+    )
+    learning.add_argument("--samples", type=int, default=12, help="Episodes replayed through each profile (1–100).")
+    learning.add_argument("--json", action="store_true")
+    learning.set_defaults(func=conformance_run_learning)
 
 
 def conformance__emit(results, as_json: bool) -> int:
@@ -250,6 +259,26 @@ def conformance_run_gateway(args: argparse.Namespace) -> int:
     if results and results[0].detail.startswith("HTTP 0"):
         print(f"[unimem] cannot reach {args.url}", file=sys.stderr)
     return conformance__emit(results, args.json)
+
+
+def conformance_run_learning(args: argparse.Namespace) -> int:
+    import json
+    import sys
+
+    from unimem import conformance
+
+    profiles = tuple(args.profiles.split(",")) if args.profiles != "all" else ("embedded", "http", "robot", "mcp")
+    try:
+        report = conformance.check_learning_lifecycle(profiles=profiles, samples=args.samples)
+    except ValueError as exc:
+        print(f"[unimem] {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(report, indent=2))
+    else:
+        print(conformance.render([conformance.Result(**row) for row in report["checks"]]))
+        print("Latency, versions and resource measurements are available with --json.")
+    return 0 if report["passed"] else 1
 
 
 # defense operations

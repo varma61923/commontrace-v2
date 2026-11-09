@@ -22,6 +22,18 @@ class GatewayRefused(ValueError):
         self.status, self.code = status, code
 
 
+class GatewayUnavailable(ConnectionError):
+    """A server response whose queued outcome remains retryable.
+
+    Authentication can be renewed and a missing assignment can arrive later.
+    Preserve the HTTP status without discarding accepted offline measurements.
+    """
+
+    def __init__(self, status: int, code: str = "") -> None:
+        super().__init__(f"robot gateway returned HTTP {status}; outcome remains queued for retry")
+        self.status, self.code = status, code
+
+
 class GatewayTransport(Protocol):
     def post(self, path: str, body: dict[str, Any]) -> dict[str, Any]: ...
 
@@ -87,7 +99,7 @@ class HTTPGateway:
             try:
                 if exc.code in REFUSALS:
                     raise GatewayRefused(exc.code, _error_code(exc)) from None
-                raise ConnectionError("robot gateway request failed; outcome remains queued for retry") from None
+                raise GatewayUnavailable(exc.code, _error_code(exc)) from None
             finally:
                 exc.close()
         except GatewayRefused:
@@ -200,8 +212,11 @@ class RobotLearningClient:
         body["context"] = ["agent:" + self._bridge.robot]
         queue = self._bridge.queue
         path = "/v1/learning/outcome"
+        queue_options = {}
         if queue is not None:
-            queue.enqueue(body, path=path)
+            queue_id = queue.enqueue(body, path=path)
+            if queue_id is not None:
+                queue_options["queue_id"] = queue_id
         try:
             from unimem.client import learning_reply
 
@@ -215,10 +230,10 @@ class RobotLearningClient:
             return {"queued": True, **body}
         except GatewayRefused as exc:
             if queue is not None:
-                queue.reject(occasion_id, exc.status, exc.code)
+                queue.reject(occasion_id, exc.status, exc.code, **queue_options)
             raise
         if queue is not None:
-            queue.acknowledge(occasion_id)
+            queue.acknowledge(occasion_id, **queue_options)
         self._assignments.pop(occasion_id, None)
         self._bridge._recalls.pop(occasion_id, None)
         return result
@@ -344,8 +359,11 @@ class RobotBridge:
             body["metrics"] = {
                 fp.text(k, "metric", 64): fp.number(v, -1e12, 1e12, "metric") for k, v in metrics.items()
             }
+        queue_options = {}
         if self.queue is not None:
-            self.queue.enqueue(body)
+            queue_id = self.queue.enqueue(body)
+            if queue_id is not None:
+                queue_options["queue_id"] = queue_id
         try:
             result = self.transport.post("/v1/outcome", body)
         except ConnectionError:
@@ -354,10 +372,10 @@ class RobotBridge:
             return {"queued": True, "occasion_id": occasion}
         except GatewayRefused as exc:
             if self.queue is not None:
-                self.queue.reject(occasion, exc.status, exc.code)
+                self.queue.reject(occasion, exc.status, exc.code, **queue_options)
             raise
         if self.queue is not None:
-            self.queue.acknowledge(occasion)
+            self.queue.acknowledge(occasion, **queue_options)
         self._recalls.pop(occasion, None)
         return result
 

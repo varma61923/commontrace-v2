@@ -71,12 +71,7 @@ def _source(journal: Journal, identity: str, scope: dict) -> dict:
         raise contract.LearningUnavailable("memory source is unavailable in this principal scope")
     from unimem import safety
 
-    protected = (
-        record.kind == "directive"
-        or (record.kind == "profile" and bool(record.payload.get("critical")))
-        or (record.kind == "lesson" and record.payload.get("lesson_kind") == "directive")
-        or identity in safety.protected(journal.root)
-    )
+    protected = contract.protected_memory(record.kind, record.payload) or identity in safety.protected(journal.root)
     # Payload is the canonical typed representation; rendering must never accept caller text.
     text = record.payload.get("text", record.payload.get("content", record.payload.get("body")))
     if not isinstance(text, str):

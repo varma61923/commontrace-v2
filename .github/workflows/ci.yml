@@ -165,6 +165,18 @@ jobs:
       - name: Chronological measured learning regression
         run: python -m benchmarks.learning_stream --check --out /tmp/learning-results.json
 
+      - name: Public measured-learning vectors and cross-transport release evidence
+        run: |
+          python -m unimem.cli conformance vectors
+          python -m unimem.cli conformance learning --profiles all --samples 12 --json > learning-conformance.json
+
+      - name: Preserve measured-learning release evidence
+        if: always() && hashFiles('learning-conformance.json') != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: learning-conformance-${{ github.sha }}
+          path: learning-conformance.json
+
       - name: Hub server image allowlist stays in sync with hub/'s imports
         run: python -m pytest hub/tests/test_image_contents.py -q --noconftest
 

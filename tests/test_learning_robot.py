@@ -79,12 +79,117 @@ def test_queue_keeps_legacy_and_learning_outcomes_distinct_and_conflicts_fail_cl
     queue.enqueue(legacy)
     queue.enqueue(current, path="/v1/learning/outcome")
     with pytest.raises(ValueError, match="conflicting"):
-        queue.enqueue({**current, "experiment_id": "e2"}, path="/v1/learning/outcome")
+        queue.enqueue({**current, "metrics": {"progress": 0.2}}, path="/v1/learning/outcome")
     transport = Transport()
     assert queue.flush(transport.post) == 2
     assert transport.calls == [("/v1/outcome", legacy), ("/v1/learning/outcome", current)]
     with pytest.raises(ValueError, match="endpoint"):
         queue.enqueue({"occasion_id": "x", "succeeded": True}, path="https://attacker")
+
+
+def test_queue_identity_pins_route_experiment_and_scope_without_cross_acknowledgement(tmp_path):
+    from unimem.robotics.edge import OutcomeConflict
+
+    queue = OutcomeQueue(str(tmp_path))
+    bodies = [
+        {"occasion_id": "same", "experiment_id": "e1", "context": ["agent:r1"], "reward": 0.5},
+        {"occasion_id": "same", "experiment_id": "e2", "context": ["agent:r1"], "reward": 0.5},
+        {"occasion_id": "same", "experiment_id": "e2", "context": ["agent:r2"], "reward": 0.5},
+    ]
+    keys = [queue.enqueue(body, path="/v1/learning/outcome") for body in bodies]
+    legacy = {"occasion_id": "same", "succeeded": True}
+    keys.append(queue.enqueue(legacy))
+    assert len(set(keys)) == 4
+    with pytest.raises(OutcomeConflict, match="ambiguous"):
+        queue.acknowledge("same")
+    queue.acknowledge("same", queue_id=keys[0])
+    assert queue.pending() == [*bodies[1:], legacy]
+    calls = []
+
+    def post(path, body):
+        calls.append((path, body))
+        if body == bodies[1]:
+            raise GatewayRefused(409, "conflict")
+        return {"schema": LEARNING_SCHEMA}
+
+    assert queue.flush(post) == 2
+    assert queue.pending() == []
+    assert queue.rejected()[0]["body"] == bodies[1]
+    assert [body for _, body in calls] == [*bodies[1:], legacy]
+
+
+def test_preupgrade_acknowledgement_cannot_settle_a_later_experiment(tmp_path):
+    from unimem import frontier_protocol as fp
+
+    root = str(tmp_path)
+    old = {"occasion_id": "same", "experiment_id": "old", "reward": 0.5}
+    fp.append(
+        root,
+        "edge-outcomes.jsonl",
+        {"kind": "enqueue", "occasion_id": "same", "body": old, "path": "/v1/learning/outcome"},
+    )
+    fp.append(root, "edge-outcomes.jsonl", {"kind": "ack", "occasion_id": "same"})
+    queue = OutcomeQueue(root)
+    current = {**old, "experiment_id": "new"}
+    queue.enqueue(current, path="/v1/learning/outcome")
+    assert OutcomeQueue(root).pending() == [current]
+    assert queue.flush(lambda path, body: {"schema": LEARNING_SCHEMA}) == 1
+    assert queue.pending() == []
+
+
+def test_learning_queue_canonicalizes_scope_order_for_retry_identity(tmp_path):
+    queue = OutcomeQueue(str(tmp_path))
+    body = {"occasion_id": "o", "experiment_id": "e", "context": ["agent:r", "project:p"], "succeeded": True}
+    key = queue.enqueue(body, path="/v1/learning/outcome")
+    assert queue.enqueue({**body, "context": list(reversed(body["context"]))}, path="/v1/learning/outcome") == key
+    assert len(queue.pending()) == 1
+
+
+def test_recovery_refuses_conflicting_historical_queue_entries(tmp_path):
+    from unimem import frontier_protocol as fp
+    from unimem.robotics.edge import OutcomeConflict
+
+    root = str(tmp_path)
+    for reward in (0.2, 0.8):
+        fp.append(
+            root,
+            "edge-outcomes.jsonl",
+            {
+                "kind": "enqueue",
+                "occasion_id": "same",
+                "body": {"occasion_id": "same", "reward": reward},
+                "path": "/v1/outcome",
+            },
+        )
+    with pytest.raises(OutcomeConflict, match="history"):
+        OutcomeQueue(root).pending()
+
+
+def test_queue_freezes_caller_input_before_waiting_for_admission(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    queue = OutcomeQueue(str(tmp_path))
+    entered, release = Event(), Event()
+    original = queue._state
+
+    def paused():
+        entered.set()
+        assert release.wait(5)
+        return original()
+
+    monkeypatch.setattr(queue, "_state", paused)
+    body = {"occasion_id": "o", "experiment_id": "e1", "metrics": {"progress": 0.5}}
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        pending = executor.submit(queue.enqueue, body, path="/v1/learning/outcome")
+        try:
+            assert entered.wait(5)
+            body["experiment_id"] = "e2"
+            body["metrics"]["progress"] = 0.9
+        finally:
+            release.set()
+        pending.result(timeout=5)
+    assert queue.pending() == [{"occasion_id": "o", "experiment_id": "e1", "metrics": {"progress": 0.5}}]
 
 
 def test_learning_queue_does_not_acknowledge_incompatible_replies(tmp_path):

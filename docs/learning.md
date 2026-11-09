@@ -112,7 +112,92 @@ pending checkpoint, decision revision and latest report. Rollback appends a new
 policy revision and retains evidence. Learning receipts retain source IDs and
 revisions rather than copied source bodies.
 
-## Reproducible verification
+## Supported interfaces
+
+All supported interfaces negotiate `unimem.learning.v1` before a learning
+operation. Unsupported operations or versions fail explicitly. The limits and
+immutable evidence semantics are also returned by `learning/capabilities`.
+
+| Interface | Release / runtime boundary | Verified behavior |
+| --- | --- | --- |
+| Embedded Python | UniMem 1.0.0; Python 3.10+ | All eight operations on the canonical SQLite journal; exact scoped identity, transactional evidence and local worker recovery |
+| Local HTTP | Same installed UniMem version; versioned `/v1/learning` routes | All eight operations; owner administration and registered-agent scope binding; same experiment and receipts as embedded Python |
+| Local MCP | Python `mcp` 2.x extra | All eight operations for the local operator; restricted toolsets omit administration; scoped replay preserves authenticated authority |
+| Hosted HTTP / MCP | Hub from the same release; PostgreSQL 16; Hub pins `mcp` 2.3.0 | All eight operations; native tenant/principal-scoped SQL, audit transactions and fenced workers; additive migration `ff69cbd3e507` required |
+| Python hosted SDK | UniMem 1.0.0 `HubClient.learning` | Async negotiation, pinned experiments, copied request inputs and explicit retry boundaries |
+| TypeScript SDK | `sdk/typescript` 0.1.0 | All eight HTTP operations; build and client contracts checked in CI |
+| Go SDK | `sdk/go`, source revision matched to this release | All eight HTTP operations; native race-enabled CI suite |
+| Rust SDK | `sdk/rust` 0.1.0 | All eight HTTP operations; native build and client contracts checked in CI |
+| Java / Kotlin SDK | `memory-client` 0.1.0; Java 17+ | All eight HTTP operations; Kotlin uses the same Java facade; native CI builds both languages |
+| Robot bridge | UniMem 1.0.0 planner-level adapter | Assignment, delivery, outcome and status with experiment pinning and durable queued outcomes; simulation/protocol support, hardware acceptance remains deployment-specific |
+
+The learning `task_context` is a normalized experimental label, not a replacement
+for a robot's coordinate frame/calibration or a conversation's provenance and
+temporal validity. Preserve those domain fields in canonical source records and
+their versioned payloads; learning binds their exact revisions. Arbitrary model
+weight training, automatic actuation and vendor-specific device drivers are not
+part of this contract. Existing framework wrappers that use legacy outcome APIs
+do not automatically become measured-learning experiments: integrations must
+explicitly assign candidate IDs before exposing source bodies and acknowledge
+their actual delivery.
+
+## Public conformance and release measurements
+
+The packaged conformance vectors include the measured-learning layer. It covers
+configuration, protected-channel precedence over adaptive policy, contextual
+assignment, binary/graded/utility outcomes and invalid-request refusals. Both
+copies of `conformance_vectors.json` are checked against the reference. Run an
+independent implementation as a JSON-lines program with:
+
+```bash
+unimem conformance vectors
+unimem conformance exec 'python -m unimem.conformance' --only learning --json
+```
+
+Each learning vector contains a `request` and an exact expected `response`.
+The reference request uses `op: learning`, an `operation`, a `payload`, and,
+where needed, a frozen `config`, canonical `sources`, and selection `policy`.
+Those sources represent backend-resolved values in an isolated protocol test;
+they are never accepted as authoritative source bodies by the production API.
+Older implementations may explicitly select their supported layers with
+`--only`; empty vector sets and programs that exit unsuccessfully cannot pass.
+
+For a real end-to-end check, use the built-in disposable-store harness:
+
+```bash
+# Core profiles need no model provider or external service.
+unimem conformance learning --profiles embedded,http,robot --samples 12 --json
+# Include the installed MCP extra; a missing requested dependency fails the check.
+unimem conformance learning --profiles all --samples 12 --json
+```
+
+The harness uses one registered agent and one experiment across embedded Python,
+a real loopback HTTP server, the robot HTTP bridge and optional MCP. It checks
+identical assignments, protected facts, explicit delivery, three outcome forms,
+store reopening, late outcomes after reconfiguration, scope denial, conflicting
+retries, source correction, erasure and durable robot queue replay with the
+original utility. It creates and removes its own store and does not modify any
+configured store or remote deployment.
+
+JSON includes runtime/platform versions, exact corpus and request counts,
+per-adapter/operation p50/p95/p99 latency, initial/final store bytes, disk growth,
+process-lifetime peak RSS where available, expected refusals and every failed
+check. Latency includes SDK negotiation and rejected requests. The workload is
+single-caller SQLite plus loopback HTTP; these measurements do not establish
+managed-service load capacity or physical robot timing. CI preserves the report
+as `learning-conformance-<commit>` alongside its full regression gates. Hosted
+SQL admission, tenant isolation and lease/crash behavior are checked separately
+by `hub/tests/test_learning.py` and the enforced-role CI stage.
+
+Robot queue identities include endpoint, experiment, normalized scope and
+occasion. Acknowledging one identity cannot settle another experiment's outcome;
+ambiguous unqualified acknowledgements are refused. Existing journal entries
+without queue IDs remain readable, and their acknowledgements apply only to
+the preceding entry. Retryable HTTP errors preserve their status through
+`GatewayUnavailable` and retain the queued measurement for credential renewal,
+late assignment arrival or service recovery.
+
+## Reproducible learning evaluation
 
 ```bash
 python -m benchmarks.learning_stream --check --out /tmp/learning-results.json

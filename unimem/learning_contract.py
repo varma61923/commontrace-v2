@@ -44,6 +44,16 @@ def response(**fields: Any) -> dict:
     return {"schema": SCHEMA, **fields}
 
 
+def protected_memory(kind: str, payload: dict) -> bool:
+    """Governance channels bypass randomization on every storage backend."""
+    return (
+        kind == "directive"
+        or bool(payload.get("protected", False))
+        or (kind == "profile" and bool(payload.get("critical")))
+        or (kind == "lesson" and payload.get("lesson_kind") == "directive")
+    )
+
+
 def capabilities() -> dict:
     return response(
         operations=list(OPERATIONS),
@@ -52,6 +62,14 @@ def capabilities() -> dict:
         delivery_required=True,
         source_revisions=True,
         rollback=True,
+        limits={"assignment_sources": 100, "evaluation_assignments": 10000, "task_context_characters": 64},
+        evidence={
+            "receipts": "immutable",
+            "outcomes": "immutable",
+            "late_outcomes": "original_experiment",
+            "utility": "frozen_at_configuration",
+            "source_content_retained": False,
+        },
     )
 
 

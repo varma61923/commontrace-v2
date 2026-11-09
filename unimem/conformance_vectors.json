@@ -2734,6 +2734,2443 @@
    ]
   }
  ],
+ "learning": [
+  {
+   "request": {
+    "op": "learning",
+    "operation": "configure",
+    "payload": {
+     "mode": "off"
+    }
+   },
+   "response": {
+    "schema": "unimem.learning.v1",
+    "value": {
+     "holdout_rate": 0.5,
+     "min_arm": 10,
+     "mode": "off",
+     "utility": null,
+     "utility_digest": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
+    }
+   }
+  },
+  {
+   "request": {
+    "config": {
+     "experiment_id": "conformance-experiment",
+     "holdout_rate": 0.5,
+     "min_arm": 10,
+     "mode": "off",
+     "revision": 1,
+     "salt": "unimem-learning-v1",
+     "utility": {
+      "terms": {
+       "completion": {
+        "better": "higher",
+        "high": 100.0,
+        "low": 0.0,
+        "weight": 1.0
+       }
+      }
+     },
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141"
+    },
+    "op": "learning",
+    "operation": "assign",
+    "payload": {
+     "memory_ids": [
+      "memory",
+      "required"
+     ],
+     "occasion_id": "episode-1",
+     "task_context": ""
+    },
+    "policy": {
+     "6c4300a3d72708c4335863fba83fe9da760a9dd9569b4e097b5a7c082b020a7f": {
+      "disabled": true,
+      "rate": 1.0
+     },
+     "c70902881b7fb5845e2a25a2260905fecc63d677b4d06ee7f78967a6be907c7c": {
+      "disabled": true,
+      "rate": 1.0
+     }
+    },
+    "sources": [
+     {
+      "id": "memory",
+      "protected": false,
+      "revision": 3,
+      "text": "Check the current revision."
+     },
+     {
+      "id": "required",
+      "protected": true,
+      "revision": 2,
+      "text": "Respect the mandatory constraint."
+     }
+    ]
+   },
+   "response": {
+    "schema": "unimem.learning.v1",
+    "value": {
+     "arms": [
+      {
+       "id": "memory",
+       "injected": true,
+       "rate": 0.0,
+       "revision": 3
+      },
+      {
+       "id": "required",
+       "injected": true,
+       "rate": 0.0,
+       "revision": 2
+      }
+     ],
+     "config_revision": 1,
+     "delivery": null,
+     "experiment_id": "conformance-experiment",
+     "inject": [
+      "memory",
+      "required"
+     ],
+     "occasion_id": "episode-1",
+     "outcome": null,
+     "sources": [
+      {
+       "id": "memory",
+       "protected": false,
+       "revision": 3,
+       "text": "Check the current revision."
+      },
+      {
+       "id": "required",
+       "protected": true,
+       "revision": 2,
+       "text": "Respect the mandatory constraint."
+      }
+     ],
+     "task_context": "",
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141",
+     "withhold": []
+    }
+   }
+  },
+  {
+   "request": {
+    "config": {
+     "experiment_id": "conformance-experiment",
+     "holdout_rate": 0.5,
+     "min_arm": 10,
+     "mode": "off",
+     "revision": 1,
+     "salt": "unimem-learning-v1",
+     "utility": {
+      "terms": {
+       "completion": {
+        "better": "higher",
+        "high": 100.0,
+        "low": 0.0,
+        "weight": 1.0
+       }
+      }
+     },
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141"
+    },
+    "op": "learning",
+    "operation": "assign",
+    "payload": {
+     "memory_ids": [
+      "memory",
+      "required"
+     ],
+     "occasion_id": "episode-1",
+     "task_context": ""
+    },
+    "policy": {},
+    "sources": [
+     {
+      "id": "memory",
+      "protected": false,
+      "revision": 3,
+      "text": "Check the current revision."
+     },
+     {
+      "id": "required",
+      "protected": true,
+      "revision": 2,
+      "text": "Respect the mandatory constraint."
+     }
+    ]
+   },
+   "response": {
+    "schema": "unimem.learning.v1",
+    "value": {
+     "arms": [
+      {
+       "id": "memory",
+       "injected": true,
+       "rate": 0.0,
+       "revision": 3
+      },
+      {
+       "id": "required",
+       "injected": true,
+       "rate": 0.0,
+       "revision": 2
+      }
+     ],
+     "config_revision": 1,
+     "delivery": null,
+     "experiment_id": "conformance-experiment",
+     "inject": [
+      "memory",
+      "required"
+     ],
+     "occasion_id": "episode-1",
+     "outcome": null,
+     "sources": [
+      {
+       "id": "memory",
+       "protected": false,
+       "revision": 3,
+       "text": "Check the current revision."
+      },
+      {
+       "id": "required",
+       "protected": true,
+       "revision": 2,
+       "text": "Respect the mandatory constraint."
+      }
+     ],
+     "task_context": "",
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141",
+     "withhold": []
+    }
+   }
+  },
+  {
+   "request": {
+    "config": {
+     "experiment_id": "conformance-experiment",
+     "holdout_rate": 0.5,
+     "min_arm": 10,
+     "mode": "off",
+     "revision": 1,
+     "salt": "unimem-learning-v1",
+     "utility": {
+      "terms": {
+       "completion": {
+        "better": "higher",
+        "high": 100.0,
+        "low": 0.0,
+        "weight": 1.0
+       }
+      }
+     },
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141"
+    },
+    "op": "learning",
+    "operation": "assign",
+    "payload": {
+     "memory_ids": [
+      "memory",
+      "required"
+     ],
+     "occasion_id": "episode-1",
+     "task_context": "robot/pick"
+    },
+    "policy": {
+     "b829a9b0ac34f2e618647b43be093855eb63b2a720be72158bd88c158a3a166f": {
+      "disabled": true,
+      "rate": 1.0
+     },
+     "f12a91350cef38b36ef886b3b9f278fc444bf54c0f4862d63a1ed95396c44294": {
+      "disabled": true,
+      "rate": 1.0
+     }
+    },
+    "sources": [
+     {
+      "id": "memory",
+      "protected": false,
+      "revision": 3,
+      "text": "Check the current revision."
+     },
+     {
+      "id": "required",
+      "protected": true,
+      "revision": 2,
+      "text": "Respect the mandatory constraint."
+     }
+    ]
+   },
+   "response": {
+    "schema": "unimem.learning.v1",
+    "value": {
+     "arms": [
+      {
+       "id": "memory",
+       "injected": true,
+       "rate": 0.0,
+       "revision": 3
+      },
+      {
+       "id": "required",
+       "injected": true,
+       "rate": 0.0,
+       "revision": 2
+      }
+     ],
+     "config_revision": 1,
+     "delivery": null,
+     "experiment_id": "conformance-experiment",
+     "inject": [
+      "memory",
+      "required"
+     ],
+     "occasion_id": "episode-1",
+     "outcome": null,
+     "sources": [
+      {
+       "id": "memory",
+       "protected": false,
+       "revision": 3,
+       "text": "Check the current revision."
+      },
+      {
+       "id": "required",
+       "protected": true,
+       "revision": 2,
+       "text": "Respect the mandatory constraint."
+      }
+     ],
+     "task_context": "robot/pick",
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141",
+     "withhold": []
+    }
+   }
+  },
+  {
+   "request": {
+    "config": {
+     "experiment_id": "conformance-experiment",
+     "holdout_rate": 0.5,
+     "min_arm": 10,
+     "mode": "off",
+     "revision": 1,
+     "salt": "unimem-learning-v1",
+     "utility": {
+      "terms": {
+       "completion": {
+        "better": "higher",
+        "high": 100.0,
+        "low": 0.0,
+        "weight": 1.0
+       }
+      }
+     },
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141"
+    },
+    "op": "learning",
+    "operation": "assign",
+    "payload": {
+     "memory_ids": [
+      "memory",
+      "required"
+     ],
+     "occasion_id": "episode-1",
+     "task_context": "robot/pick"
+    },
+    "policy": {},
+    "sources": [
+     {
+      "id": "memory",
+      "protected": false,
+      "revision": 3,
+      "text": "Check the current revision."
+     },
+     {
+      "id": "required",
+      "protected": true,
+      "revision": 2,
+      "text": "Respect the mandatory constraint."
+     }
+    ]
+   },
+   "response": {
+    "schema": "unimem.learning.v1",
+    "value": {
+     "arms": [
+      {
+       "id": "memory",
+       "injected": true,
+       "rate": 0.0,
+       "revision": 3
+      },
+      {
+       "id": "required",
+       "injected": true,
+       "rate": 0.0,
+       "revision": 2
+      }
+     ],
+     "config_revision": 1,
+     "delivery": null,
+     "experiment_id": "conformance-experiment",
+     "inject": [
+      "memory",
+      "required"
+     ],
+     "occasion_id": "episode-1",
+     "outcome": null,
+     "sources": [
+      {
+       "id": "memory",
+       "protected": false,
+       "revision": 3,
+       "text": "Check the current revision."
+      },
+      {
+       "id": "required",
+       "protected": true,
+       "revision": 2,
+       "text": "Respect the mandatory constraint."
+      }
+     ],
+     "task_context": "robot/pick",
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141",
+     "withhold": []
+    }
+   }
+  },
+  {
+   "request": {
+    "config": {
+     "experiment_id": "conformance-experiment",
+     "holdout_rate": 0.5,
+     "min_arm": 10,
+     "mode": "off",
+     "revision": 1,
+     "salt": "unimem-learning-v1",
+     "utility": {
+      "terms": {
+       "completion": {
+        "better": "higher",
+        "high": 100.0,
+        "low": 0.0,
+        "weight": 1.0
+       }
+      }
+     },
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141"
+    },
+    "op": "learning",
+    "operation": "assign",
+    "payload": {
+     "memory_ids": [
+      "memory",
+      "required"
+     ],
+     "occasion_id": "episode-1",
+     "task_context": "modèle/tâche"
+    },
+    "policy": {
+     "54b90fcf2657e525ac79b32564bce4dd0482c54b12a8982ae76437de55faebca": {
+      "disabled": true,
+      "rate": 1.0
+     },
+     "6cca9e98160d65679fdea2d33c100ceee2a8e096df3bc9d875cc06bf6a14f8f5": {
+      "disabled": true,
+      "rate": 1.0
+     }
+    },
+    "sources": [
+     {
+      "id": "memory",
+      "protected": false,
+      "revision": 3,
+      "text": "Check the current revision."
+     },
+     {
+      "id": "required",
+      "protected": true,
+      "revision": 2,
+      "text": "Respect the mandatory constraint."
+     }
+    ]
+   },
+   "response": {
+    "schema": "unimem.learning.v1",
+    "value": {
+     "arms": [
+      {
+       "id": "memory",
+       "injected": true,
+       "rate": 0.0,
+       "revision": 3
+      },
+      {
+       "id": "required",
+       "injected": true,
+       "rate": 0.0,
+       "revision": 2
+      }
+     ],
+     "config_revision": 1,
+     "delivery": null,
+     "experiment_id": "conformance-experiment",
+     "inject": [
+      "memory",
+      "required"
+     ],
+     "occasion_id": "episode-1",
+     "outcome": null,
+     "sources": [
+      {
+       "id": "memory",
+       "protected": false,
+       "revision": 3,
+       "text": "Check the current revision."
+      },
+      {
+       "id": "required",
+       "protected": true,
+       "revision": 2,
+       "text": "Respect the mandatory constraint."
+      }
+     ],
+     "task_context": "modèle/tâche",
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141",
+     "withhold": []
+    }
+   }
+  },
+  {
+   "request": {
+    "config": {
+     "experiment_id": "conformance-experiment",
+     "holdout_rate": 0.5,
+     "min_arm": 10,
+     "mode": "off",
+     "revision": 1,
+     "salt": "unimem-learning-v1",
+     "utility": {
+      "terms": {
+       "completion": {
+        "better": "higher",
+        "high": 100.0,
+        "low": 0.0,
+        "weight": 1.0
+       }
+      }
+     },
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141"
+    },
+    "op": "learning",
+    "operation": "assign",
+    "payload": {
+     "memory_ids": [
+      "memory",
+      "required"
+     ],
+     "occasion_id": "episode-1",
+     "task_context": "modèle/tâche"
+    },
+    "policy": {},
+    "sources": [
+     {
+      "id": "memory",
+      "protected": false,
+      "revision": 3,
+      "text": "Check the current revision."
+     },
+     {
+      "id": "required",
+      "protected": true,
+      "revision": 2,
+      "text": "Respect the mandatory constraint."
+     }
+    ]
+   },
+   "response": {
+    "schema": "unimem.learning.v1",
+    "value": {
+     "arms": [
+      {
+       "id": "memory",
+       "injected": true,
+       "rate": 0.0,
+       "revision": 3
+      },
+      {
+       "id": "required",
+       "injected": true,
+       "rate": 0.0,
+       "revision": 2
+      }
+     ],
+     "config_revision": 1,
+     "delivery": null,
+     "experiment_id": "conformance-experiment",
+     "inject": [
+      "memory",
+      "required"
+     ],
+     "occasion_id": "episode-1",
+     "outcome": null,
+     "sources": [
+      {
+       "id": "memory",
+       "protected": false,
+       "revision": 3,
+       "text": "Check the current revision."
+      },
+      {
+       "id": "required",
+       "protected": true,
+       "revision": 2,
+       "text": "Respect the mandatory constraint."
+      }
+     ],
+     "task_context": "modèle/tâche",
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141",
+     "withhold": []
+    }
+   }
+  },
+  {
+   "request": {
+    "op": "learning",
+    "operation": "configure",
+    "payload": {
+     "mode": "observe"
+    }
+   },
+   "response": {
+    "schema": "unimem.learning.v1",
+    "value": {
+     "holdout_rate": 0.5,
+     "min_arm": 10,
+     "mode": "observe",
+     "utility": null,
+     "utility_digest": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
+    }
+   }
+  },
+  {
+   "request": {
+    "config": {
+     "experiment_id": "conformance-experiment",
+     "holdout_rate": 0.5,
+     "min_arm": 10,
+     "mode": "observe",
+     "revision": 1,
+     "salt": "unimem-learning-v1",
+     "utility": {
+      "terms": {
+       "completion": {
+        "better": "higher",
+        "high": 100.0,
+        "low": 0.0,
+        "weight": 1.0
+       }
+      }
+     },
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141"
+    },
+    "op": "learning",
+    "operation": "assign",
+    "payload": {
+     "memory_ids": [
+      "memory",
+      "required"
+     ],
+     "occasion_id": "episode-1",
+     "task_context": ""
+    },
+    "policy": {
+     "6c4300a3d72708c4335863fba83fe9da760a9dd9569b4e097b5a7c082b020a7f": {
+      "disabled": true,
+      "rate": 1.0
+     },
+     "c70902881b7fb5845e2a25a2260905fecc63d677b4d06ee7f78967a6be907c7c": {
+      "disabled": true,
+      "rate": 1.0
+     }
+    },
+    "sources": [
+     {
+      "id": "memory",
+      "protected": false,
+      "revision": 3,
+      "text": "Check the current revision."
+     },
+     {
+      "id": "required",
+      "protected": true,
+      "revision": 2,
+      "text": "Respect the mandatory constraint."
+     }
+    ]
+   },
+   "response": {
+    "schema": "unimem.learning.v1",
+    "value": {
+     "arms": [
+      {
+       "id": "memory",
+       "injected": false,
+       "rate": 1.0,
+       "revision": 3
+      },
+      {
+       "id": "required",
+       "injected": true,
+       "rate": 0.0,
+       "revision": 2
+      }
+     ],
+     "config_revision": 1,
+     "delivery": null,
+     "experiment_id": "conformance-experiment",
+     "inject": [
+      "required"
+     ],
+     "occasion_id": "episode-1",
+     "outcome": null,
+     "sources": [
+      {
+       "id": "memory",
+       "protected": false,
+       "revision": 3,
+       "text": "Check the current revision."
+      },
+      {
+       "id": "required",
+       "protected": true,
+       "revision": 2,
+       "text": "Respect the mandatory constraint."
+      }
+     ],
+     "task_context": "",
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141",
+     "withhold": [
+      "memory"
+     ]
+    }
+   }
+  },
+  {
+   "request": {
+    "config": {
+     "experiment_id": "conformance-experiment",
+     "holdout_rate": 0.5,
+     "min_arm": 10,
+     "mode": "observe",
+     "revision": 1,
+     "salt": "unimem-learning-v1",
+     "utility": {
+      "terms": {
+       "completion": {
+        "better": "higher",
+        "high": 100.0,
+        "low": 0.0,
+        "weight": 1.0
+       }
+      }
+     },
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141"
+    },
+    "op": "learning",
+    "operation": "assign",
+    "payload": {
+     "memory_ids": [
+      "memory",
+      "required"
+     ],
+     "occasion_id": "episode-1",
+     "task_context": ""
+    },
+    "policy": {},
+    "sources": [
+     {
+      "id": "memory",
+      "protected": false,
+      "revision": 3,
+      "text": "Check the current revision."
+     },
+     {
+      "id": "required",
+      "protected": true,
+      "revision": 2,
+      "text": "Respect the mandatory constraint."
+     }
+    ]
+   },
+   "response": {
+    "schema": "unimem.learning.v1",
+    "value": {
+     "arms": [
+      {
+       "id": "memory",
+       "injected": false,
+       "rate": 0.5,
+       "revision": 3
+      },
+      {
+       "id": "required",
+       "injected": true,
+       "rate": 0.0,
+       "revision": 2
+      }
+     ],
+     "config_revision": 1,
+     "delivery": null,
+     "experiment_id": "conformance-experiment",
+     "inject": [
+      "required"
+     ],
+     "occasion_id": "episode-1",
+     "outcome": null,
+     "sources": [
+      {
+       "id": "memory",
+       "protected": false,
+       "revision": 3,
+       "text": "Check the current revision."
+      },
+      {
+       "id": "required",
+       "protected": true,
+       "revision": 2,
+       "text": "Respect the mandatory constraint."
+      }
+     ],
+     "task_context": "",
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141",
+     "withhold": [
+      "memory"
+     ]
+    }
+   }
+  },
+  {
+   "request": {
+    "config": {
+     "experiment_id": "conformance-experiment",
+     "holdout_rate": 0.5,
+     "min_arm": 10,
+     "mode": "observe",
+     "revision": 1,
+     "salt": "unimem-learning-v1",
+     "utility": {
+      "terms": {
+       "completion": {
+        "better": "higher",
+        "high": 100.0,
+        "low": 0.0,
+        "weight": 1.0
+       }
+      }
+     },
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141"
+    },
+    "op": "learning",
+    "operation": "assign",
+    "payload": {
+     "memory_ids": [
+      "memory",
+      "required"
+     ],
+     "occasion_id": "episode-1",
+     "task_context": "robot/pick"
+    },
+    "policy": {
+     "b829a9b0ac34f2e618647b43be093855eb63b2a720be72158bd88c158a3a166f": {
+      "disabled": true,
+      "rate": 1.0
+     },
+     "f12a91350cef38b36ef886b3b9f278fc444bf54c0f4862d63a1ed95396c44294": {
+      "disabled": true,
+      "rate": 1.0
+     }
+    },
+    "sources": [
+     {
+      "id": "memory",
+      "protected": false,
+      "revision": 3,
+      "text": "Check the current revision."
+     },
+     {
+      "id": "required",
+      "protected": true,
+      "revision": 2,
+      "text": "Respect the mandatory constraint."
+     }
+    ]
+   },
+   "response": {
+    "schema": "unimem.learning.v1",
+    "value": {
+     "arms": [
+      {
+       "id": "memory",
+       "injected": false,
+       "rate": 1.0,
+       "revision": 3
+      },
+      {
+       "id": "required",
+       "injected": true,
+       "rate": 0.0,
+       "revision": 2
+      }
+     ],
+     "config_revision": 1,
+     "delivery": null,
+     "experiment_id": "conformance-experiment",
+     "inject": [
+      "required"
+     ],
+     "occasion_id": "episode-1",
+     "outcome": null,
+     "sources": [
+      {
+       "id": "memory",
+       "protected": false,
+       "revision": 3,
+       "text": "Check the current revision."
+      },
+      {
+       "id": "required",
+       "protected": true,
+       "revision": 2,
+       "text": "Respect the mandatory constraint."
+      }
+     ],
+     "task_context": "robot/pick",
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141",
+     "withhold": [
+      "memory"
+     ]
+    }
+   }
+  },
+  {
+   "request": {
+    "config": {
+     "experiment_id": "conformance-experiment",
+     "holdout_rate": 0.5,
+     "min_arm": 10,
+     "mode": "observe",
+     "revision": 1,
+     "salt": "unimem-learning-v1",
+     "utility": {
+      "terms": {
+       "completion": {
+        "better": "higher",
+        "high": 100.0,
+        "low": 0.0,
+        "weight": 1.0
+       }
+      }
+     },
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141"
+    },
+    "op": "learning",
+    "operation": "assign",
+    "payload": {
+     "memory_ids": [
+      "memory",
+      "required"
+     ],
+     "occasion_id": "episode-1",
+     "task_context": "robot/pick"
+    },
+    "policy": {},
+    "sources": [
+     {
+      "id": "memory",
+      "protected": false,
+      "revision": 3,
+      "text": "Check the current revision."
+     },
+     {
+      "id": "required",
+      "protected": true,
+      "revision": 2,
+      "text": "Respect the mandatory constraint."
+     }
+    ]
+   },
+   "response": {
+    "schema": "unimem.learning.v1",
+    "value": {
+     "arms": [
+      {
+       "id": "memory",
+       "injected": false,
+       "rate": 0.5,
+       "revision": 3
+      },
+      {
+       "id": "required",
+       "injected": true,
+       "rate": 0.0,
+       "revision": 2
+      }
+     ],
+     "config_revision": 1,
+     "delivery": null,
+     "experiment_id": "conformance-experiment",
+     "inject": [
+      "required"
+     ],
+     "occasion_id": "episode-1",
+     "outcome": null,
+     "sources": [
+      {
+       "id": "memory",
+       "protected": false,
+       "revision": 3,
+       "text": "Check the current revision."
+      },
+      {
+       "id": "required",
+       "protected": true,
+       "revision": 2,
+       "text": "Respect the mandatory constraint."
+      }
+     ],
+     "task_context": "robot/pick",
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141",
+     "withhold": [
+      "memory"
+     ]
+    }
+   }
+  },
+  {
+   "request": {
+    "config": {
+     "experiment_id": "conformance-experiment",
+     "holdout_rate": 0.5,
+     "min_arm": 10,
+     "mode": "observe",
+     "revision": 1,
+     "salt": "unimem-learning-v1",
+     "utility": {
+      "terms": {
+       "completion": {
+        "better": "higher",
+        "high": 100.0,
+        "low": 0.0,
+        "weight": 1.0
+       }
+      }
+     },
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141"
+    },
+    "op": "learning",
+    "operation": "assign",
+    "payload": {
+     "memory_ids": [
+      "memory",
+      "required"
+     ],
+     "occasion_id": "episode-1",
+     "task_context": "modèle/tâche"
+    },
+    "policy": {
+     "54b90fcf2657e525ac79b32564bce4dd0482c54b12a8982ae76437de55faebca": {
+      "disabled": true,
+      "rate": 1.0
+     },
+     "6cca9e98160d65679fdea2d33c100ceee2a8e096df3bc9d875cc06bf6a14f8f5": {
+      "disabled": true,
+      "rate": 1.0
+     }
+    },
+    "sources": [
+     {
+      "id": "memory",
+      "protected": false,
+      "revision": 3,
+      "text": "Check the current revision."
+     },
+     {
+      "id": "required",
+      "protected": true,
+      "revision": 2,
+      "text": "Respect the mandatory constraint."
+     }
+    ]
+   },
+   "response": {
+    "schema": "unimem.learning.v1",
+    "value": {
+     "arms": [
+      {
+       "id": "memory",
+       "injected": false,
+       "rate": 1.0,
+       "revision": 3
+      },
+      {
+       "id": "required",
+       "injected": true,
+       "rate": 0.0,
+       "revision": 2
+      }
+     ],
+     "config_revision": 1,
+     "delivery": null,
+     "experiment_id": "conformance-experiment",
+     "inject": [
+      "required"
+     ],
+     "occasion_id": "episode-1",
+     "outcome": null,
+     "sources": [
+      {
+       "id": "memory",
+       "protected": false,
+       "revision": 3,
+       "text": "Check the current revision."
+      },
+      {
+       "id": "required",
+       "protected": true,
+       "revision": 2,
+       "text": "Respect the mandatory constraint."
+      }
+     ],
+     "task_context": "modèle/tâche",
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141",
+     "withhold": [
+      "memory"
+     ]
+    }
+   }
+  },
+  {
+   "request": {
+    "config": {
+     "experiment_id": "conformance-experiment",
+     "holdout_rate": 0.5,
+     "min_arm": 10,
+     "mode": "observe",
+     "revision": 1,
+     "salt": "unimem-learning-v1",
+     "utility": {
+      "terms": {
+       "completion": {
+        "better": "higher",
+        "high": 100.0,
+        "low": 0.0,
+        "weight": 1.0
+       }
+      }
+     },
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141"
+    },
+    "op": "learning",
+    "operation": "assign",
+    "payload": {
+     "memory_ids": [
+      "memory",
+      "required"
+     ],
+     "occasion_id": "episode-1",
+     "task_context": "modèle/tâche"
+    },
+    "policy": {},
+    "sources": [
+     {
+      "id": "memory",
+      "protected": false,
+      "revision": 3,
+      "text": "Check the current revision."
+     },
+     {
+      "id": "required",
+      "protected": true,
+      "revision": 2,
+      "text": "Respect the mandatory constraint."
+     }
+    ]
+   },
+   "response": {
+    "schema": "unimem.learning.v1",
+    "value": {
+     "arms": [
+      {
+       "id": "memory",
+       "injected": false,
+       "rate": 0.5,
+       "revision": 3
+      },
+      {
+       "id": "required",
+       "injected": true,
+       "rate": 0.0,
+       "revision": 2
+      }
+     ],
+     "config_revision": 1,
+     "delivery": null,
+     "experiment_id": "conformance-experiment",
+     "inject": [
+      "required"
+     ],
+     "occasion_id": "episode-1",
+     "outcome": null,
+     "sources": [
+      {
+       "id": "memory",
+       "protected": false,
+       "revision": 3,
+       "text": "Check the current revision."
+      },
+      {
+       "id": "required",
+       "protected": true,
+       "revision": 2,
+       "text": "Respect the mandatory constraint."
+      }
+     ],
+     "task_context": "modèle/tâche",
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141",
+     "withhold": [
+      "memory"
+     ]
+    }
+   }
+  },
+  {
+   "request": {
+    "op": "learning",
+    "operation": "configure",
+    "payload": {
+     "mode": "adaptive"
+    }
+   },
+   "response": {
+    "schema": "unimem.learning.v1",
+    "value": {
+     "holdout_rate": 0.5,
+     "min_arm": 10,
+     "mode": "adaptive",
+     "utility": null,
+     "utility_digest": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
+    }
+   }
+  },
+  {
+   "request": {
+    "config": {
+     "experiment_id": "conformance-experiment",
+     "holdout_rate": 0.5,
+     "min_arm": 10,
+     "mode": "adaptive",
+     "revision": 1,
+     "salt": "unimem-learning-v1",
+     "utility": {
+      "terms": {
+       "completion": {
+        "better": "higher",
+        "high": 100.0,
+        "low": 0.0,
+        "weight": 1.0
+       }
+      }
+     },
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141"
+    },
+    "op": "learning",
+    "operation": "assign",
+    "payload": {
+     "memory_ids": [
+      "memory",
+      "required"
+     ],
+     "occasion_id": "episode-1",
+     "task_context": ""
+    },
+    "policy": {
+     "6c4300a3d72708c4335863fba83fe9da760a9dd9569b4e097b5a7c082b020a7f": {
+      "disabled": true,
+      "rate": 1.0
+     },
+     "c70902881b7fb5845e2a25a2260905fecc63d677b4d06ee7f78967a6be907c7c": {
+      "disabled": true,
+      "rate": 1.0
+     }
+    },
+    "sources": [
+     {
+      "id": "memory",
+      "protected": false,
+      "revision": 3,
+      "text": "Check the current revision."
+     },
+     {
+      "id": "required",
+      "protected": true,
+      "revision": 2,
+      "text": "Respect the mandatory constraint."
+     }
+    ]
+   },
+   "response": {
+    "schema": "unimem.learning.v1",
+    "value": {
+     "arms": [
+      {
+       "id": "memory",
+       "injected": false,
+       "rate": 1.0,
+       "revision": 3
+      },
+      {
+       "id": "required",
+       "injected": true,
+       "rate": 0.0,
+       "revision": 2
+      }
+     ],
+     "config_revision": 1,
+     "delivery": null,
+     "experiment_id": "conformance-experiment",
+     "inject": [
+      "required"
+     ],
+     "occasion_id": "episode-1",
+     "outcome": null,
+     "sources": [
+      {
+       "id": "memory",
+       "protected": false,
+       "revision": 3,
+       "text": "Check the current revision."
+      },
+      {
+       "id": "required",
+       "protected": true,
+       "revision": 2,
+       "text": "Respect the mandatory constraint."
+      }
+     ],
+     "task_context": "",
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141",
+     "withhold": [
+      "memory"
+     ]
+    }
+   }
+  },
+  {
+   "request": {
+    "config": {
+     "experiment_id": "conformance-experiment",
+     "holdout_rate": 0.5,
+     "min_arm": 10,
+     "mode": "adaptive",
+     "revision": 1,
+     "salt": "unimem-learning-v1",
+     "utility": {
+      "terms": {
+       "completion": {
+        "better": "higher",
+        "high": 100.0,
+        "low": 0.0,
+        "weight": 1.0
+       }
+      }
+     },
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141"
+    },
+    "op": "learning",
+    "operation": "assign",
+    "payload": {
+     "memory_ids": [
+      "memory",
+      "required"
+     ],
+     "occasion_id": "episode-1",
+     "task_context": ""
+    },
+    "policy": {},
+    "sources": [
+     {
+      "id": "memory",
+      "protected": false,
+      "revision": 3,
+      "text": "Check the current revision."
+     },
+     {
+      "id": "required",
+      "protected": true,
+      "revision": 2,
+      "text": "Respect the mandatory constraint."
+     }
+    ]
+   },
+   "response": {
+    "schema": "unimem.learning.v1",
+    "value": {
+     "arms": [
+      {
+       "id": "memory",
+       "injected": false,
+       "rate": 0.5,
+       "revision": 3
+      },
+      {
+       "id": "required",
+       "injected": true,
+       "rate": 0.0,
+       "revision": 2
+      }
+     ],
+     "config_revision": 1,
+     "delivery": null,
+     "experiment_id": "conformance-experiment",
+     "inject": [
+      "required"
+     ],
+     "occasion_id": "episode-1",
+     "outcome": null,
+     "sources": [
+      {
+       "id": "memory",
+       "protected": false,
+       "revision": 3,
+       "text": "Check the current revision."
+      },
+      {
+       "id": "required",
+       "protected": true,
+       "revision": 2,
+       "text": "Respect the mandatory constraint."
+      }
+     ],
+     "task_context": "",
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141",
+     "withhold": [
+      "memory"
+     ]
+    }
+   }
+  },
+  {
+   "request": {
+    "config": {
+     "experiment_id": "conformance-experiment",
+     "holdout_rate": 0.5,
+     "min_arm": 10,
+     "mode": "adaptive",
+     "revision": 1,
+     "salt": "unimem-learning-v1",
+     "utility": {
+      "terms": {
+       "completion": {
+        "better": "higher",
+        "high": 100.0,
+        "low": 0.0,
+        "weight": 1.0
+       }
+      }
+     },
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141"
+    },
+    "op": "learning",
+    "operation": "assign",
+    "payload": {
+     "memory_ids": [
+      "memory",
+      "required"
+     ],
+     "occasion_id": "episode-1",
+     "task_context": "robot/pick"
+    },
+    "policy": {
+     "b829a9b0ac34f2e618647b43be093855eb63b2a720be72158bd88c158a3a166f": {
+      "disabled": true,
+      "rate": 1.0
+     },
+     "f12a91350cef38b36ef886b3b9f278fc444bf54c0f4862d63a1ed95396c44294": {
+      "disabled": true,
+      "rate": 1.0
+     }
+    },
+    "sources": [
+     {
+      "id": "memory",
+      "protected": false,
+      "revision": 3,
+      "text": "Check the current revision."
+     },
+     {
+      "id": "required",
+      "protected": true,
+      "revision": 2,
+      "text": "Respect the mandatory constraint."
+     }
+    ]
+   },
+   "response": {
+    "schema": "unimem.learning.v1",
+    "value": {
+     "arms": [
+      {
+       "id": "memory",
+       "injected": false,
+       "rate": 1.0,
+       "revision": 3
+      },
+      {
+       "id": "required",
+       "injected": true,
+       "rate": 0.0,
+       "revision": 2
+      }
+     ],
+     "config_revision": 1,
+     "delivery": null,
+     "experiment_id": "conformance-experiment",
+     "inject": [
+      "required"
+     ],
+     "occasion_id": "episode-1",
+     "outcome": null,
+     "sources": [
+      {
+       "id": "memory",
+       "protected": false,
+       "revision": 3,
+       "text": "Check the current revision."
+      },
+      {
+       "id": "required",
+       "protected": true,
+       "revision": 2,
+       "text": "Respect the mandatory constraint."
+      }
+     ],
+     "task_context": "robot/pick",
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141",
+     "withhold": [
+      "memory"
+     ]
+    }
+   }
+  },
+  {
+   "request": {
+    "config": {
+     "experiment_id": "conformance-experiment",
+     "holdout_rate": 0.5,
+     "min_arm": 10,
+     "mode": "adaptive",
+     "revision": 1,
+     "salt": "unimem-learning-v1",
+     "utility": {
+      "terms": {
+       "completion": {
+        "better": "higher",
+        "high": 100.0,
+        "low": 0.0,
+        "weight": 1.0
+       }
+      }
+     },
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141"
+    },
+    "op": "learning",
+    "operation": "assign",
+    "payload": {
+     "memory_ids": [
+      "memory",
+      "required"
+     ],
+     "occasion_id": "episode-1",
+     "task_context": "robot/pick"
+    },
+    "policy": {},
+    "sources": [
+     {
+      "id": "memory",
+      "protected": false,
+      "revision": 3,
+      "text": "Check the current revision."
+     },
+     {
+      "id": "required",
+      "protected": true,
+      "revision": 2,
+      "text": "Respect the mandatory constraint."
+     }
+    ]
+   },
+   "response": {
+    "schema": "unimem.learning.v1",
+    "value": {
+     "arms": [
+      {
+       "id": "memory",
+       "injected": false,
+       "rate": 0.5,
+       "revision": 3
+      },
+      {
+       "id": "required",
+       "injected": true,
+       "rate": 0.0,
+       "revision": 2
+      }
+     ],
+     "config_revision": 1,
+     "delivery": null,
+     "experiment_id": "conformance-experiment",
+     "inject": [
+      "required"
+     ],
+     "occasion_id": "episode-1",
+     "outcome": null,
+     "sources": [
+      {
+       "id": "memory",
+       "protected": false,
+       "revision": 3,
+       "text": "Check the current revision."
+      },
+      {
+       "id": "required",
+       "protected": true,
+       "revision": 2,
+       "text": "Respect the mandatory constraint."
+      }
+     ],
+     "task_context": "robot/pick",
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141",
+     "withhold": [
+      "memory"
+     ]
+    }
+   }
+  },
+  {
+   "request": {
+    "config": {
+     "experiment_id": "conformance-experiment",
+     "holdout_rate": 0.5,
+     "min_arm": 10,
+     "mode": "adaptive",
+     "revision": 1,
+     "salt": "unimem-learning-v1",
+     "utility": {
+      "terms": {
+       "completion": {
+        "better": "higher",
+        "high": 100.0,
+        "low": 0.0,
+        "weight": 1.0
+       }
+      }
+     },
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141"
+    },
+    "op": "learning",
+    "operation": "assign",
+    "payload": {
+     "memory_ids": [
+      "memory",
+      "required"
+     ],
+     "occasion_id": "episode-1",
+     "task_context": "modèle/tâche"
+    },
+    "policy": {
+     "54b90fcf2657e525ac79b32564bce4dd0482c54b12a8982ae76437de55faebca": {
+      "disabled": true,
+      "rate": 1.0
+     },
+     "6cca9e98160d65679fdea2d33c100ceee2a8e096df3bc9d875cc06bf6a14f8f5": {
+      "disabled": true,
+      "rate": 1.0
+     }
+    },
+    "sources": [
+     {
+      "id": "memory",
+      "protected": false,
+      "revision": 3,
+      "text": "Check the current revision."
+     },
+     {
+      "id": "required",
+      "protected": true,
+      "revision": 2,
+      "text": "Respect the mandatory constraint."
+     }
+    ]
+   },
+   "response": {
+    "schema": "unimem.learning.v1",
+    "value": {
+     "arms": [
+      {
+       "id": "memory",
+       "injected": false,
+       "rate": 1.0,
+       "revision": 3
+      },
+      {
+       "id": "required",
+       "injected": true,
+       "rate": 0.0,
+       "revision": 2
+      }
+     ],
+     "config_revision": 1,
+     "delivery": null,
+     "experiment_id": "conformance-experiment",
+     "inject": [
+      "required"
+     ],
+     "occasion_id": "episode-1",
+     "outcome": null,
+     "sources": [
+      {
+       "id": "memory",
+       "protected": false,
+       "revision": 3,
+       "text": "Check the current revision."
+      },
+      {
+       "id": "required",
+       "protected": true,
+       "revision": 2,
+       "text": "Respect the mandatory constraint."
+      }
+     ],
+     "task_context": "modèle/tâche",
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141",
+     "withhold": [
+      "memory"
+     ]
+    }
+   }
+  },
+  {
+   "request": {
+    "config": {
+     "experiment_id": "conformance-experiment",
+     "holdout_rate": 0.5,
+     "min_arm": 10,
+     "mode": "adaptive",
+     "revision": 1,
+     "salt": "unimem-learning-v1",
+     "utility": {
+      "terms": {
+       "completion": {
+        "better": "higher",
+        "high": 100.0,
+        "low": 0.0,
+        "weight": 1.0
+       }
+      }
+     },
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141"
+    },
+    "op": "learning",
+    "operation": "assign",
+    "payload": {
+     "memory_ids": [
+      "memory",
+      "required"
+     ],
+     "occasion_id": "episode-1",
+     "task_context": "modèle/tâche"
+    },
+    "policy": {},
+    "sources": [
+     {
+      "id": "memory",
+      "protected": false,
+      "revision": 3,
+      "text": "Check the current revision."
+     },
+     {
+      "id": "required",
+      "protected": true,
+      "revision": 2,
+      "text": "Respect the mandatory constraint."
+     }
+    ]
+   },
+   "response": {
+    "schema": "unimem.learning.v1",
+    "value": {
+     "arms": [
+      {
+       "id": "memory",
+       "injected": false,
+       "rate": 0.5,
+       "revision": 3
+      },
+      {
+       "id": "required",
+       "injected": true,
+       "rate": 0.0,
+       "revision": 2
+      }
+     ],
+     "config_revision": 1,
+     "delivery": null,
+     "experiment_id": "conformance-experiment",
+     "inject": [
+      "required"
+     ],
+     "occasion_id": "episode-1",
+     "outcome": null,
+     "sources": [
+      {
+       "id": "memory",
+       "protected": false,
+       "revision": 3,
+       "text": "Check the current revision."
+      },
+      {
+       "id": "required",
+       "protected": true,
+       "revision": 2,
+       "text": "Respect the mandatory constraint."
+      }
+     ],
+     "task_context": "modèle/tâche",
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141",
+     "withhold": [
+      "memory"
+     ]
+    }
+   }
+  },
+  {
+   "request": {
+    "config": {
+     "experiment_id": "conformance-experiment",
+     "holdout_rate": 0.5,
+     "min_arm": 10,
+     "mode": "adaptive",
+     "revision": 1,
+     "salt": "unimem-learning-v1",
+     "utility": {
+      "terms": {
+       "completion": {
+        "better": "higher",
+        "high": 100.0,
+        "low": 0.0,
+        "weight": 1.0
+       }
+      }
+     },
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141"
+    },
+    "op": "learning",
+    "operation": "outcome",
+    "payload": {
+     "occasion_id": "episode-1",
+     "succeeded": true
+    }
+   },
+   "response": {
+    "schema": "unimem.learning.v1",
+    "value": {
+     "measurement": {
+      "succeeded": true
+     },
+     "reward": 1.0,
+     "succeeded": true,
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141"
+    }
+   }
+  },
+  {
+   "request": {
+    "config": {
+     "experiment_id": "conformance-experiment",
+     "holdout_rate": 0.5,
+     "min_arm": 10,
+     "mode": "adaptive",
+     "revision": 1,
+     "salt": "unimem-learning-v1",
+     "utility": {
+      "terms": {
+       "completion": {
+        "better": "higher",
+        "high": 100.0,
+        "low": 0.0,
+        "weight": 1.0
+       }
+      }
+     },
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141"
+    },
+    "op": "learning",
+    "operation": "outcome",
+    "payload": {
+     "occasion_id": "episode-1",
+     "succeeded": false
+    }
+   },
+   "response": {
+    "schema": "unimem.learning.v1",
+    "value": {
+     "measurement": {
+      "succeeded": false
+     },
+     "reward": 0.0,
+     "succeeded": false,
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141"
+    }
+   }
+  },
+  {
+   "request": {
+    "config": {
+     "experiment_id": "conformance-experiment",
+     "holdout_rate": 0.5,
+     "min_arm": 10,
+     "mode": "adaptive",
+     "revision": 1,
+     "salt": "unimem-learning-v1",
+     "utility": {
+      "terms": {
+       "completion": {
+        "better": "higher",
+        "high": 100.0,
+        "low": 0.0,
+        "weight": 1.0
+       }
+      }
+     },
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141"
+    },
+    "op": "learning",
+    "operation": "outcome",
+    "payload": {
+     "occasion_id": "episode-1",
+     "reward": 0.0
+    }
+   },
+   "response": {
+    "schema": "unimem.learning.v1",
+    "value": {
+     "measurement": {
+      "reward": 0.0
+     },
+     "reward": 0.0,
+     "succeeded": false,
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141"
+    }
+   }
+  },
+  {
+   "request": {
+    "config": {
+     "experiment_id": "conformance-experiment",
+     "holdout_rate": 0.5,
+     "min_arm": 10,
+     "mode": "adaptive",
+     "revision": 1,
+     "salt": "unimem-learning-v1",
+     "utility": {
+      "terms": {
+       "completion": {
+        "better": "higher",
+        "high": 100.0,
+        "low": 0.0,
+        "weight": 1.0
+       }
+      }
+     },
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141"
+    },
+    "op": "learning",
+    "operation": "outcome",
+    "payload": {
+     "occasion_id": "episode-1",
+     "reward": 0.75
+    }
+   },
+   "response": {
+    "schema": "unimem.learning.v1",
+    "value": {
+     "measurement": {
+      "reward": 0.75
+     },
+     "reward": 0.75,
+     "succeeded": true,
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141"
+    }
+   }
+  },
+  {
+   "request": {
+    "config": {
+     "experiment_id": "conformance-experiment",
+     "holdout_rate": 0.5,
+     "min_arm": 10,
+     "mode": "adaptive",
+     "revision": 1,
+     "salt": "unimem-learning-v1",
+     "utility": {
+      "terms": {
+       "completion": {
+        "better": "higher",
+        "high": 100.0,
+        "low": 0.0,
+        "weight": 1.0
+       }
+      }
+     },
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141"
+    },
+    "op": "learning",
+    "operation": "outcome",
+    "payload": {
+     "occasion_id": "episode-1",
+     "reward": 1.0
+    }
+   },
+   "response": {
+    "schema": "unimem.learning.v1",
+    "value": {
+     "measurement": {
+      "reward": 1.0
+     },
+     "reward": 1.0,
+     "succeeded": true,
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141"
+    }
+   }
+  },
+  {
+   "request": {
+    "config": {
+     "experiment_id": "conformance-experiment",
+     "holdout_rate": 0.5,
+     "min_arm": 10,
+     "mode": "adaptive",
+     "revision": 1,
+     "salt": "unimem-learning-v1",
+     "utility": {
+      "terms": {
+       "completion": {
+        "better": "higher",
+        "high": 100.0,
+        "low": 0.0,
+        "weight": 1.0
+       }
+      }
+     },
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141"
+    },
+    "op": "learning",
+    "operation": "outcome",
+    "payload": {
+     "metrics": {
+      "completion": 25
+     },
+     "occasion_id": "episode-1"
+    }
+   },
+   "response": {
+    "schema": "unimem.learning.v1",
+    "value": {
+     "measurement": {
+      "metrics": {
+       "completion": 25.0
+      }
+     },
+     "reward": 0.25,
+     "succeeded": false,
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141"
+    }
+   }
+  },
+  {
+   "request": {
+    "config": {
+     "experiment_id": "conformance-experiment",
+     "holdout_rate": 0.5,
+     "min_arm": 10,
+     "mode": "adaptive",
+     "revision": 1,
+     "salt": "unimem-learning-v1",
+     "utility": {
+      "terms": {
+       "completion": {
+        "better": "higher",
+        "high": 100.0,
+        "low": 0.0,
+        "weight": 1.0
+       }
+      }
+     },
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141"
+    },
+    "op": "learning",
+    "operation": "outcome",
+    "payload": {
+     "metrics": {
+      "completion": 100
+     },
+     "occasion_id": "episode-1"
+    }
+   },
+   "response": {
+    "schema": "unimem.learning.v1",
+    "value": {
+     "measurement": {
+      "metrics": {
+       "completion": 100.0
+      }
+     },
+     "reward": 1.0,
+     "succeeded": true,
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141"
+    }
+   }
+  },
+  {
+   "request": {
+    "config": {
+     "experiment_id": "conformance-experiment",
+     "holdout_rate": 0.5,
+     "min_arm": 10,
+     "mode": "adaptive",
+     "revision": 1,
+     "salt": "unimem-learning-v1",
+     "utility": {
+      "terms": {
+       "completion": {
+        "better": "higher",
+        "high": 100.0,
+        "low": 0.0,
+        "weight": 1.0
+       }
+      }
+     },
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141"
+    },
+    "op": "learning",
+    "operation": "outcome",
+    "payload": {
+     "occasion_id": "episode-1",
+     "reward": true
+    }
+   },
+   "response": {
+    "error": "invalid_learning_request",
+    "status": 400
+   }
+  },
+  {
+   "request": {
+    "config": {
+     "experiment_id": "conformance-experiment",
+     "holdout_rate": 0.5,
+     "min_arm": 10,
+     "mode": "adaptive",
+     "revision": 1,
+     "salt": "unimem-learning-v1",
+     "utility": {
+      "terms": {
+       "completion": {
+        "better": "higher",
+        "high": 100.0,
+        "low": 0.0,
+        "weight": 1.0
+       }
+      }
+     },
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141"
+    },
+    "op": "learning",
+    "operation": "outcome",
+    "payload": {
+     "occasion_id": "episode-1",
+     "reward": 1.1
+    }
+   },
+   "response": {
+    "error": "invalid_learning_request",
+    "status": 400
+   }
+  },
+  {
+   "request": {
+    "config": {
+     "experiment_id": "conformance-experiment",
+     "holdout_rate": 0.5,
+     "min_arm": 10,
+     "mode": "adaptive",
+     "revision": 1,
+     "salt": "unimem-learning-v1",
+     "utility": {
+      "terms": {
+       "completion": {
+        "better": "higher",
+        "high": 100.0,
+        "low": 0.0,
+        "weight": 1.0
+       }
+      }
+     },
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141"
+    },
+    "op": "learning",
+    "operation": "outcome",
+    "payload": {
+     "metrics": {
+      "unknown": 50
+     },
+     "occasion_id": "episode-1"
+    }
+   },
+   "response": {
+    "error": "invalid_learning_request",
+    "status": 400
+   }
+  },
+  {
+   "request": {
+    "config": {
+     "experiment_id": "conformance-experiment",
+     "holdout_rate": 0.5,
+     "min_arm": 10,
+     "mode": "adaptive",
+     "revision": 1,
+     "salt": "unimem-learning-v1",
+     "utility": {
+      "terms": {
+       "completion": {
+        "better": "higher",
+        "high": 100.0,
+        "low": 0.0,
+        "weight": 1.0
+       }
+      }
+     },
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141"
+    },
+    "op": "learning",
+    "operation": "outcome",
+    "payload": {
+     "occasion_id": "episode-1",
+     "reward": 0.5,
+     "succeeded": true
+    }
+   },
+   "response": {
+    "error": "invalid_learning_request",
+    "status": 400
+   }
+  },
+  {
+   "request": {
+    "op": "learning",
+    "operation": "configure",
+    "payload": {
+     "mode": "unknown"
+    }
+   },
+   "response": {
+    "error": "invalid_learning_request",
+    "status": 400
+   }
+  },
+  {
+   "request": {
+    "op": "learning",
+    "operation": "configure",
+    "payload": {
+     "holdout_rate": true,
+     "mode": "observe"
+    }
+   },
+   "response": {
+    "error": "invalid_learning_request",
+    "status": 400
+   }
+  },
+  {
+   "request": {
+    "op": "learning",
+    "operation": "configure",
+    "payload": {
+     "min_arm": 9,
+     "mode": "observe"
+    }
+   },
+   "response": {
+    "error": "invalid_learning_request",
+    "status": 400
+   }
+  },
+  {
+   "request": {
+    "config": {
+     "experiment_id": "conformance-experiment",
+     "holdout_rate": 0.5,
+     "min_arm": 10,
+     "mode": "adaptive",
+     "revision": 1,
+     "salt": "unimem-learning-v1",
+     "utility": {
+      "terms": {
+       "completion": {
+        "better": "higher",
+        "high": 100.0,
+        "low": 0.0,
+        "weight": 1.0
+       }
+      }
+     },
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141"
+    },
+    "op": "learning",
+    "operation": "assign",
+    "payload": {
+     "memory_ids": [],
+     "occasion_id": "episode-1"
+    },
+    "sources": [
+     {
+      "id": "memory",
+      "protected": false,
+      "revision": 3,
+      "text": "Check the current revision."
+     },
+     {
+      "id": "required",
+      "protected": true,
+      "revision": 2,
+      "text": "Respect the mandatory constraint."
+     }
+    ]
+   },
+   "response": {
+    "error": "invalid_learning_request",
+    "status": 400
+   }
+  },
+  {
+   "request": {
+    "config": {
+     "experiment_id": "conformance-experiment",
+     "holdout_rate": 0.5,
+     "min_arm": 10,
+     "mode": "adaptive",
+     "revision": 1,
+     "salt": "unimem-learning-v1",
+     "utility": {
+      "terms": {
+       "completion": {
+        "better": "higher",
+        "high": 100.0,
+        "low": 0.0,
+        "weight": 1.0
+       }
+      }
+     },
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141"
+    },
+    "op": "learning",
+    "operation": "assign",
+    "payload": {
+     "memory_ids": [
+      "memory",
+      "memory"
+     ],
+     "occasion_id": "episode-1"
+    },
+    "sources": [
+     {
+      "id": "memory",
+      "protected": false,
+      "revision": 3,
+      "text": "Check the current revision."
+     },
+     {
+      "id": "required",
+      "protected": true,
+      "revision": 2,
+      "text": "Respect the mandatory constraint."
+     }
+    ]
+   },
+   "response": {
+    "error": "invalid_learning_request",
+    "status": 400
+   }
+  },
+  {
+   "request": {
+    "config": {
+     "experiment_id": "conformance-experiment",
+     "holdout_rate": 0.5,
+     "min_arm": 10,
+     "mode": "adaptive",
+     "revision": 1,
+     "salt": "unimem-learning-v1",
+     "utility": {
+      "terms": {
+       "completion": {
+        "better": "higher",
+        "high": 100.0,
+        "low": 0.0,
+        "weight": 1.0
+       }
+      }
+     },
+     "utility_digest": "41a20024ec3777eef05ac583273c74716cdd18fe5e5de6e03cacb4b85d38f141"
+    },
+    "op": "learning",
+    "operation": "assign",
+    "payload": {
+     "memory_ids": [
+      "memory"
+     ],
+     "occasion_id": "episode-1",
+     "task_context": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    },
+    "sources": [
+     {
+      "id": "memory",
+      "protected": false,
+      "revision": 3,
+      "text": "Check the current revision."
+     },
+     {
+      "id": "required",
+      "protected": true,
+      "revision": 2,
+      "text": "Respect the mandatory constraint."
+     }
+    ]
+   },
+   "response": {
+    "error": "invalid_learning_request",
+    "status": 400
+   }
+  }
+ ],
  "ledger": [
   {
    "hashes": [],
@@ -2864,5 +5301,5 @@
    "revision": "f04e8277d43a"
   }
  ],
- "suite": "1"
+ "suite": "2"
 }

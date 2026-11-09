@@ -66,6 +66,24 @@ def test_retries_are_durable_but_changed_input_and_outcome_conflict(root):
     assert "private source" not in raw
 
 
+@pytest.mark.parametrize(
+    "kind,payload",
+    [
+        ("directive", {"text": "Required instruction"}),
+        ("fact", {"text": "Required fact", "protected": True}),
+        ("profile", {"text": "Critical limit", "critical": True}),
+        ("profile", {"text": "Critical legacy limit", "critical": "required"}),
+        ("lesson", {"text": "Required procedure", "lesson_kind": "directive"}),
+    ],
+)
+def test_governance_channels_are_never_withheld(root, kind, payload):
+    Journal(root).put(MemoryRecord("mandatory", kind, 1, payload))
+    for index in range(12):
+        assignment = learning.operate(root, "assign", {"occasion_id": f"required-{index}", "memory_ids": ["mandatory"]})
+        assert assignment["inject"] == ["mandatory"]
+        assert assignment["arms"][0]["rate"] == 0
+
+
 def test_sources_are_revalidated_on_retry_delivery_and_run(root):
     assignment = assign(root)
     record = Journal(root).current("m", scope={})

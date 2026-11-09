@@ -404,10 +404,12 @@ def test_the_http_transport_tells_a_refusal_from_an_outage():
         with pytest.raises(bridge.GatewayRefused) as refused:
             transport.post("/v1/outcome", {"occasion_id": "t1", "reward": 0.5})
         assert (refused.value.status, refused.value.code) == (409, "conflicting_outcome")
-        for status in (401, 429, 503):
+        for status in (401, 403, 404, 429, 503):
             replies["/v1/outcome"] = (status, {"error": {"code": "later"}})
-            with pytest.raises(ConnectionError, match="queued for retry"):
+            with pytest.raises(bridge.GatewayUnavailable, match="queued for retry") as unavailable:
                 transport.post("/v1/outcome", {"occasion_id": "t1", "reward": 0.5})
+            assert isinstance(unavailable.value, ConnectionError)
+            assert (unavailable.value.status, unavailable.value.code) == (status, "later")
     finally:
         server.shutdown()
         server.server_close()

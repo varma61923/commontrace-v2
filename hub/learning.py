@@ -135,12 +135,7 @@ async def _sources(session, session_factory, org_id, identities, scope, *, allow
                 "id": row.id,
                 "text": value,
                 "revision": contract.digest(record.to_dict()),
-                "protected": (
-                    record.kind == "directive"
-                    or bool(record.payload.get("protected", False))
-                    or (record.kind == "profile" and record.payload.get("critical") is True)
-                    or (record.kind == "lesson" and record.payload.get("lesson_kind") == "directive")
-                ),
+                "protected": contract.protected_memory(record.kind, record.payload),
             }
     if not allow_missing and len(result) != len(identities):
         raise contract.LearningUnavailable("one or more sources are unavailable in this scope")
