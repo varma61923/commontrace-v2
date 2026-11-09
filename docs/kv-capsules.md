@@ -6,8 +6,13 @@ The reference tiers are process memory and owner-only local disk. The memory tie
 
 `unimem tier capsules build|status|evict` manages capsules. Registration persists `staging` ownership before adapter writes and activates only after they succeed and the source is revalidated. Identical active build retries return the committed record. Interrupted registration remains discoverable; evict it before rebuilding. Evicted capsules can be rebuilt, including after a memory-only cache miss. Historical active rows cannot override a newer eviction.
 
-Retrieval revalidates source admission and revision after adapter I/O and verifies the exact model and compressed digest. Eviction first records `eviction_pending`, blocking all reads before deleting any tier. Failed deletions remain pending and can be retried with `evict`; canonical erasure receipts include attempted, removed and failed tiers. Successful removal records `evicted`. External adapter residue still requires operator remediation when deletion fails. Canonical erasure and capsule operations share the same store fence.
+Retrieval revalidates source admission, revision and publication after adapter I/O and verifies the exact model and compressed digest. Pool reads run concurrently; a changed journal checkpoint triggers a publication check so an in-flight read cannot return a revoked or replaced capsule. Eviction first records `eviction_pending`, blocking reads before deleting any tier. Failed deletions remain pending and can be retried with `evict`; canonical erasure receipts include attempted, removed and failed tiers. Successful removal records `evicted`. External adapter residue still requires operator remediation when deletion fails. Canonical erasure and capsule writes share the same store fence.
 
 Version 1 content-only keys are no longer served. Existing journal rows remain available for eviction and cleanup; evict and rebuild those capsules under version 2 before using them after upgrade.
+
+Authenticated journal checkpoints key a bounded metadata cache (four snapshots,
+32 MiB, 30-second retention), avoiding full history scans on warm reads. Lifecycle
+writes select a new snapshot; returned build metadata is copied so callers cannot
+alter cached routing state.
 
 Capsules are an optimization for open-weight serving paths with an adapter that exposes KV. Closed model APIs do not expose their internal KV and are outside this feature's scope. The local disk reference backend relies on store filesystem permissions and does not claim encryption at rest.

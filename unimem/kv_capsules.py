@@ -7,6 +7,7 @@ must bind tenant isolation and deletion semantics to their own pool guarantees.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import hmac
 import os
@@ -17,14 +18,21 @@ from collections.abc import Callable, Sequence
 from functools import wraps
 from typing import Any, ParamSpec, Protocol, TypeVar, cast
 
-from unimem import _jsonl, memory_authority, paths
+from unimem import _jsonl, frontmatter, memory_authority, paths
 from unimem import frontier_protocol as fp
+from unimem.runtime_cache import RuntimeCache
 
 INDEX = "kv-capsules.jsonl"
 MAX_KV_BYTES = 64 * 1024 * 1024
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
 _LIVE = frozenset({"active", "staging", "eviction_pending"})
+_INDEX_CACHE: RuntimeCache[dict[str, dict[str, Any]]] = RuntimeCache(
+    max_entries=4,
+    max_bytes=32 * 1024 * 1024,
+    ttl=30,
+    weigh=lambda key, value: frontmatter._retained_size((key, value), set()),
+)
 
 
 def _serialized(method: Callable[_P, _R]) -> Callable[_P, _R]:
@@ -41,7 +49,10 @@ def _serialized(method: Callable[_P, _R]) -> Callable[_P, _R]:
 
 
 def _latest(root: str) -> dict[str, dict[str, Any]]:
-    return {row["id"]: row for row in fp.journal(root, INDEX) if "id" in row}
+    # Values stay private and read-only. Checkpoints include the authenticated
+    # journal tip, so every lifecycle transition selects a new snapshot.
+    key = (os.path.realpath(root), fp.checkpoint(root, INDEX))
+    return _INDEX_CACHE.get_or_load(key, lambda: {row["id"]: row for row in fp.journal(root, INDEX) if "id" in row})
 
 
 class PoolAdapter(Protocol):
@@ -268,7 +279,7 @@ def build(
     if prior and prior["status"] == "active":
         if any(prior.get(field) != value for field, value in record.items()):
             raise ValueError("capsule key already names different bytes or routing metadata")
-        return prior
+        return copy.deepcopy(prior)
     if prior and prior["status"] in {"staging", "eviction_pending"}:
         raise ValueError("capsule cleanup is pending; evict it before rebuilding")
     # Persist ownership before any adapter can write, including writes whose reply
@@ -292,11 +303,11 @@ def build(
     return cast(dict[str, Any], signed["record"])
 
 
-@_serialized
 def get(root: str, memory_id: str, model_fingerprint: str, *, context: Sequence[str] = ()) -> bytes:
     model = _model(model_fingerprint)
     source_hash, revision = _source(root, memory_id, context)
     key = _tenant_key(root, source_hash, model, memory_id=memory_id, revision=revision)
+    checkpoint = fp.checkpoint(root, INDEX)
     record = _latest(root).get(key)
     if not record or record.get("status") != "active":
         raise KeyError("no active capsule matches this memory and model fingerprint")
@@ -325,6 +336,10 @@ def get(root: str, memory_id: str, model_fingerprint: str, *, context: Sequence[
             continue
         if _source(root, memory_id, context) != (source_hash, revision):
             raise PermissionError("capsule source changed during retrieval")
+        # Keep pool I/O concurrent. A changed checkpoint requires rechecking this
+        # exact publication; unrelated cache writes do not invalidate the read.
+        if fp.checkpoint(root, INDEX) != checkpoint and _latest(root).get(key) != record:
+            raise KeyError("capsule publication was revoked or replaced during retrieval")
         return value
     raise FileNotFoundError("capsule is unavailable from every registered tier: " + ",".join(errors))
 

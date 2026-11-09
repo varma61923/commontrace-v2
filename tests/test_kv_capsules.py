@@ -301,6 +301,115 @@ def test_capsule_model_identity_rejects_invalid_types_and_digests(tmp_path, mode
         kv_capsules.get(str(tmp_path), "source", model)
 
 
+def test_slow_pool_reads_can_run_concurrently(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    root = str(tmp_path)
+    memory = seed(root)
+    ready = Barrier(2)
+
+    class Slow(kv_capsules.MemoryPool):
+        def get(self, key):
+            value = super().get(key)
+            ready.wait(timeout=5)
+            return value
+
+    monkeypatch.setitem(kv_capsules._POOLS, "parallel", Slow())
+    build(root, memory.id, tiers=["parallel"])
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        assert list(workers.map(lambda _: kv_capsules.get(root, memory.id, MODEL), range(2))) == [b"private-kv"] * 2
+
+
+@pytest.mark.parametrize("rebuild", [False, True])
+def test_eviction_during_a_slow_read_cannot_return_the_revoked_publication(tmp_path, monkeypatch, rebuild):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    root = str(tmp_path)
+    memory = seed(root)
+    entered, release = Event(), Event()
+
+    class Slow(kv_capsules.MemoryPool):
+        def get(self, key):
+            value = super().get(key)
+            entered.set()
+            assert release.wait(5)
+            return value
+
+    monkeypatch.setitem(kv_capsules._POOLS, "revocable", Slow())
+    build(root, memory.id, tiers=["revocable"])
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        reading = workers.submit(kv_capsules.get, root, memory.id, MODEL)
+        try:
+            assert entered.wait(5)
+            assert kv_capsules.evict(root, memory.id, reason="quarantine")["failed_tiers"] == []
+            if rebuild:
+                build(root, memory.id, b"replacement", tiers=["revocable"])
+        finally:
+            release.set()
+        with pytest.raises(KeyError, match="publication"):
+            reading.result()
+    if rebuild:
+        assert kv_capsules.get(root, memory.id, MODEL) == b"replacement"
+
+
+def test_unrelated_publication_during_a_read_does_not_invalidate_it(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    root = str(tmp_path)
+    memory = seed(root)
+    other = hierarchical.append_facts(root, [{"statement": "Inspect robot clearance."}])[0][0]
+    entered, release = Event(), Event()
+
+    class Slow(kv_capsules.MemoryPool):
+        def get(self, key):
+            value = super().get(key)
+            entered.set()
+            assert release.wait(5)
+            return value
+
+    monkeypatch.setitem(kv_capsules._POOLS, "parallel-write", Slow())
+    build(root, memory.id, tiers=["parallel-write"])
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        reading = workers.submit(kv_capsules.get, root, memory.id, MODEL)
+        try:
+            assert entered.wait(5)
+            build(root, other.id, b"other-kv", tiers=["parallel-write"])
+        finally:
+            release.set()
+        assert reading.result() == b"private-kv"
+
+
+def test_warm_reads_do_not_rescan_unchanged_capsule_history(tmp_path, monkeypatch):
+    from unimem import frontier_protocol as fp
+
+    root = str(tmp_path)
+    memory = seed(root)
+    build(root, memory.id)
+    assert kv_capsules.get(root, memory.id, MODEL) == b"private-kv"
+    journal = fp.journal
+
+    def no_capsule_rescan(root, name):
+        assert name != kv_capsules.INDEX
+        return journal(root, name)
+
+    monkeypatch.setattr(fp, "journal", no_capsule_rescan)
+    for _ in range(3):
+        assert kv_capsules.get(root, memory.id, MODEL) == b"private-kv"
+
+
+def test_build_reply_mutation_cannot_change_cached_routing_metadata(tmp_path):
+    root = str(tmp_path)
+    memory = seed(root)
+    build(root, memory.id)
+    reply = build(root, memory.id)
+    reply["tiers"].clear()
+    reply["source_revision"] = "forged"
+    assert kv_capsules.get(root, memory.id, MODEL) == b"private-kv"
+
+
 def seed(root: str):
     return hierarchical.append_facts(root, [{"statement": "Kitchen helper uses the padded tray."}])[0][0]
 
