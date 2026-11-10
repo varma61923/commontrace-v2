@@ -104,7 +104,9 @@ Incomplete delivery or unresolved outcomes block decisions for the affected
 source/context cohort. Missing observations are never silently dropped. The
 canonical integrity audit, sequential analysis and family multiplicity correction
 gate adaptation. Proven helpful memories retain a 5% monitoring holdout; harmful
-memories are disabled for their exact revision/context. Insufficient evidence
+memories are disabled for their exact revision/context. Memories with no
+measurable effect keep the configured exploration holdout rather than receiving
+helper promotion. Insufficient evidence
 leaves the existing selection unchanged. Changed or revoked sources cannot be
 readmitted by historical evidence or rollback.
 

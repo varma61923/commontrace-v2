@@ -537,6 +537,20 @@ def test_context_similarity_is_the_share_of_matching_components_within_one_memor
     assert kernel.similarity("a", "a") == pytest.approx(1.0)
 
 
+@pytest.mark.parametrize("context", ["alien/moon/weld", "code", "other/site/task/long"])
+def test_a_validated_context_field_cannot_transfer_into_an_orthogonal_context(context):
+    cells = {f"{e}-{s}": ("memory", f"{e}/{s}/pick") for e in EMBODIMENT_EFFECT for s in SITES}
+    estimates = {name: (EMBODIMENT_EFFECT[c.split("/")[0]], 0.001) for name, (_, c) in cells.items()}
+    cells["new"] = ("memory", context)
+    bases = {name: (0.0, 0.1) for name in cells}
+    kernel = effect_field.CellKernel.build(None, cells)
+    model = effect_field.fit(estimates, bases, 0.1, kernel, candidates=["new"], powers=(1,))
+    assert model.validated, model.summary()
+    assert model.witnesses("new") == ()
+    assert not model.informs("new")
+    assert model.prior("new", *bases["new"]) == bases["new"]
+
+
 @pytest.mark.parametrize("k", [-1, True, 1.5, "2"])
 def test_context_neighbors_validate_the_same_count_contract_as_content_neighbors(k):
     kernel = effect_field.CellKernel.build(None, {"a": ("m", "robot/site"), "b": ("m", "robot/other")})

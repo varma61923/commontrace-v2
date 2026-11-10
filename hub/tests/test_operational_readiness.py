@@ -3,6 +3,10 @@
 import asyncio
 import contextlib
 import json
+import os
+import subprocess
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +16,33 @@ from starlette.requests import Request
 from hub import main, observability, server
 from hub.abuse import RateLimiter
 from hub.config import HubConfig
+
+
+@pytest.mark.parametrize("suite", ["tests/test_ui_browser.py", "hub/tests/test_console_accessibility.py"])
+@pytest.mark.parametrize("required", [False, True])
+def test_missing_playwright_fails_when_browser_verification_is_required(suite, required):
+    root = Path(__file__).resolve().parents[2]
+    program = """
+import importlib.abc
+import runpy
+import sys
+
+class MissingPlaywright(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == 'playwright' or fullname.startswith('playwright.'):
+            raise ModuleNotFoundError('Playwright deliberately unavailable', name=fullname)
+
+sys.meta_path.insert(0, MissingPlaywright())
+runpy.run_path(sys.argv[1])
+"""
+    env = dict(os.environ)
+    env.pop("UNIMEM_REQUIRE_BROWSER", None)
+    if required:
+        env["UNIMEM_REQUIRE_BROWSER"] = "1"
+    result = subprocess.run([sys.executable, "-c", program, suite], cwd=root, env=env, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert ("ModuleNotFoundError:" if required else "Skipped:") in result.stderr
+    assert ("Skipped:" in result.stderr) is not required
 
 
 def endpoints(factory, **kwargs):

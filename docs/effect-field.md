@@ -111,13 +111,18 @@ Measured, with seeded simulations:
 - **Siblings.** Two content-similar memories each have only 12 occasions per
   context. The target memory's field validates, uses its sibling's cells as
   witnesses, and estimates more accurately than it can alone.
-- **Whole fleet.** `python -m benchmarks.fleet_learning_bench --reps 10` runs
+- **Whole fleet.** `python -m benchmarks.fleet_learning_bench --reps 30` runs
   embedding-only skills, graded rewards and embodiment-specific effects over
-  12 contexts, with new variants every era. `thompson-field` beats `thompson`
-  by +0.16 ± 0.07 task-progress points per 100 tasks (paired; regret 12.75 vs
-  12.91 per 100 against an oracle). That gain is real but small. In this
+  12 contexts, with new variants every era. With family-aware validation, seeds
+  0–29 yield a paired lift of +0.01 ± 0.01 task-progress points per 100 tasks
+  (mean ± standard error; regret 12.83 vs 12.84 per 100 against an oracle).
+  This small estimate does not establish a reliable improvement. In this
   scenario most effects are context-specific and most cells hold a handful of
-  occasions, so the honest system mostly declines to transfer.
+  occasions, so the system mostly declines to transfer. Predictive validation
+  does not guarantee positive policy lift for every seed, horizon or fleet;
+  negative transfer remains possible. Compare with plain `thompson` on the
+  deployment's contexts before enabling transfer. Completely orthogonal contexts
+  have zero kernel similarity and cannot shift each other's priors.
 
 ## Validation
 

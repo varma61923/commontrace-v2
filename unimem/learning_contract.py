@@ -303,9 +303,7 @@ def evaluate(config: dict, assignments: list[dict]) -> dict:
                 "revision": arm["revision"],
                 "task_context": context,
                 **{k: v for k, v in asdict(effect).items() if k != "lesson_slug"},
-                "rate": 0.05
-                if effect.verdict in (experiment.VERDICT_HELPS, experiment.VERDICT_NO_EFFECT)
-                else config["holdout_rate"],
+                "rate": 0.05 if effect.verdict == experiment.VERDICT_HELPS else config["holdout_rate"],
                 "disabled": effect.verdict == experiment.VERDICT_HURTS,
                 "integrity": integrity.VERDICT_SOUND,
             }

@@ -18,7 +18,10 @@ import pytest
 
 from hub import console
 
-pw = pytest.importorskip("playwright.sync_api")
+if os.environ.get("UNIMEM_REQUIRE_BROWSER"):
+    import playwright.sync_api as pw
+else:
+    pw = pytest.importorskip("playwright.sync_api")
 
 
 @pytest.fixture(scope="module")

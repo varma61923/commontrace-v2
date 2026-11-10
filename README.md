@@ -410,11 +410,15 @@ metadata, credentials, and local memory stores.
 To check the Hub and generated API contracts:
 
 ```bash
+python -m pip install -r hub/requirements.txt
 python scripts/dev.py test --hub -q  # requires HUB_TEST_DATABASE_URL: disposable PostgreSQL 16
 python scripts/export_openapi.py --check
 python scripts/export_hub_openapi.py --check
 make check-hub                      # both contracts; requires the Hub dependencies
 ```
+
+Use `make check-hub PYTHON=/path/to/hub-venv/bin/python` when the Hub has its own
+virtual environment. Core checks do not require the Hub dependencies.
 
 Run the focused governance boundary regressions with
 `python -m pytest tests/test_governance_audit_regressions.py -q`. They cover

@@ -36,7 +36,10 @@ if TYPE_CHECKING:
 
     from playwright.sync_api import APIResponse, Browser, Page, Route
 
-pw = pytest.importorskip("playwright.sync_api")
+if os.environ.get("UNIMEM_REQUIRE_BROWSER"):
+    import playwright.sync_api as pw
+else:
+    pw = pytest.importorskip("playwright.sync_api")
 MARKUP = "<img src=x onerror='window.auditExecuted=true'>"
 SOURCE = "Aster ledger records require a stable idempotency key before a retry."
 

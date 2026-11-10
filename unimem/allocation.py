@@ -8,7 +8,7 @@ using only data from before the era:
 
 - still uncertain: ``explore`` (default 50%, the most informative split);
 - proven to help: ``monitor`` (default 5%; enough to notice if it stops helping);
-- proven to have no effect worth acting on: ``monitor``;
+- no measurable effect worth acting on: ``explore`` (no helper promotion);
 - proven to hurt: ``1 - monitor`` (it is mostly withheld while the harm policy
   decides whether to withdraw it entirely).
 
@@ -111,7 +111,7 @@ class Policy:
 
 
 def next_rate(verdict: str, policy: Policy) -> float:
-    if verdict in (experiment.VERDICT_HELPS, experiment.VERDICT_NO_EFFECT):
+    if verdict == experiment.VERDICT_HELPS:
         return policy.monitor
     if verdict == experiment.VERDICT_HURTS:
         return round(1.0 - policy.monitor, 6)

@@ -90,11 +90,18 @@ def test_aipw_is_unbiased_when_the_rate_changes_with_a_time_trend():
 def test_policy_maps_verdicts_to_rates_and_validates():
     policy = allocation.Policy()
     assert allocation.next_rate(experiment.VERDICT_HELPS, policy) == 0.05
-    assert allocation.next_rate(experiment.VERDICT_NO_EFFECT, policy) == 0.05
+    assert allocation.next_rate(experiment.VERDICT_NO_EFFECT, policy) == policy.explore
     assert allocation.next_rate(experiment.VERDICT_HURTS, policy) == 0.95
     assert allocation.next_rate(experiment.VERDICT_UNDERPOWERED, policy) == 0.5
     with pytest.raises(ValueError):
         allocation.Policy(explore=0.05, monitor=0.5)
+
+
+def test_neutral_memories_use_custom_exploration_instead_of_helper_monitoring():
+    policy = allocation.Policy(explore=0.35, monitor=0.1)
+    assert allocation.next_rate(experiment.VERDICT_NO_EFFECT, policy) == 0.35
+    assert allocation.next_rate(experiment.VERDICT_HELPS, policy) == 0.1
+    assert allocation.next_rate(experiment.VERDICT_HURTS, policy) == 0.9
 
 
 def _occasions(root, start, n, clock, rng, *, truth):

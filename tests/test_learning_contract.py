@@ -75,6 +75,17 @@ def test_neutral_evidence_cannot_manufacture_a_winner():
     assert c.evaluate(cfg, rows)["decisions"][0]["verdict"] not in ("HELPS", "HURTS")
 
 
+@pytest.mark.parametrize("rate", [0.25, 0.65])
+def test_powered_neutral_evidence_retains_the_configured_exploration_rate(rate):
+    cfg, rows = evidence("neutral", count=8000, holdout_rate=rate)
+    report = c.evaluate(cfg, rows)
+    assert report["blocked"] == []
+    [decision] = report["decisions"]
+    assert decision["verdict"] == c.experiment.VERDICT_NO_EFFECT
+    assert decision["rate"] == rate
+    assert not decision["disabled"]
+
+
 def test_partial_delivery_and_missing_outcomes_block_promotion():
     cfg, rows = evidence()
     injected = next(row for row in rows if row["inject"])
