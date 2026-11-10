@@ -61,7 +61,7 @@ def corpus(rng: random.Random, per: int = 8, *, linked: bool = True) -> tuple[di
     return texts, effects
 
 
-def simulate(rng: random.Random, effects: dict[str, float], occasions: int = 600, shown: int = 3) -> list[Row]:
+def simulate(rng: random.Random, effects: dict[str, float], occasions: int = 1800, shown: int = 1) -> list[Row]:
     """Each occasion offers `shown` random memories, each independently withheld half the time."""
     lessons = sorted(effects)
     rows = []
@@ -307,6 +307,78 @@ def test_a_new_paraphrase_starts_from_its_family_evidence_and_an_unrelated_memor
     assert model.posterior("legacy-new") == legacy
 
 
+def test_shared_occasion_outcomes_cannot_validate_transfer_by_memory_count():
+    rng = random.Random(0)
+    texts, effects = corpus(rng)
+    rows = simulate(rng, effects, occasions=600, shown=3)
+    model = causal_gate.fit(rows, kernel=effect_field.Kernel.lexical(texts), candidates=["new"])
+    assert not model.transfer.validated
+    assert model.transfer.validation_units < effect_field.MIN_MEASURED
+    assert model.forecasts == {}
+
+
+def test_duplicating_content_families_cannot_manufacture_independent_evidence():
+    vectors = {f"family-{family}-copy-{copy}": [1.0, family / 10] for family in range(6) for copy in range(8)}
+    kernel = effect_field.Kernel.from_embeddings(vectors)
+    estimates = {m: (0.2, 0.001) for m in vectors}
+    bases = {m: (0.0, 0.04) for m in vectors}
+    fitted = effect_field.fit(estimates, bases, 0.04, kernel)
+    assert not fitted.validated
+    assert fitted.validation_units == 6
+
+
+def test_constant_positive_predictive_gains_are_not_infinite_evidence():
+    vectors = {str(i): [1.0] + [float(i == j) for j in range(12)] for i in range(12)}
+    fitted = effect_field.fit(
+        {m: (0.3, 0.001) for m in vectors},
+        {m: (0.0, 0.04) for m in vectors},
+        0.04,
+        effect_field.Kernel.from_embeddings(vectors),
+    )
+    assert fitted.z == 0.0 and not fitted.validated
+    assert fitted.lpd_gain > 0 and fitted.validation_units == 12
+
+
+def test_lookalikes_find_opposing_pairs_beyond_the_display_neighbor_cap():
+    vectors = {**{f"positive-{i}": [1.0, 0.0] for i in range(14)}, **{f"negative-{i}": [1.0, 0.1] for i in range(14)}}
+    kernel = effect_field.Kernel.from_embeddings(vectors)
+    estimates = {m: (0.3 if m.startswith("positive") else -0.3, 0.0001) for m in vectors}
+    assert all(
+        all(b.split("-")[0] == a.split("-")[0] for b, _ in near)
+        for a, near in kernel.neighbors(vectors, vectors).items()
+    )
+    pairs = effect_field.lookalikes(estimates, kernel)
+    assert len(pairs) == 14 * 14
+    assert all(estimates[p.a][0] * estimates[p.b][0] < 0 for p in pairs)
+
+
+def test_validation_neighbor_filtering_matches_exact_family_exclusion():
+    texts = {str(i): f"shared content family{i // 4}" for i in range(40)}
+    kernel = effect_field.Kernel.lexical(texts)
+    groups = {str(i): str(i // 4) for i in range(40)}
+    ids = sorted(texts)
+    expected = {
+        q: tuple(
+            sorted(
+                ((m, round(kernel.similarity(q, m), 12)) for m in ids if groups[q] != groups[m]),
+                key=lambda item: (-item[1], item[0]),
+            )[:12]
+        )
+        for q in ids
+    }
+    assert kernel.neighbors(ids, ids, families=groups) == expected
+    gram = effect_field._kernel_gram(kernel, ids)
+    if gram is not None:
+        assert gram.neighbors(kernel, ids, ids, 12, families=groups) == expected
+
+
+def test_missing_embedding_spaces_dilute_the_concatenated_kernel():
+    kernel = effect_field.Kernel.combined(
+        {"both": {"term": 1}}, {"both": ("encoder", [1, 0]), "dense-only": ("encoder", [1, 0])}
+    )
+    assert kernel.similarity("both", "dense-only") == pytest.approx(2**-0.5)
+
+
 def test_lookalikes_with_opposite_effects_are_flagged_and_agreeing_ones_are_not():
     kernel = effect_field.Kernel.lexical(
         {
@@ -336,8 +408,10 @@ def _write_lesson(root: str, slug: str, text: str, status: str = "active") -> No
 
 def _run(root: str, clock, rng: random.Random, effects: dict[str, float], start: int, n: int) -> None:
     lessons = sorted(effects)
-    for i in range(start, start + n):
-        offered = rng.sample(lessons, 3)
+    # Independent occasions establish transfer; pooled/shared-outcome refusal
+    # is exercised separately. Retain the original number of memory exposures.
+    for i in range(3 * start, 3 * (start + n)):
+        offered = rng.sample(lessons, 1)
         withheld = holdout_io.assign_and_log(root, offered, occasion_id=f"T-{i}", rate=0.5, salt="pinned")
         p = 0.5 + sum(effects[m] for m in offered if m not in withheld)
         holdout_io.record_outcome(root, f"T-{i}", rng.random() < min(0.95, max(0.05, p)))
@@ -430,7 +504,9 @@ def test_the_gate_command_reports_the_field_and_enables_field_mode(tmp_path, clo
     assert main(["allocate", "gate", "--json", "--dest", root]) == 0
     doc = json.loads(capsys.readouterr().out)
     [forecast] = doc["effect_field"]["forecasts"]
-    assert forecast["lesson"] == "legacy-new" and forecast["withhold"] > 0.7 and forecast["witnesses"]
+    # A validated field must forecast in the measured harmful direction; its
+    # magnitude depends on the independent validation sample, not a fixed rate.
+    assert forecast["lesson"] == "legacy-new" and forecast["withhold"] > 0.5 and forecast["witnesses"]
     assert main(["allocate", "enable", "--mode", "thompson-field", "--dest", root]) == 0
     assert "unlisted memories: 50% withheld" in capsys.readouterr().out
 

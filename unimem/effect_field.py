@@ -23,11 +23,12 @@ linear prediction from its nearest measured neighbours, never from its own data.
 uses the full neighbour covariance, so ten near-duplicates count as about one
 witness, not ten. With ``share = 0`` it is exactly the gate's prior.
 
-Transfer is earned, not assumed. ``power`` and ``share`` are chosen by leave-one-out
-log predictive density over the measured memories. The field is used only when the
-best configuration beats no transfer by a one-sided paired z test at a level
-Bonferroni-corrected over the whole grid. Otherwise it is NOT_VALIDATED and changes
-nothing.
+Transfer is earned, not assumed. ``power`` and ``share`` are chosen by
+leave-family-out log predictive density. Copies and memories connected by shared
+outcome units form one validation family, with one mean gain. The field is used
+only when independent-family gains beat no transfer by a one-sided paired z test
+Bonferroni-corrected over the whole grid. Unestimable variation never supplies
+infinite evidence. Otherwise it is NOT_VALIDATED or INSUFFICIENT and changes nothing.
 
 A validated field does two things. It becomes each measured memory's prior inside
 `causal_gate.fit`. It also forecasts memories with no evidence yet, so a new
@@ -143,9 +144,10 @@ class Kernel:
     """Cosine similarity between memories, over hashed content terms and any number of embedding spaces.
 
     A memory present in several spaces is the concatenation of its unit vectors, each
-    scaled by ``1/sqrt(spaces)``, so the similarity of two memories is the mean of their
-    per-space cosines over the spaces they share, and the Gram matrix stays positive
-    semidefinite.
+    scaled by ``1/sqrt(spaces)``, so the similarity of two memories is the sum of their
+    per-space cosines divided by ``sqrt(spaces_a * spaces_b)``. Missing spaces
+    contribute zero; this is a mean only for matching space memberships. The
+    concatenated-vector Gram matrix stays positive semidefinite.
     """
 
     kind: str
@@ -204,7 +206,14 @@ class Kernel:
     def has(self, memory: str) -> bool:
         return bool(self.vectors.get(memory)) or any(memory in space for space in self.dense.values())
 
-    def neighbors(self, queries: Iterable[str], pool: Iterable[str], k: int = NEIGHBORS) -> dict[str, Neighbors]:
+    def neighbors(
+        self,
+        queries: Iterable[str],
+        pool: Iterable[str],
+        k: int = NEIGHBORS,
+        *,
+        families: Mapping[str, str] | None = None,
+    ) -> dict[str, Neighbors]:
         """Each query's `k` most similar pool members (never itself).
 
         Term similarity goes through an inverted index; embedding similarity is a
@@ -216,11 +225,46 @@ class Kernel:
         queries = list(dict.fromkeys(queries))
         if not k:
             return {q: () for q in queries}
+        out: dict[str, Neighbors] = {}
+        for query, scores in self._score_rows(queries, members):
+            ranked = heapq.nsmallest(
+                k,
+                (
+                    (m, score)
+                    for m, score in scores.items()
+                    if score > 1e-9 and m != query and (families is None or families[m] != families[query])
+                ),
+                key=lambda item: (-item[1], item[0]),
+            )
+            out[query] = tuple((m, round(min(1.0, score), 12)) for m, score in ranked)
+        return out
+
+    def similar_pairs(self, pool: Iterable[str], *, min_similarity: float) -> Iterable[tuple[str, str, float]]:
+        """Every threshold-matching pair, independent of the display-neighbor cap.
+
+        Scores are streamed in bounded batches. Only the statistical diagnostic's
+        matching pairs need to be retained, rather than a full fleet Gram matrix.
+        """
+        if not math.isfinite(min_similarity) or not -1 <= min_similarity <= 1:
+            raise ValueError("similarity threshold must be finite and between -1 and 1")
+        members = sorted(set(pool))
+        for query, scores in self._score_rows(members, members):
+            candidates = (
+                members
+                if min_similarity <= 0
+                else [m for m, score in scores.items() if score >= min_similarity - 1e-12]
+            )
+            for other in sorted(candidates):
+                if other > query:
+                    score = self.similarity(query, other)
+                    if score >= min_similarity:
+                        yield query, other, score
+
+    def _score_rows(self, queries: Sequence[str], members: Sequence[str]) -> Iterable[tuple[str, dict[str, float]]]:
         postings: dict[str, list[tuple[str, float]]] = defaultdict(list)
         for memory in members:
             for term, w in self.vectors.get(memory, {}).items():
                 postings[term].append((memory, w))
-        out: dict[str, Neighbors] = {}
         # Retain scores for a bounded query batch, rather than the entire Q*M fleet.
         for start in range(0, len(queries), 128):
             batch = queries[start : start + 128]
@@ -232,13 +276,7 @@ class Kernel:
             for space in self.dense.values():
                 _dense_scores(space, batch, members, scores)
             for q in batch:
-                ranked = heapq.nsmallest(
-                    k,
-                    ((m, s) for m, s in scores[q].items() if s > 1e-9 and m != q),
-                    key=lambda item: (-item[1], item[0]),
-                )
-                out[q] = tuple((m, round(min(1.0, s), 12)) for m, s in ranked)
-        return out
+                yield q, scores[q]
 
     def digest(self) -> str:
         """Commitment to the kernel's inputs, for a schedule's basis."""
@@ -372,7 +410,14 @@ class CellKernel:
             near.update(self.content.neighbors(missing, sorted(by_memory), NEIGHBORS))
         return by_memory, near
 
-    def neighbors(self, queries: Iterable[str], pool: Iterable[str], k: int = NEIGHBORS) -> dict[str, Neighbors]:
+    def neighbors(
+        self,
+        queries: Iterable[str],
+        pool: Iterable[str],
+        k: int = NEIGHBORS,
+        *,
+        families: Mapping[str, str] | None = None,
+    ) -> dict[str, Neighbors]:
         """Each query cell's `k` most similar pool cells: its own memory's other contexts and its
         content neighbours' contexts."""
         if type(k) is not int or k < 0:
@@ -397,7 +442,7 @@ class CellKernel:
                             continue
                         visited.add(other)
                         for cell in by_memory.get(other, ()):
-                            if cell != q:
+                            if cell != q and (families is None or families[cell] != families[q]):
                                 s = weight * self._context(context, self.cells[cell][1])
                                 if s > 1e-9:
                                     yield cell, round(min(1.0, s), 12)
@@ -562,6 +607,7 @@ class Field:
     lpd_gain: float | None = None  # mean leave-one-out log predictive gain per memory with a witness
     z: float | None = None
     threshold: float = VALIDATE_Z
+    validation_units: int = 0
     _hoods: dict[str, _Neighborhood] = field(default_factory=dict, repr=False)
     _residual: dict[str, float] = field(default_factory=dict, repr=False)
     _noise: dict[str, float] = field(default_factory=dict, repr=False)
@@ -611,6 +657,7 @@ class Field:
             "power": self.power,
             "share": self.share,
             "measured": self.measured,
+            "validation_units": self.validation_units,
             "lpd_gain": None if self.lpd_gain is None else round(self.lpd_gain, 6),
             "z": None if self.z is None or not math.isfinite(self.z) else round(self.z, 4),
             "threshold": round(self.threshold, 4),
@@ -629,15 +676,29 @@ class _KernelGram:
     lexical: Any
     terms: dict[str, int]
 
-    def neighbors(self, kernel: Kernel, queries: Sequence[str], members: Sequence[str], k: int) -> dict[str, Neighbors]:
+    def neighbors(
+        self,
+        kernel: Kernel,
+        queries: Sequence[str],
+        members: Sequence[str],
+        k: int,
+        *,
+        families: Mapping[str, str] | None = None,
+    ) -> dict[str, Neighbors]:
         """Use a conservative shortlist, then the original scalar ranking/ties."""
         result = {}
         columns = self.np.asarray([self.index[m] for m in members], dtype=int)
         positions = {m: i for i, m in enumerate(members)}
+        family_columns: dict[str, list[int]] = defaultdict(list)
+        if families is not None:
+            for m, i in positions.items():
+                family_columns[families[m]].append(i)
         for q in queries:
             row = self.values[self.index[q], columns].copy()
             if q in positions:
                 row[positions[q]] = -self.np.inf
+            if families is not None:
+                row[family_columns.get(families[q], [])] = -self.np.inf
             count = min(k, len(members))
             cutoff = float(self.np.partition(row, len(row) - count)[len(row) - count]) if count else self.np.inf
             selected = self.np.flatnonzero(row >= max(1e-9 - self.margin, cutoff - self.margin))
@@ -725,6 +786,52 @@ def _hood(
     return _Neighborhood(ids, tuple(s for _m, s in neighbors), among)
 
 
+def _validation_families(
+    names: Sequence[str], kernel: Kernel | CellKernel, units: Mapping[str, Iterable[str]] | None
+) -> dict[str, str]:
+    """Connected evidence units and identical content profiles cannot be replicated.
+
+    A shared occasion joins its memories transitively. Exact content copies are
+    one family even when identifiers differ. Work is linear in memberships and
+    vector dimensions, without materializing a pairwise dependence matrix.
+    """
+    parent = {name: name for name in names}
+
+    def root(name: str) -> str:
+        while parent[name] != name:
+            parent[name] = parent[parent[name]]
+            name = parent[name]
+        return name
+
+    owners: dict[tuple[Any, ...], str] = {}
+    for name in names:
+        memory, context = kernel.cells[name] if isinstance(kernel, CellKernel) else (name, "")
+        content = kernel.content if isinstance(kernel, CellKernel) else kernel
+        profile: tuple[Any, ...] = (
+            (memory,)
+            if content is None
+            else (
+                tuple((t, round(w, 12)) for t, w in sorted(content.vectors.get(memory, {}).items())),
+                tuple(
+                    (model, tuple(round(x, 12) for x in space[memory]))
+                    for model, space in sorted(content.dense.items())
+                    if memory in space
+                ),
+            )
+        )
+        tokens: list[tuple[Any, ...]] = [("content", context, profile)]
+        if units is not None:
+            if name not in units:
+                raise ValueError("validation units are required for every measured memory")
+            tokens.extend(("occasion", unit) for unit in units[name])
+        for token in tokens:
+            previous = owners.setdefault(token, name)
+            a, b = root(name), root(previous)
+            if a != b:
+                parent[max(a, b)] = min(a, b)
+    return {name: root(name) for name in names}
+
+
 def fit(
     estimates: Mapping[str, tuple[float, float]],
     bases: Mapping[str, tuple[float, float]],
@@ -737,6 +844,7 @@ def fit(
     baseline: Mapping[str, tuple[float, float]] | None = None,
     scales: Mapping[str, float] | None = None,
     targets: Iterable[str] | None = None,
+    units: Mapping[str, Iterable[str]] | None = None,
 ) -> Field:
     """Fit and validate the field over measured `estimates` (memory -> (effect, variance)).
 
@@ -746,8 +854,10 @@ def fit(
     `baseline` is the prior used when the field does not validate, if it differs
     from `bases`; the field must beat that prior, not merely its own base. `scales`
     gives an item its own prior sd of deviation (default ``sqrt(tau2)`` for all).
-    `targets` restricts which measured items are scored and given priors (default: all);
-    every measured item still serves as a witness.
+    `targets` restricts which measured items are scored and given priors (default: all).
+    `units` maps measured IDs to shared occasion/dependence tokens. Content copies
+    and shared units form connected families; validation excludes the query's
+    entire family. Forecasting still uses the full measured witness pool.
     """
     if type(k) is not int or k < 0:
         raise ValueError("neighbor count must be a non-negative integer")
@@ -756,11 +866,14 @@ def fit(
     reference = bases if baseline is None else baseline
     threshold = validate_z(len(powers))
     measured = sorted(m for m in estimates if m in bases and kernel.has(m))
+    families = _validation_families(measured, kernel, units)
     wanted = set(measured) if targets is None else set(targets) & set(measured)
     queries = sorted(wanted | {c for c in candidates if c in bases and kernel.has(c)})
     similarities: dict[tuple[str, str], float] = {}
     gram = (
-        _kernel_gram(kernel, sorted(set(queries) | set(measured))) if len(wanted) >= MIN_MEASURED and tau2 > 0 else None
+        _kernel_gram(kernel, sorted(set(queries) | set(measured)))
+        if len({families[m] for m in wanted}) >= MIN_MEASURED and tau2 > 0
+        else None
     )
     near = (
         gram.neighbors(kernel, queries, measured, k)
@@ -782,11 +895,26 @@ def fit(
         _noise=noise,
         _scales=scale,
     )
-    scored = [m for m in sorted(wanted) if hoods[m].ids]
+    if len(set(families.values())) == len(measured):
+        validation_hoods = {m: hoods[m] for m in wanted}
+    else:
+        # Filter families in one bounded score pass. Constructing a separate
+        # full pool/index for every family would add quadratic Python work.
+        validation_near = (
+            gram.neighbors(kernel, sorted(wanted), measured, k, families=families)
+            if gram is not None and isinstance(kernel, Kernel) and not kernel.dense
+            else kernel.neighbors(sorted(wanted), measured, k, families=families)
+        )
+        validation_hoods = {m: _hood(kernel, nb, similarities, gram) for m, nb in validation_near.items()}
+    scored = [m for m in sorted(wanted) if validation_hoods[m].ids]
     out.measured = len(scored)
-    if len(scored) < MIN_MEASURED or tau2 <= 0.0 or min(scale.values(), default=0.0) <= 0.0:
+    groups: dict[str, list[int]] = defaultdict(list)
+    for i, memory in enumerate(scored):
+        groups[families[memory]].append(i)
+    out.validation_units = len(groups)
+    if len(groups) < MIN_MEASURED or tau2 <= 0.0 or min(scale.values(), default=0.0) <= 0.0:
         return out
-    transfers = _transfer_engine({q: hoods[q] for q in scored}, scale, residual, noise)
+    transfers = _transfer_engine({q: validation_hoods[q] for q in scored}, scale, residual, noise)
     baseline_lpd = {m: _log_normal(estimates[m][0], reference[m][0], reference[m][1] + estimates[m][1]) for m in scored}
 
     def gains(power: int, share: float) -> list[float]:
@@ -797,7 +925,7 @@ def fit(
             mean, var = bases[m]
             shift, reduction = predictions[m]
             row.append(_log_normal(effect, mean + shift, max(var - reduction, JITTER) + variance) - baseline_lpd[m])
-        return row
+        return [math.fsum(row[i] for i in members) / len(members) for members in groups.values()]
 
     best: tuple[float, int, float, list[float]] | None = None
     for power in powers:
@@ -811,7 +939,9 @@ def fit(
     n = len(row)
     mean = math.fsum(row) / n
     sd = math.sqrt(math.fsum((d - mean) ** 2 for d in row) / (n - 1))
-    z = mean / (sd / math.sqrt(n)) if sd > 0 else (math.inf if mean > 0 else 0.0)
+    # Constant gains do not estimate uncertainty; numerical roundoff must not
+    # turn that failure into arbitrarily strong evidence.
+    z = mean / (sd / math.sqrt(n)) if sd > 1e-12 * max(1.0, abs(mean)) else 0.0
     out.power, out.share, out.lpd_gain, out.z = power, share, mean, z
     out.verdict = VALIDATED if mean > 0 and z >= threshold else NOT_VALIDATED
     if not out.validated:
@@ -848,13 +978,8 @@ def lookalikes(
     from unimem.causal_gate import _benjamini_hochberg
 
     ids = sorted(m for m in estimates if kernel.has(m))
-    pairs: dict[tuple[str, str], float] = {}
-    for a, row in kernel.neighbors(ids, ids).items():
-        for b, s in row:
-            if s >= min_similarity:
-                pairs[(min(a, b), max(a, b))] = s
     tested: list[tuple[tuple[str, str], float, float, float]] = []
-    for (a, b), s in sorted(pairs.items()):
+    for a, b, s in kernel.similar_pairs(ids, min_similarity=min_similarity):
         (ea, va), (eb, vb) = estimates[a], estimates[b]
         z = (ea - eb) / math.sqrt(va + vb) if va + vb > 0 else 0.0
         tested.append(((a, b), s, z, math.erfc(abs(z) / math.sqrt(2.0))))

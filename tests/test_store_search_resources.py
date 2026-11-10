@@ -4,7 +4,7 @@ import sqlite3
 
 import pytest
 
-from unimem.store import SQLiteStore
+from unimem.store import FilesStore, SQLiteStore
 
 
 class OrderedStore(SQLiteStore):
@@ -42,6 +42,31 @@ def test_zero_limit_never_reads_or_rebuilds(tmp_path, monkeypatch):
 
     monkeypatch.setattr(value, "all", forbidden)
     assert value.search("anything", limit=0) == []
+
+
+@pytest.mark.parametrize("writer_type", [FilesStore, SQLiteStore])
+def test_search_refreshes_after_append_and_text_revision(store, writer_type):
+    writer = writer_type(store.root)
+    writer.append({"id": "new", "text": "new searchable phrase"})
+    assert [row["id"] for row in store.search("searchable")] == ["new"]
+    writer.append({"id": "a", "text": "replacement wording"})
+    assert [row["id"] for row in store.search("replacement")] == ["a"]
+    assert store.search("plain") == []
+    assert SQLiteStore(store.root).search("replacement")[0]["id"] == "a"
+
+
+def test_warm_search_does_not_rewrite_an_unchanged_index(store, monkeypatch):
+    original = store._synchronize
+    changed = []
+
+    def synchronize(db, records, **kwargs):
+        before = db.total_changes
+        original(db, records, **kwargs)
+        changed.append(db.total_changes - before)
+
+    monkeypatch.setattr(store, "_synchronize", synchronize)
+    assert store.search("plain") and store.search("plain")
+    assert changed == [0, 0]
 
 
 @pytest.mark.parametrize("operation", ["search", "rebuild"])

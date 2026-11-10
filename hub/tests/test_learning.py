@@ -386,7 +386,7 @@ async def test_actual_sql_measured_policy_and_context(session_factory, mode, har
     if worker:
         claim = await learning.claim_work(session_factory)
         assert claim and await learning.complete_work(session_factory, claim)
-        worker_status = await learning.operate(session_factory, org, "agent:1", "status")
+        worker_status = await learning.operate(session_factory, org, "operator", "status", admin=True)
         assert worker_status["decision_revision"] == 1 and not worker_status["pending_work"]
         report = worker_status["report"]
     else:
@@ -498,6 +498,61 @@ async def test_status_does_not_expose_other_principal_or_scope(session_factory):
     assert key in visible["policy"]
     admin = await learning.operate(session_factory, org, "operator", "status", admin=True)
     assert admin["report"]["decisions"][0]["task_context"] == "secret-context"
+
+
+async def test_shared_policy_keys_do_not_disclose_other_principals_pooled_outcomes(session_factory):
+    from sqlalchemy.dialects.postgresql import insert
+
+    from hub.models import LearningExperiment
+
+    org, source, experiment = await setup(session_factory, "adaptive")
+    async with session_scope(session_factory, org_id=org) as session:
+        configured = await session.get(LearningExperiment, (org, experiment))
+        sources = await learning._sources(session, session_factory, org, [source], {"tenant": org})
+        saved = []
+        for principal in ("agent:1", "agent:2"):
+            for i in range(180):
+                occasion = str(i)
+                unit = contract.digest([principal, occasion])
+                assignment = contract.make_assignment(configured.config, unit, sources, task_context="shared")
+                assignment["occasion_id"] = occasion
+                assignment["sources"] = [{k: v for k, v in s.items() if k != "text"} for s in sources]
+                saved.append(
+                    {
+                        "org_id": org,
+                        "experiment_id": experiment,
+                        "principal": principal,
+                        "occasion_id": occasion,
+                        "evidence": {
+                            "scope": {"tenant": org},
+                            "assignment": assignment,
+                            "delivery": assignment["inject"],
+                            "outcome": contract.normalize_outcome(
+                                configured.config,
+                                unit,
+                                {"occasion_id": occasion, "succeeded": bool(assignment["inject"])},
+                            ),
+                        },
+                    }
+                )
+        await session.execute(insert(LearningOccasion), saved)
+    evaluated = await learning.operate(session_factory, org, "operator", "run", admin=True)
+    assert evaluated["decisions"] and evaluated["evidence"] == 360
+    for principal in ("agent:1", "agent:2"):
+        status = await learning.operate(session_factory, org, principal, "status")
+        assert status["occasions"] == status["outcomes"] == status["report"]["evidence"] == 180
+        assert status["policy"]
+        assert status["report"]["decisions"] == []
+        assert "ci_low" not in str(status) and "n_injected" not in str(status)
+    admin = await learning.operate(session_factory, org, "operator", "status", admin=True)
+    decision = admin["report"]["decisions"][0]
+    expected = evaluated["decisions"][0]
+    assert decision["key"] == expected["key"]
+    assert decision["effect"] == pytest.approx(expected["effect"])
+    assert decision["ci_low"] == pytest.approx(expected["ci_low"])
+    assert decision["n_injected"] == expected["n_injected"]
+    assert decision["n_withheld"] == expected["n_withheld"]
+    assert admin["report"]["evidence"] == 360
 
 
 async def test_same_occasion_principals_have_independent_randomized_units(session_factory):

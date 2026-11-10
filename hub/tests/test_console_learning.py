@@ -301,6 +301,21 @@ async def test_readers_do_not_receive_another_principals_learning_evidence(sessi
     assert "Delivery receipts are missing" not in page.text
 
 
+async def test_non_admin_console_never_renders_pooled_outcome_statistics():
+    body = console._render_learning(
+        {
+            "config": {"mode": "observe"},
+            "report": {
+                "evidence": 1,
+                "decisions": [{"id": "other-principal-memory", "effect": -0.9, "ci_low": -1, "ci_high": -0.8}],
+            },
+        },
+        False,
+    )
+    assert "Pooled outcome statistics are available to organisation administrators" in body
+    assert "other-principal-memory" not in body and "-90.0%" not in body
+
+
 async def test_rolled_back_policy_is_distinct_from_evaluation_recommendation():
     markup = "<svg onload=alert(1)>"
     body = console._render_learning(

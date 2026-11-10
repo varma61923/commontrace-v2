@@ -204,6 +204,7 @@ def add_health_routes(
     trusted_proxy_hops: int = 0,
     metrics_token: str = "",
     readiness_timeout_seconds: float = 2.0,
+    worker_health: Callable[[], dict | None] | None = None,
 ) -> None:
     if not math.isfinite(readiness_timeout_seconds) or readiness_timeout_seconds <= 0:
         raise ValueError("readiness timeout must be finite and positive")
@@ -227,6 +228,9 @@ def add_health_routes(
             )
         async with session_factory() as session:
             await session.execute(text("SELECT 1"))
+        worker = worker_health() if worker_health is not None else None
+        if worker is not None and not (worker.get("running") and worker.get("healthy")):
+            return JSONResponse({"status": "not_ready", "learning_worker": "unavailable"}, status_code=503)
         return JSONResponse({"status": "ready", "database": "ok"})
 
     async def readyz(request: Request) -> JSONResponse:
@@ -259,7 +263,20 @@ def add_health_routes(
                 status_code=429,
                 headers={"Retry-After": seconds},
             )
-        return Response(METRICS.render(), media_type="text/plain; version=0.0.4; charset=utf-8")
+        rendered = METRICS.render()
+        worker = worker_health() if worker_health is not None else None
+        if worker is not None:
+            up = int(bool(worker.get("running") and worker.get("healthy")))
+            rendered += (
+                "# HELP unimem_learning_worker_up Whether the supervised learning worker is healthy.\n"
+                "# TYPE unimem_learning_worker_up gauge\n"
+                f"unimem_learning_worker_up {up}\n"
+                "# TYPE unimem_learning_worker_restarts_total counter\n"
+                f"unimem_learning_worker_restarts_total {worker.get('restarts', 0)}\n"
+                "# TYPE unimem_learning_worker_failures_total counter\n"
+                f"unimem_learning_worker_failures_total {worker.get('failures', 0)}\n"
+            )
+        return Response(rendered, media_type="text/plain; version=0.0.4; charset=utf-8")
 
     app.add_route("/healthz", healthz, methods=["GET"])
     app.add_route("/readyz", readyz, methods=["GET"])

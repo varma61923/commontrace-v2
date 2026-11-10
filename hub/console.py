@@ -1890,7 +1890,9 @@ def _render_learning(
             "Current delivery reflects the active policy, including any rollback.</p>"
         )
         decisions = report.get("decisions") or []
-        if decisions:
+        if not is_admin:
+            body.append("<p>Pooled outcome statistics are available to organisation administrators.</p>")
+        elif decisions:
             rows = []
             policy = data.get("policy") or {}
             for entry in decisions:

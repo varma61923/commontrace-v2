@@ -1754,6 +1754,7 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
         trusted_proxy_hops=config.trusted_proxy_hops,
         metrics_token=config.metrics_token,
         readiness_timeout_seconds=config.readyz_timeout_seconds,
+        worker_health=lambda: getattr(inner_app.state, "learning_worker_health", None),
     )
     add_disclosure_route(inner_app, config)
     add_openapi_route(inner_app)
@@ -1788,7 +1789,14 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
     async def _lifespan_with_scheduler(app):
         async with _lifespan_with_rls_check(app):
             stop_event = asyncio.Event()
-            tasks = [asyncio.create_task(learning.run_worker(session_factory, stop_event=stop_event))]
+            worker_health = {"running": False, "healthy": False, "failures": 0, "restarts": 0}
+            app.state.learning_worker_health = worker_health
+            tasks = [
+                asyncio.create_task(
+                    learning.supervise_worker(session_factory, stop_event=stop_event, health=worker_health),
+                    name="unimem-learning-supervisor",
+                )
+            ]
             if config.alert_scheduler_enabled:
                 tasks.append(
                     asyncio.create_task(

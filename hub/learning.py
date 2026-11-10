@@ -433,11 +433,17 @@ async def _scoped_status(session, session_factory, org_id, principal, experiment
     }
     policy = {key: value for key, value in policy.items() if key in keys}
     if report is not None:
-        report["decisions"] = [entry for entry in report.get("decisions", []) if entry["key"] in keys]
-        report["stale_sources"] = [identity for identity in report.get("stale_sources", []) if identity in identities]
-        report["evidence"] = len(rows)
-        if not rows:
-            report["blocked"] = []
+        # A policy key is shared across principals. Matching a caller's key does
+        # not authorize its pooled outcomes, intervals, counts or future report
+        # fields. Only administrators can inspect the aggregate experiment.
+        report = {
+            "decisions": [],
+            "blocked": [],
+            "evidence": len(rows),
+            "stale_sources": sorted(
+                {arm["id"] for row in rows for arm in row["arms"] if (arm["id"], arm["revision"]) not in pairs}
+            ),
+        }
     return policy, report
 
 
@@ -590,42 +596,113 @@ async def complete_work(session_factory, claim):
         return "evidence_budget_exceeded" not in result.get("blocked", [])
 
 
-async def run_worker(session_factory, *, stop_event, interval_seconds=5):
-    while not stop_event.is_set():
-        claim = None
-        try:
-            claim = await claim_work(session_factory)
-            if claim and await complete_work(session_factory, claim):
-                continue
-        except Exception as exc:
-            capacity = isinstance(exc, WorkerCapacityError)
-            if not capacity:
-                logger.exception("learning worker failed")
-            if claim:
-                async with session_scope(session_factory, org_id=claim[0]) as session:
-                    await session.execute(
-                        update(LearningWork)
-                        .where(
-                            LearningWork.org_id == claim[0],
-                            LearningWork.experiment_id == claim[1],
-                            LearningWork.lease_token == claim[3],
-                        )
-                        .values(
-                            **(
-                                {
-                                    "failure": "worker_capacity",
-                                    "lease_token": None,
-                                    "lease_until": datetime.now(timezone.utc) + timedelta(seconds=interval_seconds),
-                                }
-                                if capacity
-                                else {"failure": type(exc).__name__}
-                            )
-                        )
+async def _record_worker_failure(session_factory, claim, *, capacity, error_type, interval_seconds):
+    async with session_scope(session_factory, org_id=claim[0]) as session:
+        await session.execute(
+            update(LearningWork)
+            .where(
+                LearningWork.org_id == claim[0],
+                LearningWork.experiment_id == claim[1],
+                LearningWork.generation == claim[2],
+                LearningWork.lease_token == claim[3],
+            )
+            .values(
+                **(
+                    {
+                        "failure": "worker_capacity",
+                        "lease_token": None,
+                        "lease_until": datetime.now(timezone.utc) + timedelta(seconds=interval_seconds),
+                    }
+                    if capacity
+                    else {"failure": error_type}
+                )
+            )
+        )
+
+
+async def _worker_pause(stop_event, interval_seconds):
+    try:
+        await asyncio.wait_for(stop_event.wait(), timeout=interval_seconds)
+    except asyncio.TimeoutError:
+        pass
+
+
+async def run_worker(session_factory, *, stop_event, interval_seconds=5, health=None):
+    state = {} if health is None else health
+    state.update(running=True, healthy=False)
+    state.setdefault("failures", 0)
+    pending_failure = None
+    try:
+        while not stop_event.is_set():
+            claim = None
+            try:
+                # Failure recording has its own retry obligation. A simultaneous
+                # evaluation/database failure must neither kill the worker nor
+                # overwrite a newer generation when connectivity returns.
+                if pending_failure is not None:
+                    failed_claim, capacity, error_type = pending_failure
+                    await _record_worker_failure(
+                        session_factory,
+                        failed_claim,
+                        capacity=capacity,
+                        error_type=error_type,
+                        interval_seconds=interval_seconds,
                     )
-        try:
-            await asyncio.wait_for(stop_event.wait(), timeout=interval_seconds)
-        except asyncio.TimeoutError:
-            pass
+                    pending_failure = None
+                claim = await claim_work(session_factory)
+                completed = bool(claim and await complete_work(session_factory, claim))
+                state.update(healthy=True, last_error=None)
+                if completed:
+                    continue
+            except Exception as exc:
+                state.update(healthy=False, last_error=type(exc).__name__)
+                state["failures"] += 1
+                logger.warning("learning worker iteration failed", extra={"error_type": type(exc).__name__})
+                if claim:
+                    capacity = isinstance(exc, WorkerCapacityError)
+                    pending_failure = (claim, capacity, type(exc).__name__)
+                    try:
+                        await _record_worker_failure(
+                            session_factory,
+                            claim,
+                            capacity=capacity,
+                            error_type=type(exc).__name__,
+                            interval_seconds=interval_seconds,
+                        )
+                        pending_failure = None
+                    except Exception as recording_error:
+                        logger.warning(
+                            "learning failure recording awaits recovery",
+                            extra={"error_type": type(recording_error).__name__},
+                        )
+            await _worker_pause(stop_event, interval_seconds)
+    finally:
+        state.update(running=False, healthy=False)
+
+
+async def supervise_worker(session_factory, *, stop_event, interval_seconds=5, health=None):
+    """Restart an unexpectedly terminated worker; cancellation still propagates."""
+    state = {} if health is None else health
+    state.setdefault("restarts", 0)
+    state.setdefault("failures", 0)
+    try:
+        while not stop_event.is_set():
+            try:
+                await run_worker(
+                    session_factory, stop_event=stop_event, interval_seconds=interval_seconds, health=state
+                )
+                error_type = "WorkerStopped"
+            except Exception as exc:
+                error_type = type(exc).__name__
+            if stop_event.is_set():
+                break
+            state.update(running=False, healthy=False, last_error=error_type)
+            state["failures"] += 1
+            state["restarts"] += 1
+            logger.warning("restarting learning worker", extra={"error_type": error_type})
+            await _worker_pause(stop_event, interval_seconds)
+    finally:
+        state.update(running=False, healthy=False)
 
 
 def add_routes(app, session_factory, *, authenticate, require_scope):

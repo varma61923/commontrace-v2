@@ -100,6 +100,13 @@ failures return 503. `HUB_READYZ_TIMEOUT_SECONDS` must remain below the rendered
 readiness probe timeout. Metric scrapes use their own local budget and cannot
 consume readiness tokens or require a database round trip.
 
+The learning worker retries database failures, including failures while recording
+an evaluation error, and is supervised for unexpected exits. Readiness returns 503
+while that worker is unhealthy. Monitor `unimem_learning_worker_up`,
+`unimem_learning_worker_restarts_total` and `unimem_learning_worker_failures_total`
+on the existing authenticated metrics endpoint; they remain available during
+database outages.
+
 Keep `terminationGracePeriodSeconds` above `HUB_GRACEFUL_SHUTDOWN_SECONDS`;
 the chart enforces this relationship. A zero application grace cancels pending
 background work immediately. Application startup failure and shutdown errors

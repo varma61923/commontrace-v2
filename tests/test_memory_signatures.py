@@ -180,7 +180,7 @@ def test_the_canonical_erasure_cascade_removes_signatures(tmp_path):
     assert memory_signatures.load(root) == {}
 
 
-def test_kernels_average_cosines_over_shared_spaces_and_never_mix_models():
+def test_kernels_normalize_concatenated_spaces_and_never_mix_models():
     k = effect_field.Kernel.combined(
         {"a": effect_field.term_bag("pick the red cube"), "b": effect_field.term_bag("pick the red cube")},
         {"a": ("clip", [1.0, 0.0]), "b": ("clip", [0.0, 1.0]), "c": ("clip", [1.0, 0.0]), "d": ("dino", [1.0, 0.0])},
@@ -216,8 +216,10 @@ def test_robots_with_only_embeddings_transfer_evidence_to_a_new_skill(tmp_path, 
         for i in range(8)
     ]
     effects = {item["id"]: CENTERS[item["id"].rsplit("-", 1)[0]] for item in pool}
-    for i in range(600):
-        offered = rng.sample(pool, 3)
+    # Independent outcome occasions can establish transfer; reusing one outcome
+    # across offered skills is covered by the shared-occasion refusal regression.
+    for i in range(1800):
+        offered = rng.sample(pool, 1)
         status, body = recall(g, f"t{i}", offered, agent_id=f"arm-{i % 5}")
         assert status == 200 and all("embedding" not in item for item in body["deliver"])
         shown = {item["id"] for item in body["deliver"]}

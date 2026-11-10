@@ -385,6 +385,7 @@ def _fleet_field(
     cell_base: dict[tuple[str, str], tuple[float, float]],
     cell_raw: Mapping[tuple[str, str], Contrast | None],
     tau2_context: float,
+    cell_rows: Mapping[tuple[str, str], Sequence[Row]],
 ) -> dict[str, effect_field.Field]:
     """A field for each memory over its (memory, context) cells, updating `cell_base` in place.
 
@@ -424,6 +425,7 @@ def _fleet_field(
             baseline=baseline,
             scales=scales,
             targets=targets,
+            units={key[cell]: {row.occasion_id for row in cell_rows[cell]} for cell in cell_base},
         )
         if fleet.validated:
             for c in cells:
@@ -507,6 +509,7 @@ def fit(
             tau2,
             kernel,
             candidates=unmeasured,
+            units={lesson: {row.occasion_id for row in by_lesson[lesson]} for lesson in estimated},
         )
         model.transfer = transfer
 
@@ -554,7 +557,7 @@ def fit(
             cell_base[(lesson, ctx)] = (base_mean, base_var + tau2_context)
             cell_rows_of[(lesson, ctx)] = cell_rows
     if context_transfer and cell_base:
-        model.context_transfer = _fleet_field(kernel, cell_base, cell_raw, tau2_context)
+        model.context_transfer = _fleet_field(kernel, cell_base, cell_raw, tau2_context, cell_rows_of)
     for (lesson, ctx), (prior_mean, prior_var) in cell_base.items():
         mean, variance = _combine(prior_mean, prior_var, cell_raw[(lesson, ctx)])
         model.contexts[(lesson, ctx)] = _posterior(

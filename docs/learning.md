@@ -45,7 +45,11 @@ Local experiments are configured per exact scope. An owner can prepare a robot's
 scope with `MemoryClient(root="./mem", context={"agent": "robot-1"}).learning.configure("observe")`;
 the runtime then connects with `MemoryClient(root="./mem", agent_id="robot-1")`.
 Hub configuration is tenant-wide, while occasion identities are principal-bound
-and status results are filtered to the caller's authorized sources.
+and status results are filtered to the caller's authorized sources. Pooled
+decisions, effect estimates, intervals and arm counts are visible only to Hub
+administrators: sharing a memory/revision/context key does not grant access to
+another principal's outcomes. Non-admin status retains the caller's own counts
+and authorized delivery policy without the pooled statistical report.
 
 ## Protocol
 

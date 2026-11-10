@@ -31,8 +31,12 @@ it to the gate's per-memory Hajek effects:
   recorded signatures (below). It is pure Python, offline and deterministic.
 - Memories with embeddings are compared in each embedding space as well. A
   memory in several spaces is the concatenation of its unit vectors, each scaled
-  by `1/sqrt(spaces)`, so similarity is the mean cosine over the spaces two
-  memories share. Different embedding models never compare.
+  by `1/sqrt(spaces)` using that memory's own number of nonempty spaces
+  (including lexical terms). Similarity is the sum of shared-space cosines
+  divided by `sqrt(spaces_a * spaces_b)`. It is a mean only when both memories
+  have the same spaces. An identical shared vector with an extra space on just
+  one side therefore scores `1/sqrt(2)`, not 1. Different embedding models and
+  incompatible vector dimensions never compare.
 - Integer powers of a cosine Gram matrix are positive semidefinite.
 
 Each memory's prior is the GP's best linear prediction from its 12 nearest
@@ -93,7 +97,7 @@ are twelve contexts, and a new site starts with almost nothing. In
 - **Variance.** Each memory uses its own between-context variance
   (DerSimonian-Laird over its contexts).
 - **Validation.** Each memory is validated on its own cells:
-  leave-one-out predictive density must beat the gate's plain context prior at
+  leave-family-out predictive density must beat the gate's plain context prior at
   alpha 0.05, Bonferroni-corrected over the 5 shares. A memory whose contexts
   do not follow their components keeps the plain prior exactly.
 
@@ -117,13 +121,29 @@ Measured, with seeded simulations:
 
 ## Validation
 
-`power` (1, 2 or 4) and `share` (0.2 to 0.95) are chosen by leave-one-out log
-predictive density over measured memories that have at least one witness. The
-field is `VALIDATED` only when:
+`power` (1, 2 or 4) and `share` (0.2 to 0.95) are chosen by leave-family-out log
+predictive density. Identical content profiles and memories sharing outcome
+occasions are joined transitively into validation families. Every member of the
+query's family is excluded from its validation witnesses. Each family contributes
+one mean gain, so copies cannot increase the independent sample size or dominate
+the parameter search. The causal gate supplies the actual occasion memberships;
+direct `effect_field.fit` callers must supply `units` for shared occasions or
+other known dependence groups. Without those memberships only duplicate content
+profiles can be identified.
 
-- at least 10 such memories exist, and
+The field is `VALIDATED` only when:
+
+- at least 10 validation families have an outside-family witness, and
 - the best configuration beats no transfer on a one-sided paired z test at
-  alpha 0.05, Bonferroni-corrected over all 15 configurations (z of about 2.71).
+  alpha 0.05, Bonferroni-corrected over all 15 configurations (z of about 2.71),
+  with positive, estimable variation between family gains.
+
+Zero or numerically constant gain variance does not establish infinite evidence;
+validation is refused. A connected pool of memories with shared outcomes may
+therefore be insufficient even when it contains many memory IDs. The family count
+is reported as `validation_units`. This remains an approximate predictive
+validation, not a finite-sample guarantee against unknown dependence or latent
+semantic families. Validated forecasts still use the full measured witness pool.
 
 Otherwise it is `NOT_VALIDATED` or `INSUFFICIENT`. In that case it changes no
 prior, rate or forecast, and a `thompson-field` schedule matches a `thompson`
@@ -152,7 +172,8 @@ out-of-sample test of the forecasts themselves.
 
 A similarity kernel blurs pairs that read alike but act in opposite directions,
 for example "call the v1 refunds endpoint" and "call the v2 refunds endpoint".
-`effect_field.lookalikes` tests similar pairs (cosine of at least 0.6) for a
+`effect_field.lookalikes` tests all similar pairs (cosine of at least 0.6),
+independently of the top-12 witness/display limit, for a
 difference in effect, controls the false-discovery rate with Benjamini-Hochberg,
 and reports a pair when the effects differ in sign by at least the practical
 threshold. These pairs should be reviewed and reworded so their difference is
