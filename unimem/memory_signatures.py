@@ -279,7 +279,16 @@ def kernel(
     embeddings: dict[str, tuple[str, Sequence[float]]] = {}
     cutoff = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=CANDIDATE_DAYS)).isoformat()
     recent: set[str] = set()
-    for memory, sig in load(root).items():
+    path = signatures_path(root)
+    with _jsonl.locked(path):
+        signatures = load(root)
+        expired = {memory for memory, sig in signatures.items() if memory not in measured | active and sig.at < cutoff}
+        if expired:
+            _jsonl.write_rows(path, [row for row in _jsonl.read_rows(path) if row.get("id") not in expired])
+            with _INDEX_LOCK:
+                _INDEX.pop(path, None)
+            signatures = {memory: sig for memory, sig in signatures.items() if memory not in expired}
+    for memory, sig in signatures.items():
         if memory not in bags and sig.terms:
             bags[memory] = dict(sig.terms)
         if sig.vector is not None and sig.model is not None:

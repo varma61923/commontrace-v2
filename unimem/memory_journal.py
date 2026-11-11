@@ -1148,6 +1148,11 @@ class Journal:
                 for reference in references:
                     memory_authority.record_forgetting(self.root, reference, forgotten=True)
                 nextwave_store._erase_sources(self.root, references)
+            from unimem import memory_signatures
+
+            # Recall signatures use native identifiers even when governed
+            # lineage/change-stream references use namespaced HMAC identities.
+            memory_signatures.forget(self.root, native_ids)
             for capture_id, encoded_scope in capture_ids:
                 if db.execute("SELECT 1 FROM captures WHERE id=? AND scope=?", (capture_id, encoded_scope)).fetchone():
                     self._stage_change(db, "capture", capture_id, json.loads(encoded_scope), "", "erase")

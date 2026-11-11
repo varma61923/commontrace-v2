@@ -391,12 +391,14 @@ class CellKernel:
         return value
 
     def similarity(self, a: str, b: str) -> float:
+        if a not in self.cells or b not in self.cells:
+            return 0.0
         (ma, ca), (mb, cb) = self.cells[a], self.cells[b]
         return self._memory(ma, mb) * self._context(ca, cb)
 
     def _pool(self, pool: Iterable[str], memories: Iterable[str]) -> tuple[dict[str, list[str]], dict[str, Neighbors]]:
         """The pool's cells by memory, and each memory's content neighbours among the pool's memories."""
-        members = frozenset(pool)
+        members = frozenset(cell for cell in pool if cell in self.cells)
         if members not in self._cache:
             by_memory: dict[str, list[str]] = defaultdict(list)
             for cell in sorted(members):
@@ -425,9 +427,12 @@ class CellKernel:
         queries = list(queries)
         if not k:
             return {q: () for q in queries}
-        by_memory, near = self._pool(pool, (self.cells[q][0] for q in queries))
+        by_memory, near = self._pool(pool, (self.cells[q][0] for q in queries if q in self.cells))
         out: dict[str, Neighbors] = {}
         for q in queries:
+            if q not in self.cells:
+                out[q] = ()
+                continue
             memory, context = self.cells[q]
             nearest = near.get(memory, ())
             limit = max(NEIGHBORS, len(nearest))
@@ -594,6 +599,18 @@ def _log_normal(x: float, mean: float, variance: float) -> float:
     return -0.5 * (math.log(2.0 * math.pi * variance) + (x - mean) ** 2 / variance)
 
 
+@dataclass(frozen=True)
+class ValidationCase:
+    """A held-out query's training-only nuisance fit and witness pool."""
+
+    neighbors: Neighbors
+    base: tuple[float, float]
+    reference: tuple[float, float]
+    scales: Mapping[str, float]
+    residuals: Mapping[str, float]
+    noise: Mapping[str, float]
+
+
 @dataclass
 class Field:
     """A fitted effect field. Its prior equals the base prior unless the field validated."""
@@ -614,6 +631,7 @@ class Field:
     _scales: dict[str, float] = field(default_factory=dict, repr=False)
     _predictions: dict[str, tuple[float, float]] = field(default_factory=dict, repr=False)
     _prediction_key: tuple[int, float, float] | None = field(default=None, repr=False)
+    _cases: Mapping[str, ValidationCase] = field(default_factory=dict, repr=False)
 
     def _scale(self, memory: str) -> float:
         return self._scales.get(memory, math.sqrt(self.tau2))
@@ -628,13 +646,14 @@ class Field:
 
     def witnesses(self, memory: str) -> Neighbors:
         hood = self._hoods.get(memory, _EMPTY)
-        return tuple(zip(hood.ids, hood.to_query))
+        return tuple((identity, round(similarity, 12)) for identity, similarity in zip(hood.ids, hood.to_query))
 
     def prior(self, memory: str, base_mean: float, base_var: float) -> tuple[float, float]:
         """`memory`'s prior (mean, variance): the base prior moved by its witnesses' evidence."""
         if not self.validated:
             return base_mean, base_var
         cached = self._predictions.get(memory) if self._prediction_key == (self.power, self.share, self.tau2) else None
+        case = self._cases.get(memory)
         shift, reduction = (
             cached
             if cached is not None
@@ -642,10 +661,10 @@ class Field:
                 self._hoods.get(memory, _EMPTY),
                 self.power,
                 self.share,
-                self._scale(memory),
-                self._scales,
-                self._residual,
-                self._noise,
+                case.scales[memory] if case else self._scale(memory),
+                case.scales if case else self._scales,
+                case.residuals if case else self._residual,
+                case.noise if case else self._noise,
             )
         )
         return base_mean + shift, max(base_var - reduction, JITTER)
@@ -762,13 +781,23 @@ def _hood(
     neighbors: Neighbors,
     cache: dict[tuple[str, str], float] | None = None,
     gram: _KernelGram | None = None,
+    *,
+    query: str | None = None,
 ) -> _Neighborhood:
     ids = tuple(m for m, _s in neighbors)
     if gram is not None and ids:
         indices = [gram.index[m] for m in ids]
         values = gram.values[gram.np.ix_(indices, indices)]
         gram.np.fill_diagonal(values, 1.0)
-        return _Neighborhood(ids, tuple(s for _m, s in neighbors), tuple(map(tuple, values.tolist())))
+        to_query = (
+            tuple(float(gram.values[gram.index[query], index]) for index in indices)
+            if query is not None
+            else tuple(s for _, s in neighbors)
+        )
+        return _Neighborhood(ids, to_query, tuple(map(tuple, values.tolist())))
+    to_query = tuple(
+        kernel.similarity(query, memory) if query is not None else similarity for memory, similarity in neighbors
+    )
     memo = {} if cache is None else cache
 
     def similarity(a: str, b: str) -> float:
@@ -783,7 +812,7 @@ def _hood(
         return memo[key]
 
     among = tuple(tuple(similarity(a, b) for b in ids) for a in ids)
-    return _Neighborhood(ids, tuple(s for _m, s in neighbors), among)
+    return _Neighborhood(ids, to_query, among)
 
 
 def _validation_families(
@@ -845,6 +874,7 @@ def fit(
     scales: Mapping[str, float] | None = None,
     targets: Iterable[str] | None = None,
     units: Mapping[str, Iterable[str]] | None = None,
+    validation_cases: Mapping[str, ValidationCase] | None = None,
 ) -> Field:
     """Fit and validate the field over measured `estimates` (memory -> (effect, variance)).
 
@@ -858,6 +888,9 @@ def fit(
     `units` maps measured IDs to shared occasion/dependence tokens. Content copies
     and shared units form connected families; validation excludes the query's
     entire family. Forecasting still uses the full measured witness pool.
+    `validation_cases` supplies training-only nuisance fits for cross-fitted
+    context predictions. Those cases also supply the deployed priors, so a
+    context never re-enters its own witnesses or variance estimate.
     """
     if type(k) is not int or k < 0:
         raise ValueError("neighbor count must be a non-negative integer")
@@ -875,12 +908,20 @@ def fit(
         if len({families[m] for m in wanted}) >= MIN_MEASURED and tau2 > 0
         else None
     )
-    near = (
-        gram.neighbors(kernel, queries, measured, k)
-        if gram is not None and isinstance(kernel, Kernel) and not kernel.dense
-        else kernel.neighbors(queries, measured, k)
-    )
-    hoods = {q: _hood(kernel, nb, similarities, gram) for q, nb in near.items()}
+    if validation_cases is not None:
+        if set(queries) - validation_cases.keys():
+            raise ValueError("training-only validation cases are required for every query")
+        near = {q: validation_cases[q].neighbors for q in queries}
+        for q, neighbors in near.items():
+            if any(m not in families or (q in families and families[m] == families[q]) for m, _ in neighbors):
+                raise ValueError("validation witnesses must exclude the query's complete family")
+    else:
+        near = (
+            gram.neighbors(kernel, queries, measured, k)
+            if gram is not None and isinstance(kernel, Kernel) and not kernel.dense
+            else kernel.neighbors(queries, measured, k)
+        )
+    hoods = {q: _hood(kernel, nb, similarities, gram, query=q) for q, nb in near.items()}
     residual = {m: estimates[m][0] - bases[m][0] for m in measured}
     noise = {m: estimates[m][1] for m in measured}
     default = math.sqrt(max(tau2, 0.0))
@@ -894,8 +935,9 @@ def fit(
         _residual=residual,
         _noise=noise,
         _scales=scale,
+        _cases=validation_cases or {},
     )
-    if len(set(families.values())) == len(measured):
+    if validation_cases is not None or len(set(families.values())) == len(measured):
         validation_hoods = {m: hoods[m] for m in wanted}
     else:
         # Filter families in one bounded score pass. Constructing a separate
@@ -905,7 +947,7 @@ def fit(
             if gram is not None and isinstance(kernel, Kernel) and not kernel.dense
             else kernel.neighbors(sorted(wanted), measured, k, families=families)
         )
-        validation_hoods = {m: _hood(kernel, nb, similarities, gram) for m, nb in validation_near.items()}
+        validation_hoods = {m: _hood(kernel, nb, similarities, gram, query=m) for m, nb in validation_near.items()}
     scored = [m for m in sorted(wanted) if validation_hoods[m].ids]
     out.measured = len(scored)
     groups: dict[str, list[int]] = defaultdict(list)
@@ -914,16 +956,32 @@ def fit(
     out.validation_units = len(groups)
     if len(groups) < MIN_MEASURED or tau2 <= 0.0 or min(scale.values(), default=0.0) <= 0.0:
         return out
-    transfers = _transfer_engine({q: validation_hoods[q] for q in scored}, scale, residual, noise)
-    baseline_lpd = {m: _log_normal(estimates[m][0], reference[m][0], reference[m][1] + estimates[m][1]) for m in scored}
+    engines = []
+    if validation_cases is None:
+        engines.append(_transfer_engine({q: validation_hoods[q] for q in scored}, scale, residual, noise))
+    else:
+        batches: dict[int, list[str]] = defaultdict(list)
+        for q in queries:
+            batches[id(validation_cases[q].scales)].append(q)
+        for members in batches.values():
+            case = validation_cases[members[0]]
+            engines.append(_transfer_engine({q: hoods[q] for q in members}, case.scales, case.residuals, case.noise))
+
+    def predictions(power: int, share: float) -> dict[str, tuple[float, float]]:
+        return {q: value for engine in engines for q, value in engine(power, share).items()}
+
+    references = {m: validation_cases[m].reference if validation_cases else reference[m] for m in scored}
+    baseline_lpd = {
+        m: _log_normal(estimates[m][0], references[m][0], references[m][1] + estimates[m][1]) for m in scored
+    }
 
     def gains(power: int, share: float) -> list[float]:
         row = []
-        predictions = transfers(power, share)
+        fitted = predictions(power, share)
         for m in scored:
             effect, variance = estimates[m]
             mean, var = bases[m]
-            shift, reduction = predictions[m]
+            shift, reduction = fitted[m]
             row.append(_log_normal(effect, mean + shift, max(var - reduction, JITTER) + variance) - baseline_lpd[m])
         return [math.fsum(row[i] for i in members) / len(members) for members in groups.values()]
 
@@ -947,7 +1005,11 @@ def fit(
     if not out.validated:
         out.share = 0.0
     else:
-        out._predictions = _transfer_engine(hoods, scale, residual, noise)(power, share)
+        out._predictions = (
+            predictions(power, share)
+            if validation_cases is not None
+            else _transfer_engine(hoods, scale, residual, noise)(power, share)
+        )
         out._prediction_key = (power, share, tau2)
     return out
 

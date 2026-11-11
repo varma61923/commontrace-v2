@@ -329,6 +329,7 @@ class Model:
     transfer: effect_field.Field | None = None
     forecasts: dict[str, Posterior] = field(default_factory=dict)  # unmeasured memories the field informs
     context_transfer: dict[str, effect_field.Field] = field(default_factory=dict)  # memory -> its fleet field
+    _priors: dict[str, tuple[float, float]] = field(default_factory=dict, repr=False)
 
     def context_summary(self) -> dict[str, Any] | None:
         if not self.context_transfer:
@@ -386,46 +387,109 @@ def _fleet_field(
     cell_raw: Mapping[tuple[str, str], Contrast | None],
     tau2_context: float,
     cell_rows: Mapping[tuple[str, str], Sequence[Row]],
+    rows: Sequence[Row],
+    sources: Mapping[str, str],
 ) -> dict[str, effect_field.Field]:
-    """A field for each memory over its (memory, context) cells, updating `cell_base` in place.
+    """Refit nuisance priors in five disjoint family folds before evaluating transfer.
 
-    Similarity is content x context components (``embodiment/site/skill``,
-    ``model/task``): a cell's witnesses are its own memory's other contexts and
-    content-similar memories' contexts. Each memory's deviations are scaled by its own
-    between-context sd, and each memory is validated on its own cells against the plain
-    context prior, so one memory's structure is neither diluted by nor imposed on another's.
+    A context's own outcomes never enter its heterogeneity, anchor, witnesses or
+    reference prior. The candidate starts at a lesson prior before context pooling;
+    its witnesses therefore contribute once. The reference keeps ordinary pooling.
+    Five shared fits bound the cost independently of fleet size.
     """
-    by_memory: dict[str, list[tuple[float, float]]] = defaultdict(list)
     cells_of: dict[str, list[tuple[str, str]]] = defaultdict(list)
     for cell in cell_base:
         cells_of[cell[0]].append(cell)
-        est = cell_raw.get(cell)
-        if est is not None:
-            by_memory[cell[0]].append((est.effect, est.variance))
-    tau2_of = {}
-    for memory in cells_of:
-        own = _dersimonian_laird([by_memory[memory]])
-        tau2_of[memory] = max(CONTEXT_TAU_FLOOR**2, own) if own is not None else tau2_context
     key = {cell: f"{cell[0]}\x1e{cell[1]}" for cell in cell_base}
-    bases = {key[c]: (mean, var - tau2_context + tau2_of[c[0]]) for c, (mean, var) in cell_base.items()}
-    baseline = {key[c]: b for c, b in cell_base.items()}
-    scales = {key[c]: math.sqrt(tau2_of[c[0]]) for c in cell_base}
     estimates = {key[c]: (est.effect, est.variance) for c in cell_base if (est := cell_raw.get(c)) is not None}
+    units = {key[cell]: {row.occasion_id for row in cell_rows[cell]} for cell in cell_base}
     cell_kernel = effect_field.CellKernel.build(kernel, {k: c for c, k in key.items()})
+    families = effect_field._validation_families(sorted(estimates), cell_kernel, units)
+    eligible = {
+        memory
+        for memory, cells in cells_of.items()
+        if len({families[key[c]] for c in cells if key[c] in families}) >= effect_field.MIN_MEASURED
+    }
     fields: dict[str, effect_field.Field] = {}
+    for memory in sorted(cells_of.keys() - eligible):
+        count = len({families[key[c]] for c in cells_of[memory] if key[c] in families})
+        fields[memory] = effect_field.Field(
+            effect_field.INSUFFICIENT,
+            cell_kernel.kind,
+            tau2=tau2_context,
+            measured=count,
+            validation_units=count,
+            threshold=effect_field.validate_z(1),
+        )
+    if not eligible:
+        return fields
+    fold_of = {family: i % 5 for i, family in enumerate(sorted(set(families.values())))}
+    query_fold = {identity: fold_of[family] for identity, family in families.items()}
+    query_fold.update({identity: 0 for identity in key.values() if identity not in estimates})
+    cases: dict[str, effect_field.ValidationCase] = {}
+    for fold in range(5):
+        held = {identity for identity, group in query_fold.items() if group == fold or identity not in estimates}
+        held_occasions = {occasion for identity in held for occasion in units[identity]}
+        training = [
+            row
+            for row in rows
+            if key.get((row.lesson, row.context)) not in held and row.occasion_id not in held_occasions
+        ]
+        plain = fit(training, sources=sources, candidates=cells_of)
+        training_estimates = {
+            key[cell]: (posterior.raw_effect, posterior.raw_se**2)
+            for cell, posterior in plain.contexts.items()
+            if cell in key
+            and key[cell] in estimates
+            and key[cell] not in held
+            and posterior.raw_effect is not None
+            and posterior.raw_se is not None
+        }
+        deviations: dict[str, list[tuple[float, float]]] = defaultdict(list)
+        for identity, estimate in training_estimates.items():
+            deviations[cell_kernel.cells[identity][0]].append(estimate)
+        tau_of = {}
+        for memory in cells_of:
+            own = _dersimonian_laird([deviations[memory]])
+            tau_of[memory] = max(CONTEXT_TAU_FLOOR**2, own) if own is not None else plain.tau_context**2
+        scales = {identity: math.sqrt(tau_of[cell[0]]) for cell, identity in key.items()}
+        residuals = {
+            identity: estimate[0] - plain._priors[cell_kernel.cells[identity][0]][0]
+            for identity, estimate in training_estimates.items()
+        }
+        noise = {identity: estimate[1] for identity, estimate in training_estimates.items()}
+        queries = [identity for cell, identity in key.items() if cell[0] in eligible and query_fold[identity] == fold]
+        near = cell_kernel.neighbors(queries, sorted(training_estimates))
+        for identity in queries:
+            memory = cell_kernel.cells[identity][0]
+            mean, variance = plain._priors[memory]
+            posterior = plain.lessons.get(memory)
+            reference = (
+                (posterior.mean, posterior.sd**2 + plain.tau_context**2)
+                if posterior
+                else (mean, variance + plain.tau_context**2)
+            )
+            cases[identity] = effect_field.ValidationCase(
+                near[identity], (mean, variance + tau_of[memory]), reference, scales, residuals, noise
+            )
+    bases = {
+        identity: cases[identity].base if identity in cases else (0.0, DEFAULT_TAU**2 + tau2_context)
+        for identity in key.values()
+    }
     for memory, cells in sorted(cells_of.items()):
+        if memory not in eligible:
+            continue
         targets = [key[c] for c in cells]
         fields[memory] = fleet = effect_field.fit(
             estimates,
             bases,
-            tau2_of[memory],
+            tau2_context,
             cell_kernel,
             candidates=[t for t in targets if t not in estimates],
             powers=(1,),  # component overlap has no sharpness to tune
-            baseline=baseline,
-            scales=scales,
             targets=targets,
-            units={key[cell]: {row.occasion_id for row in cell_rows[cell]} for cell in cell_base},
+            units=units,
+            validation_cases={identity: cases[identity] for identity in targets},
         )
         if fleet.validated:
             for c in cells:
@@ -500,9 +564,10 @@ def fit(
         return global_mean, tau2 + global_var
 
     model = Model(tau_lesson=math.sqrt(tau2), tau_source=math.sqrt(tau2_source), rows=len(rows))
+    model._priors = {lesson: prior(lesson) for lesson in [*by_lesson, *unmeasured]}
     lesson_prior: Callable[[str], tuple[float, float]] = prior
     if kernel is not None:
-        bases = {lesson: prior(lesson) for lesson in [*by_lesson, *unmeasured]}
+        bases = model._priors
         transfer = effect_field.fit(
             {lesson: (c.effect, c.variance) for lesson, c in estimated.items()},
             bases,
@@ -557,7 +622,7 @@ def fit(
             cell_base[(lesson, ctx)] = (base_mean, base_var + tau2_context)
             cell_rows_of[(lesson, ctx)] = cell_rows
     if context_transfer and cell_base:
-        model.context_transfer = _fleet_field(kernel, cell_base, cell_raw, tau2_context, cell_rows_of)
+        model.context_transfer = _fleet_field(kernel, cell_base, cell_raw, tau2_context, cell_rows_of, rows, source_of)
     for (lesson, ctx), (prior_mean, prior_var) in cell_base.items():
         mean, variance = _combine(prior_mean, prior_var, cell_raw[(lesson, ctx)])
         model.contexts[(lesson, ctx)] = _posterior(

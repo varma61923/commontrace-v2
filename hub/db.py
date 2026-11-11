@@ -54,18 +54,19 @@ async def session_scope(
     session_factory: async_sessionmaker[AsyncSession],
     *,
     org_id: str | None = None,
+    operator: bool = False,
 ) -> AsyncIterator[AsyncSession]:
     """Commit one transaction, optionally binding it to an authenticated org.
 
     Explicit bindings also scope nested sessions and are restored on every
     exit. Calls without an explicit org retain the request context (or the
-    intentional unscoped context of operator/background work).
+    unscoped default-deny context). Cross-tenant maintenance explicitly opts in.
     """
     token = auth.current_org_id.set(org_id) if org_id is not None else None
     try:
         async with session_factory() as session:
             try:
-                await _scope_to_current_org(session)
+                await _scope_to_current_org(session, operator=operator)
                 yield session
                 await session.commit()
             except BaseException:
@@ -81,11 +82,21 @@ async def session_scope(
             auth.current_org_id.reset(token)
 
 
-async def _scope_to_current_org(session: AsyncSession) -> None:
+@asynccontextmanager
+async def operator_session_scope(
+    session_factory: async_sessionmaker[AsyncSession], *, org_id: str | None = None
+) -> AsyncIterator[AsyncSession]:
+    """Trusted control-plane/worker routing; an inherited tenant still takes precedence."""
+    async with session_scope(session_factory, org_id=org_id, operator=True) as session:
+        yield session
+
+
+async def _scope_to_current_org(session: AsyncSession, *, operator: bool = False) -> None:
     org_id = auth.current_org_id.get(None)
-    if not org_id:
-        return
-    await session.execute(text("SELECT set_config('app.org_id', :org, true)"), {"org": str(org_id)})
+    await session.execute(
+        text("SELECT set_config('app.org_id', :org, true), set_config('app.operator_scope', :operator, true)"),
+        {"org": str(org_id or ""), "operator": "all_orgs" if operator and not org_id else ""},
+    )
 
 
 _RLS_BYPASS_SQL = text("SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user")

@@ -383,6 +383,7 @@ async def test_actual_sql_measured_policy_and_context(session_factory, mode, har
             "outcome",
             {"occasion_id": occasion, "succeeded": bool(assignment["inject"]) != harmful},
         )
+    await assign(session_factory, org, source, "pending-tail", task_context="code")
     if worker:
         claim = await learning.claim_work(session_factory)
         assert claim and await learning.complete_work(session_factory, claim)
@@ -392,6 +393,8 @@ async def test_actual_sql_measured_policy_and_context(session_factory, mode, har
     else:
         report = await learning.operate(session_factory, org, "agent:1", "run", admin=True)
         assert report["applied"] is applied, report
+    assert "pending_outcomes" in report["blocked"]
+    assert report["decisions"][0]["n_injected"] + report["decisions"][0]["n_withheld"] == 180
     async with session_scope(session_factory, org_id=org) as session:
         policy_audits = (
             (await session.execute(select(AuditLogEntry).where(AuditLogEntry.action == "learning.policy_update")))

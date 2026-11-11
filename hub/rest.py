@@ -162,11 +162,15 @@ def add_rest_routes(
         raw_key = request.headers.get("X-API-Key", "")
         authorization = request.headers.get("authorization", "")
         if not raw_key and authorization.lower().startswith("bearer "):
+            candidate = authorization[len("bearer ") :].strip()
+            if candidate.startswith(auth._KEY_PREFIX):
+                raw_key = candidate
+        if not raw_key and authorization.lower().startswith("bearer "):
             bearer = authorization[len("bearer ") :].strip()
             from hub.sso import looks_like_jwt
 
             if identity_provider is not None and looks_like_jwt(bearer):
-                async with session_scope(session_factory) as session:
+                async with session_scope(session_factory, operator=True) as session:
                     person = await auth.verify_user_token(
                         session,
                         bearer,
@@ -189,7 +193,7 @@ def add_rest_routes(
             return None, _json_error(401, "unauthorized", "OIDC bearer token was rejected or is not linked")
         if not raw_key:
             return None, _json_error(401, "unauthorized", "X-API-Key or linked OIDC bearer token is required")
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, operator=True) as session:
             authenticated = await auth.verify_api_key(session, raw_key)
         if authenticated is None:
             return None, _json_error(401, "unauthorized", "that key was not accepted")
@@ -240,7 +244,7 @@ def add_rest_routes(
         except ValueError as exc:
             return _json_error(400, "bad_request", str(exc))
 
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, operator=True) as session:
             org = Organization(name=org_name)
             session.add(org)
             await session.flush()

@@ -49,7 +49,7 @@ from hub.billing import StripeSettings, add_billing_webhook_route
 from hub.config import DEFAULT_SEARCH_LIMIT, HubConfig
 from hub.connector_routes import add_connector_routes
 from hub.console import CONSOLE_PATH, add_console_routes
-from hub.db import check_row_level_security, session_scope
+from hub.db import check_row_level_security, operator_session_scope, session_scope
 from hub.disclosure import add_disclosure_route
 from hub.observability import RequestContextMiddleware, add_health_routes
 from hub.openapi import add_openapi_route
@@ -158,14 +158,13 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
 
         if looks_like_jwt(raw_token) and self._identity_provider is not None:
             person = None
-            async with self._session_factory() as session:
+            async with operator_session_scope(self._session_factory) as session:
                 person = await auth.verify_user_token(
                     session,
                     raw_token,
                     self._identity_provider,
                     jwks_cache=self._jwks_cache,
                 )
-                await session.commit()
             if person is None:
                 return self._unauthorized({"error": "invalid, expired, or unlinked identity token"})
             self._auth_rate_limiter.refund(client_key)
@@ -201,9 +200,8 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
 
         authenticated = auth.cached_key(raw_token)
         if authenticated is None:
-            async with self._session_factory() as session:
+            async with operator_session_scope(self._session_factory) as session:
                 authenticated = await auth.verify_api_key(session, raw_token)
-                await session.commit()
 
         if authenticated is None:
             return self._unauthorized({"error": "invalid, revoked, or expired API key"})
@@ -1779,6 +1777,9 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
                     allow_bypass=config.allow_rls_bypass,
                     require=config.require_rls,
                 )
+                from hub.encryption import ensure_bound_fields
+
+                await ensure_bound_fields(session_factory, config.cipher())
                 yield
             finally:
                 factory = getattr(app.state, "memory_projection_factory", None)

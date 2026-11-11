@@ -9,6 +9,7 @@ from hub.encryption import (
     NULL_CIPHER,
     EncryptionError,
     EnvelopeCipher,
+    field_aad,
     generate_key,
 )
 
@@ -21,6 +22,58 @@ def test_generate_key_is_a_valid_key():
 
 def test_generate_key_produces_distinct_keys():
     assert generate_key() != generate_key()
+
+
+def test_bound_envelopes_reject_other_tenants_rows_fields_and_unbound_downgrades():
+    cipher = EnvelopeCipher.from_config(generate_key(), "")
+    context = field_aad("org-a", "webhook_endpoints", "row-a", "url")
+    sealed = cipher.encrypt("https://hooks.example/secret", aad=context)
+    assert cipher.decrypt(sealed, aad=context) == "https://hooks.example/secret"
+    for args in [
+        ("org-b", "webhook_endpoints", "row-a", "url"),
+        ("org-a", "webhook_endpoints", "row-b", "url"),
+        ("org-a", "connectors", "row-a", "secret"),
+    ]:
+        with pytest.raises(EncryptionError):
+            cipher.decrypt(sealed, aad=field_aad(*args))
+    for unbound in ["https://hooks.example/secret", cipher.encrypt("https://hooks.example/secret")]:
+        with pytest.raises(EncryptionError, match="unbound"):
+            cipher.decrypt(unbound, aad=context)
+        assert cipher.decrypt(unbound, aad=context, allow_legacy=True) == "https://hooks.example/secret"
+    rotated = EnvelopeCipher.from_config(generate_key(), base64.urlsafe_b64encode(cipher.current).decode())
+    assert rotated.decrypt(sealed, aad=context) == "https://hooks.example/secret"
+
+
+@pytest.mark.asyncio
+async def test_existing_secret_fields_have_a_bounded_explicit_upgrade(session_factory, monkeypatch, capsys):
+    from hub import events, manage
+    from hub.connectors import service
+    from hub.db import session_scope
+    from hub.models import Connector, Organization, WebhookEndpoint
+
+    cipher = EnvelopeCipher.from_config(generate_key(), "")
+    monkeypatch.setattr(manage, "_config_cipher", lambda: cipher)
+    async with session_scope(session_factory) as session:
+        org = Organization(name="binding-upgrade")
+        session.add(org)
+        await session.flush()
+        endpoint = WebhookEndpoint(org_id=org.id, url=cipher.encrypt("https://hooks.example/legacy"))
+        connector = Connector(org_id=org.id, provider="github", secret=cipher.encrypt(org.id + ":vendor-secret"))
+        session.add_all([endpoint, connector])
+        await session.flush()
+        identities = endpoint.id, connector.id
+    await manage.bind_encrypted_fields("1", session_factory)
+    assert "pending=true" in capsys.readouterr().out
+    await manage.bind_encrypted_fields("1", session_factory)
+    assert "pending=false" in capsys.readouterr().out
+    async with session_scope(session_factory) as session:
+        endpoint = await session.get(WebhookEndpoint, identities[0])
+        connector = await session.get(Connector, identities[1])
+        assert events.endpoint_url(cipher, endpoint) == "https://hooks.example/legacy"
+        assert (
+            service.open_secret(cipher, connector.org_id, connector.secret, connector_id=connector.id)
+            == "vendor-secret"
+        )
 
 
 class TestDisabledByDefault:

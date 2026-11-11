@@ -4,7 +4,7 @@
 and Python, TypeScript, Go, Rust and JVM clients. It adapts memory selection from
 observed task outcomes. It does not train model weights or authorize robot actions.
 Existing installations remain unchanged until an owner configures an experiment.
-Before starting upgraded Hub workers, apply migration `ff69cbd3e507` with the
+Before starting upgraded Hub workers, apply migration `ff7adce4f618` with the
 separate migration owner using the [deployment procedure](production-readiness.md).
 Historical holdout rows without recorded assignment rates remain explicitly
 unclassified; the new evaluator never invents their missing propensities.
@@ -34,8 +34,10 @@ memory.learning.outcome("task-001", reward=0.8, experiment_id=assignment["experi
 report = memory.learning.run()
 ```
 
-Use `MemoryClient(url=..., token=...)` for the gateway; async `HubClient.learning`
-uses the same operations. Restricted agent credentials can assign, acknowledge
+Use `MemoryClient(url=..., token=...)` for the gateway or the shared hosted
+operations; async `HubClient.learning` uses the same learning contract. The Hub
+accepts API keys through either `Authorization: Bearer` or `X-API-Key`; JWT Bearer
+tokens retain their OIDC validation path. Restricted agent credentials can assign, acknowledge
 and report within their principal scope; only the local owner or Hub administrator
 can configure, run or roll back a selection policy. Configuring a different mode
 starts a new experiment. Pin the returned `experiment_id` on delayed receipts and
@@ -100,8 +102,13 @@ remains durable while the worker backs off.
 ## Evidence and recovery
 
 Assignments freeze source revisions, randomization rates, utility and context.
-Incomplete delivery or unresolved outcomes block decisions for the affected
-source/context cohort. Missing observations are never silently dropped. The
+Each source/context cohort is evaluated only through its complete chronological
+prefix. A new in-flight tail does not discard earlier evidence. An older gap
+stops the frontier: later completed tasks are not selectively included, since
+completion can depend on outcomes. Pending counts remain visible, and a confirmed
+delivery mismatch blocks that cohort. An abandoned task needs its real receipt
+and observed outcome, or an explicitly new experiment; no result is invented to
+clear the gap. Missing observations are never silently dropped. The
 canonical integrity audit, sequential analysis and family multiplicity correction
 gate adaptation. Proven helpful memories retain a 5% monitoring holdout; harmful
 memories are disabled for their exact revision/context. Memories with no
@@ -109,6 +116,13 @@ measurable effect keep the configured exploration holdout rather than receiving
 helper promotion. Insufficient evidence
 leaves the existing selection unchanged. Changed or revoked sources cannot be
 readmitted by historical evidence or rollback.
+
+The hosted memory surface supports `turn`, `profile`, `record-put`,
+`record-search`, `record-forget`, and `record-reap-due`. Legacy fact operations
+(`add`, `batch`, `reflect`, memory `outcome`, `check-action`, `propose`) require
+the local gateway and receive explicit HTTP 501 refusals on the Hub. Use the
+record methods for portable record CRUD, and `learning.outcome` for the shared
+measurement lifecycle. The two backends do not share every memory method.
 
 Accepted measurements and pending numeric work are persisted atomically. The
 local leased job queue/daemon and Hub SQL workers resume work without model
@@ -129,7 +143,7 @@ immutable evidence semantics are also returned by `learning/capabilities`.
 | Embedded Python | UniMem 1.0.0; Python 3.10+ | All eight operations on the canonical SQLite journal; exact scoped identity, transactional evidence and local worker recovery |
 | Local HTTP | Same installed UniMem version; versioned `/v1/learning` routes | All eight operations; owner administration and registered-agent scope binding; same experiment and receipts as embedded Python |
 | Local MCP | Python `mcp` 2.x extra | All eight operations for the local operator; restricted toolsets omit administration; scoped replay preserves authenticated authority |
-| Hosted HTTP / MCP | Hub from the same release; PostgreSQL 16; Hub pins `mcp` 2.3.0 | All eight operations; native tenant/principal-scoped SQL, audit transactions and fenced workers; additive migration `ff69cbd3e507` required |
+| Hosted HTTP / MCP | Hub from the same release; PostgreSQL 16+; Hub pins `mcp` 2.3.0 | All eight operations; native tenant/principal-scoped SQL, explicit worker scope, audit transactions and fenced workers; migration `ff7adce4f618` required |
 | Python hosted SDK | UniMem 1.0.0 `HubClient.learning` | Async negotiation, pinned experiments, copied request inputs and explicit retry boundaries |
 | TypeScript SDK | `sdk/typescript` 0.1.0 | All eight HTTP operations; build and client contracts checked in CI |
 | Go SDK | `sdk/go`, source revision matched to this release | All eight HTTP operations; native race-enabled CI suite |

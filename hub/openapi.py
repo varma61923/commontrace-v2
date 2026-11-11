@@ -180,7 +180,7 @@ def _op(
 # ---------------------------------------------------------------------------
 
 PUBLIC: list = []
-API_KEY: list[dict[str, list[str]]] = [{"apiKey": []}, {"userBearer": []}]
+API_KEY: list[dict[str, list[str]]] = [{"apiKey": []}, {"apiKeyBearer": []}, {"userBearer": []}]
 ADMIN: list[dict[str, list[str]]] = [{"adminBasic": []}]
 CONSOLE: list[dict[str, list[str]]] = [{"consoleSession": []}]
 SCIM: list[dict[str, list[str]]] = [{"scimBearer": []}]
@@ -208,6 +208,14 @@ _SECURITY_SCHEMES = {
         "bearerFormat": "JWT",
         "description": "An access token from the configured OIDC issuer (HUB_OIDC_ISSUER), for a user "
         "pre-linked with `hub.manage link-sso`. The user's Hub role determines REST scopes.",
+    },
+    "apiKeyBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": (
+            "The org API key accepted through X-API-Key, sent as Authorization: Bearer unimem_live_... "
+            "by shared SDKs. API-key scopes and delegation checks are unchanged."
+        ),
     },
     "mcpBearer": {
         "type": "http",
@@ -2373,12 +2381,14 @@ def _operations() -> dict[tuple[str, str], dict]:
             ),
             "400": _error("Invalid record or version conflict."),
             "413": _error("Payload exceeds 100 kB."),
+            "501": _error("Operation is not supported by the hosted record backend; use its record operations."),
         },
     )
     ops[("POST", "/v1/memory/{operation}")] = _api(
         "memoryRecordSDKOperation",
         "Memory",
-        "Local SDK record-put, record-search, record-forget and record-reap-due wire parity",
+        "Shared SDK turn/profile and record-* operations; "
+        "legacy fact and action-policy operations require a local gateway",
         body=_json_body(
             _free_object("Scoped record SDK data"),
             "Record envelope, query, context labels, erasure reason, or expiration batch limit.",
@@ -2390,6 +2400,7 @@ def _operations() -> dict[tuple[str, str], dict]:
             ),
             "400": _error("Invalid record or version conflict."),
             "413": _error("Payload exceeds 100 kB."),
+            "501": _error("Legacy fact or action-policy operation requires the local gateway."),
         },
     )
     from unimem import learning_contract

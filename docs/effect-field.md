@@ -75,7 +75,10 @@ occurred.
 
 Memories whose signature was recorded in the last 30 days and that have no
 resolved assignment yet are forecast at the next plan, like unmeasured active
-lessons. Recording costs about 1 ms per recall for eight 384-dimension items.
+lessons. On each field build, inactive, unmeasured signatures older than 30 days
+are excluded from all embedding/IDF spaces and removed from the signature journal.
+Measured and explicitly active memories remain available as evidence.
+Recording costs about 1 ms per recall for eight 384-dimension items.
 It happens only in field mode.
 
 ## Fleet field: one memory across a fleet
@@ -94,28 +97,34 @@ are twelve contexts, and a new site starts with almost nothing. In
 - **Witnesses.** A cell borrows from its own memory's other contexts and from
   content-similar memories in similar contexts. A skill variant on a jaw
   gripper therefore learns from its siblings on other jaw grippers.
-- **Variance.** Each memory uses its own between-context variance
-  (DerSimonian-Laird over its contexts).
+- **Variance.** Each memory uses a training-only between-context variance
+  (DerSimonian-Laird), excluding the query's complete outcome family.
 - **Validation.** Each memory is validated on its own cells:
-  leave-family-out predictive density must beat the gate's plain context prior at
+  five balanced family folds refit all nuisance priors and variances before
+  predictive density is compared with ordinary context pooling at
   alpha 0.05, Bonferroni-corrected over the 5 shares. A memory whose contexts
-  do not follow their components keeps the plain prior exactly.
+  do not follow their components keeps the plain prior exactly. The candidate
+  starts before ordinary same-memory context pooling, so its witnesses are used
+  once. Deployed context priors retain the same query-excluding fold fits.
+  At least 10 independent context families are required **per memory**; a
+  3-embodiment × 4-site memory can qualify, but fewer than 10 families cannot.
 
 Measured, with seeded simulations:
 
 - **One memory, sparse contexts.** One memory helps jaw grippers by 25 points,
   hurts suction by 25 points and does nothing for dexterous hands, with 30
-  occasions per context. The field validated in 4 of 5 seeds and cut the error
-  of the per-context effects by 5% to 46% in those seeds. With effects shuffled
+  occasions per context. With training-only nuisance fits, the field validates
+  in 3 of 5 seeds and cuts per-context error by 4% to 45% in those seeds. With effects shuffled
   across contexts it validated in none of 5.
-- **Siblings.** Two content-similar memories each have only 12 occasions per
-  context. The target memory's field validates, uses its sibling's cells as
-  witnesses, and estimates more accurately than it can alone.
+- **Siblings.** In the seeded two-memory case, 12 occasions per context do not
+  establish transfer. At 60 occasions per context, the target field validates,
+  uses its sibling's cells as witnesses, and reduces its context RMSE by 27%
+  versus fitting without content similarity.
 - **Whole fleet.** `python -m benchmarks.fleet_learning_bench --reps 30` runs
   embedding-only skills, graded rewards and embodiment-specific effects over
   12 contexts, with new variants every era. With family-aware validation, seeds
-  0–29 yield a paired lift of +0.01 ± 0.01 task-progress points per 100 tasks
-  (mean ± standard error; regret 12.83 vs 12.84 per 100 against an oracle).
+  0–29 yield a paired lift of -0.01 ± 0.01 task-progress points per 100 tasks
+  (mean ± standard error; regret 12.85 vs 12.84 per 100 against an oracle).
   This small estimate does not establish a reliable improvement. In this
   scenario most effects are context-specific and most cells hold a handful of
   occasions, so the system mostly declines to transfer. Predictive validation
@@ -123,6 +132,13 @@ Measured, with seeded simulations:
   negative transfer remains possible. Compare with plain `thompson` on the
   deployment's contexts before enabling transfer. Completely orthogonal contexts
   have zero kernel similarity and cannot shift each other's priors.
+
+`benchmarks.effect_field_bench` also includes shuffled effects and identical-text
+variants with opposing effects. Its baseline is the same hierarchical
+empirical-Bayes model without the field. In the five-seed runs, all three regimes
+decline transfer because their shared outcomes do not provide independent
+validation families; field lift is zero. These are synthetic checks, not evidence
+of production benefit.
 
 ## Validation
 

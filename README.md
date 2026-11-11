@@ -264,6 +264,10 @@ unimem install --target claude-code     # also: cursor, windsurf, codex, copilot
 **Interop.** Adapters for Mem0, Letta, Zep, the Claude memory store and AgentCore, plus a portable import format.
 
 **SDKs.** TypeScript, Go, Rust and Java/Kotlin clients for the Hub, generated from its OpenAPI contract.
+The shared memory clients support hosted `turn`/`profile`, versioned `record-*`
+CRUD, and the measured-learning lifecycle. Legacy fact ingestion, reflection and
+local action-policy methods require the local gateway; see the
+[backend boundaries](docs/learning.md#evidence-and-recovery).
 
 ## The Hub: multi-tenant server
 

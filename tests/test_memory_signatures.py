@@ -123,6 +123,39 @@ def test_unchanged_but_recently_seen_memories_remain_forecast_candidates(tmp_pat
     assert memory_signatures.kernel(root, {}, [], [])[1] == ["a"]
 
 
+def test_expired_unmeasured_signatures_are_erased_and_cannot_change_the_kernel(tmp_path):
+    from unimem import _jsonl
+
+    root = str(tmp_path)
+    memory_signatures.observe(
+        root, [(name, "shared content " + name, "r1", None) for name in ("old", "measured", "live")]
+    )
+    path = memory_signatures.signatures_path(root)
+    rows = _jsonl.read_rows(path)
+    for row in rows:
+        if row["id"] != "live":
+            row["at"] = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=31)).isoformat()
+    _jsonl.write_rows(path, rows)
+    kernel, candidates = memory_signatures.kernel(root, {}, ["measured"], [])
+    assert not kernel.has("old") and kernel.has("measured")
+    assert candidates == ["live"]
+    assert set(memory_signatures.load(root)) == {"measured", "live"}
+    with open(path, encoding="utf-8") as stream:
+        assert '"old"' not in stream.read()
+
+
+def test_runtime_forgetting_erases_signatures_without_change_streams(tmp_path):
+    from unimem.memory_journal import Journal
+    from unimem.memory_record import MemoryRecord
+
+    root = str(tmp_path)
+    journal = Journal(root)
+    journal.put(MemoryRecord("runtime", "fact", 1, {"text": "Saved preference"}))
+    memory_signatures.observe(root, [("runtime", "Saved preference", "r1", None)])
+    journal.forget("runtime", reason="remove personal data")
+    assert memory_signatures.load(root) == {}
+
+
 def test_signature_terms_cannot_mutate_the_cached_kernel(tmp_path):
     root = str(tmp_path)
     memory_signatures.observe(root, [("a", "check grasp pose", "r1", None)])

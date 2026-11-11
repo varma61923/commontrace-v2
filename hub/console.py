@@ -2082,7 +2082,7 @@ def add_console_routes(
         if not prefix:
             return None
         now = datetime.now(timezone.utc)
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=str(claims["org"])) as session:
             rows = (
                 await session.execute(
                     select(
@@ -2161,7 +2161,7 @@ def add_console_routes(
             )
         form = await request.form()
         raw_key = str(form.get("api_key") or "")
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, operator=True) as session:
             authenticated = await auth.verify_api_key(session, raw_key)
         if authenticated is not None and scopes.satisfies(authenticated.scopes, scopes.SCOPE_READ):
             # The console cannot verify capability and possession headers.
@@ -2211,7 +2211,7 @@ def add_console_routes(
         if claims is None:
             return _redirect_to_signin()
         org_id = str(claims["org"])
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             data = await _overview_data(session, org_id)
             causal = await crud.causal_effects(session, org_id)
             org = await session.get(Organization, org_id)
@@ -2368,7 +2368,7 @@ def add_console_routes(
         if plan not in plans.BILLABLE_PLANS or not stripe.price_for_plan(plan):
             return RedirectResponse(CONSOLE_PATH, status_code=303)
         org_id = str(claims["org"])
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             org = await session.get(Organization, org_id)
         if org is None:
             return _redirect_to_signin()
@@ -2393,7 +2393,7 @@ def add_console_routes(
         if claims is None:
             return _redirect_to_signin()
         org_id = str(claims["org"])
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             org = await session.get(Organization, org_id)
         if org is None or not org.stripe_customer_id or not stripe.secret_key or not stripe.webhook_secret:
             return RedirectResponse(CONSOLE_PATH, status_code=303)
@@ -2424,7 +2424,7 @@ def add_console_routes(
         # float() accepts "nan"/"inf"; neither prices an occasion.
         if rate is not None and not (math.isfinite(rate) and rate > 0):
             rate = None
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             outcomes = await crud.fleet_outcomes(session, org_id)
             causal = await crud.causal_effects(session, org_id)
             worth = await crud.value_delivered(session, org_id, value_per_occasion=rate)
@@ -2459,7 +2459,7 @@ def add_console_routes(
         # one; a read-only key could otherwise publish the org's proof report.
         if not _is_admin(claims):
             return await _proof_view(request, org_id, False)
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             org = await session.get(Organization, org_id)
             generation = int(org.share_generation) if org is not None else 0
         token = issue_share_token(_secret(), org_id, generation=generation)
@@ -2474,7 +2474,7 @@ def add_console_routes(
         if not _is_admin(claims):
             return await _proof_view(request, org_id, False)
         actor = audit.actor_for_api_key(str(claims.get("key") or ""))
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             org = await session.get(Organization, org_id, with_for_update=True)
             if org is not None:
                 org.share_generation = int(org.share_generation) + 1
@@ -2502,7 +2502,7 @@ def add_console_routes(
                 status_code=429,
                 headers={"Retry-After": str(int(retry_after) + 1)},
             )
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             org = await session.get(Organization, org_id)
             if org is None or int(claims.get("gen", 0)) != int(org.share_generation):
                 return HTMLResponse("Not found.", status_code=404)
@@ -2516,7 +2516,7 @@ def add_console_routes(
         if claims is None:
             return _redirect_to_signin()
         org_id = str(claims["org"])
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             assignments = await crud.holdout_assignments(session, org_id)
         result = raw_export.export(assignments)
         return Response(
@@ -2583,7 +2583,7 @@ def add_console_routes(
             offset = min(100_000, max(0, int(request.query_params.get("offset") or 0)))
         except ValueError:
             offset = 0
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             try:
                 result = await crud.search_traces(session, org_id, query=query, limit=50, offset=offset)
             except ValueError as exc:
@@ -2601,7 +2601,7 @@ def add_console_routes(
         error: str = "",
         flash: str = "",
     ) -> Response:
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             submissions = await crud.list_my_kb_submissions(session, org_id)
             ent = await crud.entitlements(session, org_id)
             organization = await session.get(Organization, org_id)
@@ -2679,7 +2679,7 @@ def add_console_routes(
         tags = [t.strip() for t in str(form.get("tags") or "").split(",") if t.strip()]
         submit_config, submit_limiter = _write_deps()
         try:
-            async with session_scope(session_factory) as session:
+            async with session_scope(session_factory, org_id=org_id) as session:
                 await crud.submit_kb_entry(
                     session,
                     org_id,
@@ -2721,7 +2721,7 @@ def add_console_routes(
             )
         form = await request.form()
         enabled = str(form.get("enabled") or "").strip() == "1"
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             organization = await session.get(Organization, org_id)
             if organization is None:
                 return _redirect_to_signin()
@@ -2753,7 +2753,7 @@ def add_console_routes(
         trace_id = str(form.get("trace_id") or "").strip()
         feedback_tag = str(form.get("feedback_tag") or "").strip()
         try:
-            async with session_scope(session_factory) as session:
+            async with session_scope(session_factory, org_id=org_id) as session:
                 voted = await crud.vote_trace(
                     session,
                     org_id,
@@ -2774,7 +2774,7 @@ def add_console_routes(
         return RedirectResponse(f"{CONSOLE_PATH}/kb?done={done}", status_code=303)
 
     async def _list_users(org_id: str) -> list[User]:
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             return list(
                 (await session.execute(select(User).where(User.org_id == org_id).order_by(User.created_at)))
                 .scalars()
@@ -2834,7 +2834,7 @@ def add_console_routes(
         if not _is_admin(claims):
             users = await _list_users(org_id)
             return _page("Users & roles", _render_users(users, False, error="An admin-scoped API key is required."))
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             user = await session.get(User, user_id)
         if user is None or user.org_id != org_id:
             users = await _list_users(org_id)
@@ -2872,7 +2872,7 @@ def add_console_routes(
         return await _mutate_own_org_user(request, request.path_params["user_id"], action)
 
     async def _list_keys(org_id: str) -> list[ApiKey]:
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             return list(
                 (await session.execute(select(ApiKey).where(ApiKey.org_id == org_id).order_by(ApiKey.created_at)))
                 .scalars()
@@ -2927,7 +2927,7 @@ def add_console_routes(
             keys = await _list_keys(org_id)
             return _page("API keys", _render_keys(keys, True, error=str(exc)))
         actor = audit.actor_for_api_key(str(claims.get("key") or ""))
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             issued = await auth.issue_api_key(
                 session,
                 org_id,
@@ -2955,13 +2955,13 @@ def add_console_routes(
             keys = await _list_keys(org_id)
             return _page("API keys", _render_keys(keys, False))
         key_id = request.path_params["key_id"]
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             key = await session.get(ApiKey, key_id)
         if key is None or key.org_id != org_id or key.revoked_at is not None:
             keys = await _list_keys(org_id)
             return _page("API keys", _render_keys(keys, True))
         actor = audit.actor_for_api_key(str(claims.get("key") or ""))
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             issued = await auth.rotate_api_key(session, key_id)
             await audit.record(
                 session,
@@ -2983,7 +2983,7 @@ def add_console_routes(
         if not _is_admin(claims):
             return RedirectResponse(f"{CONSOLE_PATH}/keys", status_code=303)
         key_id = request.path_params["key_id"]
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             key = await session.get(ApiKey, key_id)
             if key is None or key.org_id != org_id:
                 return RedirectResponse(f"{CONSOLE_PATH}/keys", status_code=303)
@@ -3000,7 +3000,7 @@ def add_console_routes(
         return RedirectResponse(f"{CONSOLE_PATH}/keys", status_code=303)
 
     async def _list_alert_rules(org_id: str) -> list[AlertRule]:
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             return await alerts.list_rules(session, org_id)
 
     async def alerts_page(request: Request) -> Response:
@@ -3032,7 +3032,7 @@ def add_console_routes(
         except ValueError:
             cooldown_minutes = alerts.DEFAULT_COOLDOWN_MINUTES
         actor = audit.actor_for_api_key(str(claims.get("key") or ""))
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             try:
                 await alerts.create_rule(
                     session,
@@ -3056,7 +3056,7 @@ def add_console_routes(
         if not _is_admin(claims):
             return RedirectResponse(f"{CONSOLE_PATH}/alerts", status_code=303)
         rule_id = request.path_params["rule_id"]
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             rule = await session.get(AlertRule, rule_id)
             if rule is None or rule.org_id != org_id:
                 return RedirectResponse(f"{CONSOLE_PATH}/alerts", status_code=303)
@@ -3071,7 +3071,7 @@ def add_console_routes(
         if not _is_admin(claims):
             rules = await _list_alert_rules(org_id)
             return _page("Alerts", _render_alerts(rules, False))
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             try:
                 report = await alerts.generate_report(session, org_id)
             except alerts.AlertError as exc:
@@ -3087,14 +3087,18 @@ def add_console_routes(
         error: str = "",
         fresh: dict | None = None,
     ) -> Response:
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             endpoints = await events.endpoints_for(session, org_id)
             pending = await events.pending_count(session, org_id)
             failed = await events.failed_deliveries(session, org_id, limit=10)
         rows = [
             {
                 "id": e.id,
-                "url": (cipher.decrypt(e.url) if is_admin else events.destination_label(cipher.decrypt(e.url))),
+                "url": (
+                    events.endpoint_url(cipher, e)
+                    if is_admin
+                    else events.destination_label(events.endpoint_url(cipher, e))
+                ),
                 "enabled": e.enabled,
                 "events": list(e.events),
                 "key_version": e.key_version,
@@ -3125,7 +3129,7 @@ def add_console_routes(
             return await _webhooks_view(org_id, True, error="events must be text fields")
         chosen_events = [event for event in event_fields if isinstance(event, str)] or None
         actor = audit.actor_for_api_key(str(claims.get("key") or ""))
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             try:
                 endpoint, secret = await events.add_endpoint(
                     session,
@@ -3156,12 +3160,12 @@ def add_console_routes(
         if not _is_admin(claims):
             return await _webhooks_view(org_id, False)
         endpoint_id = request.path_params["endpoint_id"]
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             endpoint = await session.get(WebhookEndpoint, endpoint_id)
         if endpoint is None or endpoint.org_id != org_id:
             return await _webhooks_view(org_id, True)
         actor = audit.actor_for_api_key(str(claims.get("key") or ""))
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             secret = await events.rotate_secret(session, endpoint_id, signing_key=signing_key)
             endpoint = await session.get_one(WebhookEndpoint, endpoint_id)
             await audit.record(
@@ -3183,7 +3187,7 @@ def add_console_routes(
         if not _is_admin(claims):
             return RedirectResponse(f"{CONSOLE_PATH}/webhooks", status_code=303)
         endpoint_id = request.path_params["endpoint_id"]
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             endpoint = await session.get(WebhookEndpoint, endpoint_id)
             if endpoint is None or endpoint.org_id != org_id:
                 return RedirectResponse(f"{CONSOLE_PATH}/webhooks", status_code=303)
@@ -3196,7 +3200,7 @@ def add_console_routes(
                 org_id=org_id,
                 target_type="webhook_endpoint",
                 target_id=endpoint_id,
-                summary=cipher.decrypt(endpoint.url),
+                summary=events.endpoint_url(cipher, endpoint),
             )
         return RedirectResponse(f"{CONSOLE_PATH}/webhooks", status_code=303)
 
@@ -3319,7 +3323,7 @@ def add_console_routes(
         except ValueError:
             offset = 0
         limit = 50
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             rows = list(
                 (
                     await session.execute(

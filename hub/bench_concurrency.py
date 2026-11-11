@@ -19,7 +19,8 @@ from starlette.routing import Route
 from hub import auth
 from hub.abuse import PostgresRateLimiter, RateLimiter
 from hub.config import HubConfig
-from hub.db import make_engine, make_session_factory, session_scope
+from hub.db import make_engine, make_session_factory
+from hub.db import operator_session_scope as session_scope
 from hub.models import Organization
 from hub.server import ApiKeyAuthMiddleware
 

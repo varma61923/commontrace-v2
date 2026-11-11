@@ -4,7 +4,7 @@ import asyncio
 import logging
 
 from hub import alerts, events
-from hub.db import session_scope
+from hub.db import operator_session_scope as session_scope
 
 logger = logging.getLogger(__name__)
 

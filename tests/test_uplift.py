@@ -54,3 +54,16 @@ def test_noise_rule_rejected_and_falls_back():
     model = uplift.fit(traffic(13, 3000, False), training_size=500, propensity_floor=0.5)
     result = model.decide({"gripper": "jaw", "site": "depot"}, exploration_draw=0.9, fallback_probability=0.63)
     assert not model.valid and result["fallback"] and result["injection_probability"] == 0.63
+
+
+def test_only_the_latest_policy_in_the_active_experiment_can_override_rates(tmp_path):
+    from unimem import frontier_protocol as fp
+    from unimem import holdout_io
+
+    root = str(tmp_path)
+    holdout_io.configure(root, salt="current", rate=0.5)
+    for salt, rates in [("current", {"old-class": 0.1}), ("other", {"foreign": 0.1}), ("current", {"new-class": 0.2})]:
+        fp.append(root, "uplift-policies.jsonl", {"lesson": "m", "salt": salt, "rates": rates, "rate_lower": 0.1})
+    assert uplift.apply_rates(root, {}, 0.05) == {"m": {"new-class": 0.2}}
+    holdout_io.configure(root, salt="reset", rate=0.5)
+    assert uplift.apply_rates(root, {}, 0.05) == {}

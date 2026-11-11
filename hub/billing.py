@@ -251,13 +251,13 @@ def add_billing_webhook_route(app, session_factory, *, stripe: StripeSettings) -
         if not isinstance(event, dict):
             return PlainTextResponse("invalid payload", status_code=400)
         try:
-            async with session_scope(session_factory) as session:
+            async with session_scope(session_factory, operator=True) as session:
                 outcome = await apply_webhook_event(session, stripe, event)
         except IntegrityError:
             event_id = str(event.get("id") or "")
             if not event_id:
                 raise
-            async with session_scope(session_factory) as session:
+            async with session_scope(session_factory, operator=True) as session:
                 recorded = await session.get(ProcessedWebhookEvent, event_id)
             if recorded is None:
                 raise

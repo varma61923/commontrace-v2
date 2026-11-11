@@ -7,6 +7,7 @@ import hmac
 import ipaddress
 import json
 import socket
+import uuid
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
@@ -313,14 +314,26 @@ async def add_endpoint(
     for name in events or []:
         if name not in EVENT_TYPES:
             raise EventError(f"unknown event type {name!r}; known types: " + ", ".join(EVENT_NAMES))
+    from hub.encryption import field_aad
+
+    identity = str(uuid.uuid4())
     endpoint = WebhookEndpoint(
+        id=identity,
         org_id=org_id,
-        url=cipher.encrypt(url),
+        url=cipher.encrypt(url, aad=field_aad(org_id, "webhook_endpoints", identity, "url")),
         events=sorted(set(events or EVENT_NAMES)),
     )
     session.add(endpoint)
     await session.flush()
     return endpoint, derive_secret(signing_key, endpoint.id, endpoint.key_version)
+
+
+def endpoint_url(cipher: EnvelopeCipher, endpoint: WebhookEndpoint, *, allow_legacy: bool = False) -> str:
+    from hub.encryption import field_aad
+
+    return cipher.decrypt(
+        endpoint.url, aad=field_aad(endpoint.org_id, "webhook_endpoints", endpoint.id, "url"), allow_legacy=allow_legacy
+    )
 
 
 async def rotate_secret(session, endpoint_id: str, *, signing_key: str = "") -> str:
@@ -471,7 +484,7 @@ async def deliver_pending(
             ),
         }
         try:
-            await transport(cipher.decrypt(endpoint.url), body, headers)
+            await transport(endpoint_url(cipher, endpoint), body, headers)
         except Exception as exc:  # noqa: BLE001 - any failure is a retry
             # Transport messages can contain destination credentials or tokens.
             delivery.last_error = type(exc).__name__[:100]

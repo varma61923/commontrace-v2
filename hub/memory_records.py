@@ -986,6 +986,26 @@ def add_memory_routes(app, session_factory, *, authenticate, require_scope):
             denied = require_scope(authenticated, scopes.SCOPE_READ)
         if denied is not None:
             return denied
+        if action in {"add", "batch", "reflect", "outcome", "check-action", "propose"}:
+            return JSONResponse(
+                {
+                    "error": "unsupported_memory_operation",
+                    "detail": (
+                        "This Hub serves versioned records, turn/profile and measured learning. "
+                        "Legacy fact ingestion, reflection and action-policy operations require the local gateway."
+                    ),
+                    "backend": "hub",
+                    "supported_operations": [
+                        "turn",
+                        "profile",
+                        "record-put",
+                        "record-search",
+                        "record-forget",
+                        "record-reap-due",
+                    ],
+                },
+                status_code=501,
+            )
         raw = await request.body()
         if len(raw) > 100000:
             return JSONResponse({"error": "payload_too_large"}, status_code=413)

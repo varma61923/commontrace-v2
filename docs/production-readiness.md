@@ -60,6 +60,26 @@ timeout. Size reverse-proxy limits and client upload expectations accordingly.
   python -m hub.migrate verify
   ```
 
+- Migration `ff7adce4f618` removes implicit access when the tenant is unset,
+  including API keys and trace relations. Tenant handlers bind their org;
+  authentication bootstrap, operator tooling and global worker routing use
+  explicit transaction-local control-plane scope. This scope is trusted server
+  code, not a request-supplied credential. Keep the serving role non-bypass.
+- Before upgrading an encryption-enabled deployment, stop old Hub writers and
+  workers and run the **new image's** maintenance command with the existing keys:
+
+  ```bash
+  python -m hub.manage bind-encrypted-fields 500
+  ```
+
+  Repeat until it reports `pending=false`, then start the new replicas together.
+  The command bounds each transaction and upgrades plaintext/v1 webhook URLs and
+  connector secrets to v2 tenant/row/field-authenticated envelopes. New readers
+  reject unbound values; they do not silently weaken authentication for legacy
+  ciphertext. Retain previous keys during migration. Old binaries cannot read v2
+  envelopes, so this change requires a coordinated upgrade rather than mixing
+  old/new workers or blindly rolling back the binary.
+
 - Start the Hub with the runtime role. Terminate TLS at a trusted ingress and
   restrict direct backend access. Set `HUB_TRUSTED_PROXY_HOPS` to the actual
   trusted proxy count. `HUB_ALLOW_INSECURE_HTTP=true` permits the internal
@@ -87,6 +107,11 @@ helm template unimem deploy/helm/unimem-hub \
 Replace the example digest before rendering; invalid digests are refused.
 Rendering is inspection, not deployment. Supply production-specific network
 policy, ingress/TLS, database limits and topology before applying it.
+When `networkPolicy.postgresCIDR` restricts database egress, set
+`networkPolicy.httpsCIDRs` to the approved HTTPS destinations or egress-proxy CIDRs
+needed for OIDC, billing, KMS and webhooks. Empty HTTPS destinations deny those
+calls; no blanket external access is added. Standalone manifests start at two
+replicas with a matching HPA minimum so one pod can be voluntarily drained.
 
 Budget database connections for `(pool size + overflow) × (maximum replicas +
 one rolling-update surge)`, plus migrations, listeners, monitoring and operator

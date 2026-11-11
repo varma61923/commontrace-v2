@@ -47,6 +47,8 @@
 
     stats                          -> aggregate counts: orgs, active keys, traces
                                        (total/quarantined), votes, mean trust
+    bind-encrypted-fields [limit] -> upgrade legacy webhook and connector secrets
+                                       to row-bound encryption; repeat until pending=false
     kb-stats                       -> Knowledge Base content quality: corpus size, hits
                                        delivered, top/dead entries, orgs that query it,
                                        and the community-submission funnel (pending /
@@ -311,7 +313,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from hub import abuse, alerts, audit, auth, commons, crud, events, outcomes, plans, rbac, retention
 from hub.billing import StripeError, StripeSettings, cancel_subscription
 from hub.config import HubConfig
-from hub.db import make_engine, make_session_factory, session_scope
+from hub.db import make_engine, make_session_factory
+from hub.db import operator_session_scope as session_scope
 from hub.models import (
     ApiKey,
     AuditLogEntry,
@@ -2394,6 +2397,70 @@ async def generate_encryption_key() -> bool:
     return True
 
 
+async def bind_encrypted_fields(limit: str = "500", session_factory=None) -> bool:
+    """Upgrade a bounded batch before starting context-bound secret readers."""
+    from hub.connectors import service as connector_service
+    from hub.models import Connector
+
+    budget = int(limit)
+    if not 1 <= budget <= 1000:
+        raise ValueError("encryption binding batch must be between 1 and 1000")
+    cipher = _config_cipher()
+    if not cipher.enabled:
+        raise ValueError("HUB_ENCRYPTION_KEY is required to bind stored fields")
+    session_factory = session_factory or _default_session_factory()
+    changed = 0
+    by_org: dict[str, int] = {}
+    async with session_scope(session_factory) as session:
+        for model, field in ((WebhookEndpoint, WebhookEndpoint.url), (Connector, Connector.secret)):
+            rows = (
+                (
+                    await session.execute(
+                        select(model)
+                        .where(~field.startswith("ctenc:v2:"))
+                        .order_by(model.id)
+                        .limit(budget - changed)
+                        .with_for_update(skip_locked=True)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for row in rows:
+                if model is WebhookEndpoint:
+                    from hub.encryption import field_aad
+
+                    value = events.endpoint_url(cipher, row, allow_legacy=True)
+                    row.url = cipher.encrypt(value, aad=field_aad(row.org_id, "webhook_endpoints", row.id, "url"))
+                else:
+                    value = connector_service.open_secret(
+                        cipher, row.org_id, row.secret, connector_id=row.id, allow_legacy=True
+                    )
+                    row.secret = connector_service.seal_secret(cipher, row.org_id, value, connector_id=row.id)
+                changed += 1
+                by_org[row.org_id] = by_org.get(row.org_id, 0) + 1
+        for org_id, count in by_org.items():
+            await audit.record(
+                session,
+                actor=audit.ACTOR_OPERATOR_CLI,
+                action="encryption.bind_fields",
+                org_id=org_id,
+                target_type="encryption",
+                target_id=org_id,
+                summary=f"fields={count}",
+            )
+        await session.flush()
+        pending = any(
+            [
+                (await session.execute(select(model.id).where(~field.startswith("ctenc:v2:")).limit(1))).first()
+                is not None
+                for model, field in ((WebhookEndpoint, WebhookEndpoint.url), (Connector, Connector.secret))
+            ]
+        )
+    print(f"bound_fields={changed} pending={str(pending).lower()}")
+    return True
+
+
 async def webhook_add(
     org_id: str,
     url: str,
@@ -2451,7 +2518,7 @@ async def webhook_list(org_id: str, session_factory=None) -> bool:
     cipher = _config_cipher()
     for e in endpoints:
         state = "enabled" if e.enabled else "DISABLED"
-        print(f"{e.id}  {state}  {cipher.decrypt(e.url)}")
+        print(f"{e.id}  {state}  {events.endpoint_url(cipher, e)}")
         print(f"    events: {', '.join(e.events)}  (key v{e.key_version})")
     print()
     print(f"{pending} delivery/deliveries pending.")
@@ -2502,7 +2569,7 @@ async def webhook_disable(endpoint_id: str, session_factory=None) -> bool:
             org_id=endpoint.org_id,
             target_type="webhook_endpoint",
             target_id=endpoint_id,
-            summary=_config_cipher().decrypt(endpoint.url),
+            summary=events.endpoint_url(_config_cipher(), endpoint),
         )
     print(
         f"endpoint {endpoint_id} disabled. Queued deliveries to it will be marked failed rather than retried forever."
@@ -2859,6 +2926,7 @@ _COMMANDS: dict[str, tuple[Callable[..., Coroutine[object, object, object]], int
     "webhook-disable": (webhook_disable, 1, 1),
     "webhook-deliver": (webhook_deliver, 0, 1),
     "generate-encryption-key": (generate_encryption_key, 0, 0),
+    "bind-encrypted-fields": (bind_encrypted_fields, 0, 1),
     "wrap-encryption-key": (wrap_encryption_key, 1, 2),
     "create-alert-rule": (create_alert_rule, 4, 5),
     "list-alert-rules": (list_alert_rules, 1, 1),

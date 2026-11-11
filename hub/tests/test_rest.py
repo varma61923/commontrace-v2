@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+import io
+import urllib.error
+import urllib.request
+import uuid
 from contextlib import asynccontextmanager
 from dataclasses import replace
 
@@ -206,7 +211,7 @@ async def test_record_expiration_reaper_requires_admin_and_stays_tenant_bound(se
 
 
 async def _org_with_key(session_factory, name="Acme", scopes=None):
-    async with session_scope(session_factory) as session:
+    async with session_scope(session_factory, operator=True) as session:
         org = Organization(name=name)
         session.add(org)
         await session.flush()
@@ -216,6 +221,60 @@ async def _org_with_key(session_factory, name="Acme", scopes=None):
 
 def _key(raw_key: str) -> dict[str, str]:
     return {"X-API-Key": raw_key}
+
+
+async def test_real_memory_and_learning_sdk_requests_authenticate_against_hub(session_factory, config, monkeypatch):
+    from hub import scopes
+    from unimem.client import MemoryClient
+    from unimem.memory_record import MemoryRecord
+
+    _org, raw_key = await _org_with_key(
+        session_factory, scopes=[scopes.SCOPE_READ, scopes.SCOPE_WRITE, scopes.SCOPE_ADMIN]
+    )
+    loop = asyncio.get_running_loop()
+    seen = []
+    async with _client(_app(session_factory, config)) as http:
+
+        async def dispatch(request):
+            headers = dict(request.header_items())
+            assert headers.get("Authorization") == "Bearer " + raw_key
+            assert "X-api-key" not in headers
+            seen.append(request.full_url)
+            return await http.request(request.get_method(), request.full_url, headers=headers, content=request.data)
+
+        def send(_opener, request, timeout=60):
+            response = asyncio.run_coroutine_threadsafe(dispatch(request), loop).result(timeout=timeout)
+            if response.status_code >= 400:
+                raise urllib.error.HTTPError(
+                    request.full_url,
+                    response.status_code,
+                    "Hub refusal",
+                    response.headers,
+                    io.BytesIO(response.content),
+                )
+            return io.BytesIO(response.content)
+
+        monkeypatch.setattr(urllib.request.OpenerDirector, "open", send)
+        sdk = MemoryClient(url="http://test", token=raw_key, context={"user": "sdk-user"})
+        identity = str(uuid.uuid4())
+        await asyncio.to_thread(sdk.put_record, MemoryRecord(identity, "fact", 1, {"text": "Parser validates fields."}))
+        assert (await asyncio.to_thread(sdk.search_records, "Parser"))[0]["id"] == identity
+        await asyncio.to_thread(sdk.learning.configure, "observe")
+        assignment = await asyncio.to_thread(sdk.learning.assign, "sdk-occasion", [identity])
+        await asyncio.to_thread(sdk.learning.delivery, "sdk-occasion", assignment["inject"])
+        await asyncio.to_thread(sdk.learning.outcome, "sdk-occasion", True)
+        status = await asyncio.to_thread(sdk.learning.status)
+        assert status["outcomes"] == 1
+        await asyncio.to_thread(sdk.forget_record, identity, reason="SDK erasure")
+        assert await asyncio.to_thread(sdk.search_records, "Parser") == []
+        with pytest.raises(urllib.error.HTTPError) as unsupported:
+            await asyncio.to_thread(sdk.add, "Legacy fact API belongs to the local gateway.")
+        try:
+            assert unsupported.value.code == 501
+            assert b"unsupported_memory_operation" in unsupported.value.read()
+        finally:
+            unsupported.value.close()
+    assert any("/v1/memory/" in url for url in seen) and any("/v1/learning/" in url for url in seen)
 
 
 async def test_oidc_rest_auth_is_role_scoped_without_an_api_key(monkeypatch):

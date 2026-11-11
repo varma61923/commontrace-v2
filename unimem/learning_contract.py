@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import defaultdict
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from typing import Any
 
 from unimem import experiment, integrity, rewards
@@ -229,8 +229,9 @@ def evaluate(config: dict, assignments: list[dict]) -> dict:
     """Return {decisions,evidence,blocked}; never mutate assignment evidence.
 
     Each decision is {key,id,revision,task_context,verdict,rate,disabled,effect,
-    ci_low,ci_high,n_injected,n_withheld,integrity}. Full cohort integrity and
-    explicit exact delivery are required before any decision can be applied.
+    ci_low,ci_high,n_injected,n_withheld,integrity}. Analyze only the complete
+    chronological prefix of each cohort. Never select later completed tasks
+    around a missing outcome; their completion time may depend on the outcome.
     """
     groups: dict[str, list] = defaultdict(list)
     metadata = {}
@@ -249,16 +250,25 @@ def evaluate(config: dict, assignments: list[dict]) -> dict:
             groups[key].append((assignment, arm))
     decisions = []
     eligible = []
+    deferred_by_key = {}
     for key, cohort in sorted(groups.items()):
         rows, observations = [], []
         reasons = set()
+        deferred = False
+        waiting = set()
         for assignment, arm in cohort:
             outcome = assignment.get("outcome")
             receipt = assignment.get("delivery")
-            if receipt is None or sorted(receipt) != sorted(assignment["inject"]):
+            if receipt is not None and sorted(receipt) != sorted(assignment["inject"]):
                 reasons.add("incomplete_delivery")
+            if receipt is None:
+                waiting.add("incomplete_delivery")
+                deferred = True
             if outcome is None:
-                reasons.add("pending_outcomes")
+                waiting.add("pending_outcomes")
+                deferred = True
+            if deferred:
+                continue
             rows.append(
                 integrity.Assignment(
                     lesson=key,
@@ -283,6 +293,8 @@ def evaluate(config: dict, assignments: list[dict]) -> dict:
                         scheduled=True,
                     )
                 )
+        blocked.update(waiting)
+        deferred_by_key[key] = len(cohort) - len(rows)
         report = integrity.audit(rows, min_arm=config["min_arm"])
         if report.verdict != integrity.VERDICT_SOUND:
             reasons.add("integrity_" + report.verdict.lower())
@@ -296,6 +308,13 @@ def evaluate(config: dict, assignments: list[dict]) -> dict:
     for effect in effects:
         key = effect.lesson_slug
         arm, context = metadata[key]
+        if deferred_by_key[key]:
+            effect = replace(
+                effect,
+                note=effect.note
+                + f" Based on the complete chronological prefix; {deferred_by_key[key]} later assignments "
+                "await the evaluation frontier.",
+            )
         decisions.append(
             {
                 "key": key,

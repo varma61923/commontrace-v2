@@ -15,9 +15,11 @@ Policies, replanned at every era from all resolved rows so far:
   forecasting rates for lessons that have no evidence yet;
 - ``oracle``: shows exactly the lessons that help (an upper bound, not a policy).
 
-Two scenarios: ``linked`` (a family's paraphrases share its effect) and ``placebo``
+Scenarios: ``linked`` (a family's paraphrases share its effect), ``placebo``
 (the same texts with effects shuffled across lessons, so content predicts nothing
-and a field that transfers anyway would be caught out).
+and a field that transfers anyway would be caught out), and ``conflict`` (identical
+text variants have opposite effects). The Thompson baseline uses the same
+hierarchical empirical-Bayes shrinkage as the field policy, without transfer.
 
 Reported per scenario and policy: realized success rate, the share of injections
 that were harmful lessons, regret against the oracle (success points lost per 100
@@ -59,7 +61,7 @@ def _paraphrase(rng: random.Random, family: str) -> str:
     return " ".join(rng.sample(words, 4) + [f"w{rng.randrange(2000)}" for _ in range(5)])
 
 
-def _arrivals(rng: random.Random, placebo: bool) -> list[list[tuple[str, str, float]]]:
+def _arrivals(rng: random.Random, placebo: bool, *, conflict: bool = False) -> list[list[tuple[str, str, float]]]:
     """Per era, the lessons that arrive: (id, text, true effect)."""
     eras = []
     for era in range(ERAS):
@@ -69,7 +71,15 @@ def _arrivals(rng: random.Random, placebo: bool) -> list[list[tuple[str, str, fl
             for i in range(NEW_PER_FAMILY)
         ]
         eras.append(batch)
-    if placebo:
+    if conflict:
+        eras = [
+            [
+                (memory, batch[(index // 2) * 2][1], abs(effect) * (1 if index % 2 == 0 else -1))
+                for index, (memory, _text, effect) in enumerate(batch)
+            ]
+            for batch in eras
+        ]
+    elif placebo:
         effects = [e for batch in eras for _m, _t, e in batch]
         rng.shuffle(effects)
         it = iter(effects)
@@ -87,9 +97,9 @@ def _plan(policy: str, rows: list[Row], texts: dict[str, str], live: list[str]) 
     return rates, bool(model.transfer is not None and model.transfer.validated)
 
 
-def run(seed: int, policy: str, placebo: bool) -> dict:
+def run(seed: int, policy: str, placebo: bool, *, conflict: bool = False) -> dict:
     rng = random.Random(f"{seed}:{placebo}")
-    arrivals = _arrivals(rng, placebo)
+    arrivals = _arrivals(rng, placebo, conflict=conflict)
     world = random.Random(f"world:{seed}:{placebo}")  # common random numbers across policies
     texts: dict[str, str] = {}
     effects: dict[str, float] = {}
@@ -149,6 +159,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--reps", type=int, default=20)
     parser.add_argument("--out", default=None)
     args = parser.parse_args(argv)
+    if args.reps < 1:
+        parser.error("--reps must be positive")
     report: dict = {
         "config": {
             "eras": ERAS,
@@ -161,8 +173,8 @@ def main(argv: list[str] | None = None) -> int:
         },
         "scenarios": {},
     }
-    for scenario, placebo in (("linked", False), ("placebo", True)):
-        by_policy = {p: [run(seed, p, placebo) for seed in range(args.reps)] for p in POLICIES}
+    for scenario, placebo, conflict in (("linked", False, False), ("placebo", True, False), ("conflict", False, True)):
+        by_policy = {p: [run(seed, p, placebo, conflict=conflict) for seed in range(args.reps)] for p in POLICIES}
         report["scenarios"][scenario] = {p: summarize(by_policy[p], by_policy["oracle"]) for p in POLICIES}
         lift = [
             100.0 * (f["success"] - t["success"]) for f, t in zip(by_policy["thompson-field"], by_policy["thompson"])

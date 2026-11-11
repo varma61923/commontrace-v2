@@ -524,6 +524,47 @@ def test_trace_outcome_credentials_are_redacted_before_origin_binding(tmp_path):
     assert secret not in (tmp_path / "memory" / "origins.jsonl").read_text()
 
 
+def test_legacy_trace_redaction_amends_origin_and_erases_old_signed_content(tmp_path):
+    from unimem import frontmatter, templates
+    from unimem.commands.redact_cmd import redact_trace
+
+    root = str(tmp_path)
+    filename = trace_io.write_new(root, title="legacy", context="initial", solution="solution", tags=[])
+    fm, _ = frontmatter.read(filename)
+    secret = "sk-" + "a" * 32
+    context = "The API key is " + secret
+    fm["extensions"]["profile"]["origin"] = memory_authority.bind(
+        root, memory_authority.trace_record(fm, context=context, solution="solution")
+    )
+    frontmatter.write(filename, fm, templates.trace_body(context, "solution"))
+    assert secret in (tmp_path / "memory" / "origins.jsonl").read_text()
+    found, target = redact_trace(filename, write=True, root=root)
+    assert found and target == filename
+    trace, _ = trace_io.read(target)
+    assert trace["id"] == fm["id"]
+    assert memory_authority.verify(root, trace["extensions"]["profile"]["origin"], memory_authority.trace_record(trace))
+    assert secret not in (tmp_path / "memory" / "origins.jsonl").read_text()
+    assert secret not in Path(target).read_text()
+
+
+def test_redaction_cannot_resign_unrelated_tampering(tmp_path):
+    from unimem import frontmatter, templates
+    from unimem.commands.redact_cmd import redact_trace
+
+    root = str(tmp_path)
+    filename = trace_io.write_new(root, title="signed", context="authenticated context", solution="solution", tags=[])
+    fm, _ = frontmatter.read(filename)
+    frontmatter.write(filename, fm, templates.trace_body("unrelated change sk-" + "a" * 32, "solution"))
+    before = Path(filename).read_text()
+    with pytest.raises(PermissionError, match="authenticated"):
+        redact_trace(filename, write=True, root=root)
+    assert Path(filename).read_text() == before
+    from unimem.cli import main
+
+    assert main(["redact", "--dest", root]) == 1
+    assert Path(filename).read_text() == before
+
+
 @pytest.mark.parametrize(
     "field,value",
     [

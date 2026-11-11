@@ -1893,6 +1893,11 @@
         "name": "X-API-Key",
         "type": "apiKey"
       },
+      "apiKeyBearer": {
+        "description": "The org API key accepted through X-API-Key, sent as Authorization: Bearer unimem_live_... by shared SDKs. API-key scopes and delegation checks are unchanged.",
+        "scheme": "bearer",
+        "type": "http"
+      },
       "consoleSession": {
         "description": "Signed session cookie set by POST /app/signin (HttpOnly, SameSite=Strict, Path=/app, 8 hours). It names the API key used to sign in; revoking that key ends the session.",
         "in": "cookie",
@@ -4412,6 +4417,9 @@
             "apiKey": []
           },
           {
+            "apiKeyBearer": []
+          },
+          {
             "userBearer": []
           }
         ],
@@ -4505,6 +4513,9 @@
             "apiKey": []
           },
           {
+            "apiKeyBearer": []
+          },
+          {
             "userBearer": []
           }
         ],
@@ -4571,6 +4582,9 @@
             "apiKey": []
           },
           {
+            "apiKeyBearer": []
+          },
+          {
             "userBearer": []
           }
         ],
@@ -4633,6 +4647,9 @@
         "security": [
           {
             "apiKey": []
+          },
+          {
+            "apiKeyBearer": []
           },
           {
             "userBearer": []
@@ -4713,6 +4730,9 @@
             "apiKey": []
           },
           {
+            "apiKeyBearer": []
+          },
+          {
             "userBearer": []
           }
         ],
@@ -4777,6 +4797,9 @@
         "security": [
           {
             "apiKey": []
+          },
+          {
+            "apiKeyBearer": []
           },
           {
             "userBearer": []
@@ -4881,6 +4904,16 @@
             },
             "description": "Payload exceeds 100 kB."
           },
+          "501": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Operation is not supported by the hosted record backend; use its record operations."
+          },
           "503": {
             "$ref": "#/components/responses/Overloaded"
           },
@@ -4891,6 +4924,9 @@
         "security": [
           {
             "apiKey": []
+          },
+          {
+            "apiKeyBearer": []
           },
           {
             "userBearer": []
@@ -5038,6 +5074,9 @@
             "apiKey": []
           },
           {
+            "apiKeyBearer": []
+          },
+          {
             "userBearer": []
           }
         ],
@@ -5105,6 +5144,9 @@
             "apiKey": []
           },
           {
+            "apiKeyBearer": []
+          },
+          {
             "userBearer": []
           }
         ],
@@ -5143,6 +5185,9 @@
             "apiKey": []
           },
           {
+            "apiKeyBearer": []
+          },
+          {
             "userBearer": []
           }
         ],
@@ -5179,6 +5224,9 @@
         "security": [
           {
             "apiKey": []
+          },
+          {
+            "apiKeyBearer": []
           },
           {
             "userBearer": []
@@ -5304,6 +5352,9 @@
             "apiKey": []
           },
           {
+            "apiKeyBearer": []
+          },
+          {
             "userBearer": []
           }
         ],
@@ -5405,6 +5456,9 @@
         "security": [
           {
             "apiKey": []
+          },
+          {
+            "apiKeyBearer": []
           },
           {
             "userBearer": []
@@ -9991,6 +10045,9 @@
             "apiKey": []
           },
           {
+            "apiKeyBearer": []
+          },
+          {
             "userBearer": []
           }
         ],
@@ -10122,6 +10179,9 @@
             "apiKey": []
           },
           {
+            "apiKeyBearer": []
+          },
+          {
             "userBearer": []
           }
         ],
@@ -10244,6 +10304,9 @@
             "apiKey": []
           },
           {
+            "apiKeyBearer": []
+          },
+          {
             "userBearer": []
           }
         ],
@@ -10334,6 +10397,9 @@
         "security": [
           {
             "apiKey": []
+          },
+          {
+            "apiKeyBearer": []
           },
           {
             "userBearer": []
@@ -10441,6 +10507,9 @@
             "apiKey": []
           },
           {
+            "apiKeyBearer": []
+          },
+          {
             "userBearer": []
           }
         ],
@@ -10544,6 +10613,9 @@
         "security": [
           {
             "apiKey": []
+          },
+          {
+            "apiKeyBearer": []
           },
           {
             "userBearer": []
@@ -10683,6 +10755,9 @@
             "apiKey": []
           },
           {
+            "apiKeyBearer": []
+          },
+          {
             "userBearer": []
           }
         ],
@@ -10778,6 +10853,9 @@
         "security": [
           {
             "apiKey": []
+          },
+          {
+            "apiKeyBearer": []
           },
           {
             "userBearer": []
@@ -10919,6 +10997,9 @@
             "apiKey": []
           },
           {
+            "apiKeyBearer": []
+          },
+          {
             "userBearer": []
           }
         ],
@@ -11050,6 +11131,9 @@
         "security": [
           {
             "apiKey": []
+          },
+          {
+            "apiKeyBearer": []
           },
           {
             "userBearer": []
@@ -11201,6 +11285,9 @@
             "apiKey": []
           },
           {
+            "apiKeyBearer": []
+          },
+          {
             "userBearer": []
           }
         ],
@@ -11326,6 +11413,9 @@
             "apiKey": []
           },
           {
+            "apiKeyBearer": []
+          },
+          {
             "userBearer": []
           }
         ],
@@ -11444,6 +11534,9 @@
             "apiKey": []
           },
           {
+            "apiKeyBearer": []
+          },
+          {
             "userBearer": []
           }
         ],
@@ -11548,6 +11641,9 @@
         "security": [
           {
             "apiKey": []
+          },
+          {
+            "apiKeyBearer": []
           },
           {
             "userBearer": []
@@ -11657,6 +11753,9 @@
             "apiKey": []
           },
           {
+            "apiKeyBearer": []
+          },
+          {
             "userBearer": []
           }
         ],
@@ -11740,6 +11839,9 @@
         "security": [
           {
             "apiKey": []
+          },
+          {
+            "apiKeyBearer": []
           },
           {
             "userBearer": []
@@ -11839,6 +11941,9 @@
             "apiKey": []
           },
           {
+            "apiKeyBearer": []
+          },
+          {
             "userBearer": []
           }
         ],
@@ -11908,6 +12013,16 @@
             },
             "description": "Payload exceeds 100 kB."
           },
+          "501": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Legacy fact or action-policy operation requires the local gateway."
+          },
           "503": {
             "$ref": "#/components/responses/Overloaded"
           },
@@ -11920,10 +12035,13 @@
             "apiKey": []
           },
           {
+            "apiKeyBearer": []
+          },
+          {
             "userBearer": []
           }
         ],
-        "summary": "Local SDK record-put, record-search, record-forget and record-reap-due wire parity",
+        "summary": "Shared SDK turn/profile and record-* operations; legacy fact and action-policy operations require a local gateway",
         "tags": [
           "Memory"
         ]
@@ -12057,6 +12175,9 @@
             "apiKey": []
           },
           {
+            "apiKeyBearer": []
+          },
+          {
             "userBearer": []
           }
         ],
@@ -12150,6 +12271,9 @@
         "security": [
           {
             "apiKey": []
+          },
+          {
+            "apiKeyBearer": []
           },
           {
             "userBearer": []

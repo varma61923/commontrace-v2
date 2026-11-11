@@ -672,9 +672,9 @@ def analyze(
         else:
             significant = sig_by_slug.get(slug, False)
             lo, hi = interval_by_slug[slug]
-            if significant and effect > 0:
+            if significant and lo > 0:
                 verdict, note = VERDICT_HELPS, "Injecting this lesson causes better outcomes."
-            elif significant and effect < 0:
+            elif significant and hi < 0:
                 verdict, note = (
                     VERDICT_HURTS,
                     "Outcomes are WORSE when this is injected. Correlational scoring "
@@ -725,6 +725,11 @@ def analyze(
                     "of evidence."
                 )
 
+        if significant and ((lo > 0 and effect <= 0) or (hi < 0 and effect >= 0)):
+            note += (
+                " Direction follows the running confidence intersection; "
+                "the latest point estimate has the opposite sign."
+            )
         out.append(
             CausalEffect(
                 lesson_slug=slug,
@@ -758,14 +763,23 @@ def analyze(
     # Downward censoring (non-candidates get e = 0) preserves e-validity while
     # retaining interval/sample-size admission as an additional conservative gate.
     family = [
-        e_values.get(effect.lesson_slug, {}).get("helps", 0.0) if effect.significant and effect.effect > 0 else 0.0
+        e_values.get(effect.lesson_slug, {}).get("helps", 0.0) if effect.verdict == VERDICT_HELPS else 0.0
         for effect in out
     ]
     confirmed = eprocess.ebh(family, alpha) if family else []
     for i, causal_effect in enumerate(out):
         evidence = e_values.get(causal_effect.lesson_slug)
         if evidence is not None:
-            causal_effect.e_value = evidence["helps" if causal_effect.effect > 0 else "hurts"]
+            direction = (
+                "helps"
+                if causal_effect.verdict == VERDICT_HELPS
+                else "hurts"
+                if causal_effect.verdict == VERDICT_HURTS
+                else "helps"
+                if causal_effect.effect > 0
+                else "hurts"
+            )
+            causal_effect.e_value = evidence[direction]
         if not shared:
             continue
         if use_fixed:

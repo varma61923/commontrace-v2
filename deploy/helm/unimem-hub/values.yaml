@@ -59,6 +59,7 @@ networkPolicy:
   enabled: false
   allowedNamespaceLabels: []             # e.g. [{kubernetes.io/metadata.name: ingress-nginx}]
   postgresCIDR: ""                       # egress to the database; empty = allow all egress
+  httpsCIDRs: []                         # explicit HTTPS destinations/proxy CIDRs when database egress is restricted
 
 metrics:
   serviceMonitor: false

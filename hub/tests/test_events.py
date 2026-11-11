@@ -249,7 +249,7 @@ class TestAtRestEncryption:
             row = await session.get(WebhookEndpoint, endpoint.id)
         assert row.url != URL
         assert URL not in row.url
-        assert cipher.decrypt(row.url) == URL
+        assert events.endpoint_url(cipher, row) == URL
 
     async def test_ssrf_validation_still_runs_on_the_plaintext_url(self, session_factory, org, monkeypatch):
         monkeypatch.setattr(events, "_default_resolve", _fake_resolve_to("127.0.0.1"))

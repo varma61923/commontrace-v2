@@ -568,6 +568,29 @@ def test_zero_context_neighbors_does_not_build_a_pool(monkeypatch):
     assert kernel.neighbors(["a"], ["a"], k=0) == {"a": ()}
 
 
+def test_context_neighbors_accept_unknown_queries_and_pool_members():
+    kernel = effect_field.CellKernel.build(None, {"a": ("m", "robot/site"), "b": ("m", "robot/other")})
+    assert kernel.similarity("unknown", "a") == 0.0
+    assert kernel.neighbors(["unknown", "a"], ["absent", "a", "b"]) == {
+        "unknown": (),
+        "a": (("b", 0.5),),
+    }
+
+
+def test_conflicting_text_benchmark_has_opposing_copies_and_refuses_shared_outcome_evidence(monkeypatch):
+    from benchmarks import effect_field_bench as bench
+
+    batches = bench._arrivals(random.Random(0), False, conflict=True)
+    for batch in batches:
+        for index in range(0, len(batch), 2):
+            assert batch[index][1] == batch[index + 1][1]
+            assert batch[index][2] == -batch[index + 1][2]
+    monkeypatch.setattr(bench, "ERAS", 2)
+    monkeypatch.setattr(bench, "ERA_OCCASIONS", 100)
+    result = bench.run(0, "thompson-field", False, conflict=True)
+    assert result["validated_eras"] == 0
+
+
 def test_context_neighbors_preserve_pairwise_order_across_a_large_cell_pool():
     cells = {str(i): ("m", f"robot/{i % 7}/pick") for i in range(1000)}
     kernel = effect_field.CellKernel.build(None, cells)
@@ -607,12 +630,43 @@ def _context_rmse(model: causal_gate.Model, truth: dict[str, float]) -> float:
 
 def test_sparse_robot_contexts_borrow_from_contexts_sharing_an_embodiment():
     for seed in (0, 1, 4):
-        rows, truth = _fleet(seed, linked=True)
+        rows, truth = _fleet(seed, linked=True, per=60)
         model = causal_gate.fit(rows, context_transfer=True)
         assert model.context_transfer["gripper-tip"].validated, model.context_transfer["gripper-tip"].summary()
-        assert _context_rmse(model, truth) < 0.8 * _context_rmse(causal_gate.fit(rows), truth)
+        assert _context_rmse(model, truth) < _context_rmse(causal_gate.fit(rows), truth)
         summary = model.to_dict()["context_field"]
         assert "gripper-tip" in summary["validated"] and summary["kernel"] == "identity*context-components-v1"
+
+
+def test_cross_fitted_context_validation_refuses_a_marginal_sparse_gain():
+    rows, _ = _fleet(4, linked=True, per=30)
+    model = causal_gate.fit(rows, context_transfer=True)
+    field = model.context_transfer["gripper-tip"]
+    assert field.lpd_gain > 0 and field.z < field.threshold
+    assert not field.validated
+    assert model.contexts == causal_gate.fit(rows).contexts
+
+
+def test_a_contexts_outcomes_cannot_change_its_cross_fitted_nuisance_fit(monkeypatch):
+    from dataclasses import replace
+
+    rows, _ = _fleet(0, linked=True, per=60)
+    target = "gripper-tip\x1ejaw/depot/pick"
+    captured = []
+    original = effect_field.fit
+
+    def capture(*args, **kwargs):
+        cases = kwargs.get("validation_cases", {})
+        if target in cases:
+            captured.append(cases[target])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(effect_field, "fit", capture)
+    causal_gate.fit(rows, context_transfer=True)
+    occasions = {row.occasion_id for row in rows if row.context == "jaw/depot/pick"}
+    changed = [replace(row, succeeded=not row.succeeded) if row.occasion_id in occasions else row for row in rows]
+    causal_gate.fit(changed, context_transfer=True)
+    assert len(captured) == 2 and captured[0] == captured[1]
 
 
 def test_the_context_field_stays_out_when_components_do_not_predict_effects():
@@ -624,13 +678,14 @@ def test_the_context_field_stays_out_when_components_do_not_predict_effects():
         assert model.contexts[("gripper-tip", "jaw/depot/pick")] == plain.contexts[("gripper-tip", "jaw/depot/pick")]
 
 
-def test_content_similar_memories_lend_each_other_context_evidence():
+@pytest.mark.parametrize("per", [12, 60])
+def test_content_similar_memories_lend_each_other_context_evidence_only_when_it_validates(per):
     rng = random.Random(9)
     contexts = [f"{e}/{s}/pick" for e in EMBODIMENT_EFFECT for s in SITES]
     rows, i = [], 0
     for memory in ("regrasp-a", "regrasp-b"):
         for c in contexts:
-            for _ in range(12):  # too sparse for either memory alone
+            for _ in range(per):
                 shown = rng.random() >= 0.5
                 effect = EMBODIMENT_EFFECT[c.split("/")[0]] if shown else 0.0
                 rows.append(Row(memory, f"o{i}", shown, rng.random() < 0.5 + effect, 0.5, c))
@@ -644,6 +699,10 @@ def test_content_similar_memories_lend_each_other_context_evidence():
         errors = [(model.contexts[("regrasp-a", c)].mean - t) ** 2 for c, t in truth.items()]
         return (sum(errors) / len(errors)) ** 0.5
 
+    if per == 12:
+        assert not together.context_transfer["regrasp-a"].validated
+        assert together.contexts == alone.contexts
+        return
     assert together.context_transfer["regrasp-a"].validated
     witnesses = together.context_transfer["regrasp-a"].witnesses("regrasp-a\x1ejaw/depot/pick")
     assert any(w.startswith("regrasp-b\x1e") for w, _s in witnesses)

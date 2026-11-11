@@ -52,6 +52,34 @@ def endpoints(factory, **kwargs):
 
 
 @pytest.mark.asyncio
+async def test_startup_rejects_unmigrated_encrypted_fields_before_starting_workers(session_factory, config):
+    from dataclasses import replace
+
+    from hub.db import session_scope
+    from hub.encryption import EncryptionError, generate_key
+    from hub.models import Organization, WebhookEndpoint
+
+    async with session_scope(session_factory) as session:
+        org = Organization(name="legacy-encryption")
+        session.add(org)
+        await session.flush()
+        session.add(WebhookEndpoint(org_id=org.id, url="https://hooks.example/legacy"))
+    app = server.build_app(replace(config, encryption_key=generate_key(), allow_rls_bypass=True), session_factory)
+    with pytest.raises(Exception) as failed:
+        async with app.router.lifespan_context(app):
+            pytest.fail("serving must not start before encryption binding completes")
+    pending = [failed.value]
+    errors = []
+    while pending:
+        error = pending.pop()
+        if isinstance(error, EncryptionError):
+            errors.append(error)
+        pending.extend(getattr(error, "exceptions", ()))
+    assert errors and all("before startup" in str(error) for error in errors)
+    assert not hasattr(app.state, "learning_worker_health")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("blocked", ["limiter", "connect", "query"])
 async def test_readiness_times_out_dependency_work_and_releases_sessions(blocked):
     closed = []

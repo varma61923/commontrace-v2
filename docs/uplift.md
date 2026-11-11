@@ -20,6 +20,11 @@ pre-treatment labels supplied at retrieval. A Hub deployment can transport the
 signed class map with its tenant-owned lesson; this package does not bypass Hub
 lesson admission or automatically publish lessons to other tenants.
 
+Policies are bound to the current experiment salt. Only the latest policy for
+each lesson applies; a new policy replaces its earlier context classes. After
+upgrading, explicitly reactivate legacy policies that lack a salt. Starting a
+new experiment also requires fresh validation and activation.
+
 Server-side `PostgresJournal.put_targeted` verifies the signed policy through a
 trusted coordinator's pinned verifier, binds the exact memory and environment,
 and refuses unmeasured feature classes. It retains site/gripper/embodiment labels

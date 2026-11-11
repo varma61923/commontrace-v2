@@ -36,6 +36,16 @@ def populate(root, count=180, harmful=False):
         finish(root, assignment, bool(assignment["inject"]) != harmful)
 
 
+def test_live_pending_tail_can_use_completed_evidence_without_skipping_a_gap(root):
+    populate(root)
+    assign(root, "pending-tail")
+    result = learning.operate(root, "run")
+    [decision] = result["decisions"]
+    assert decision["verdict"] == "HELPS"
+    assert decision["n_injected"] + decision["n_withheld"] == 180
+    assert "pending_outcomes" in result["blocked"]
+
+
 def test_source_admission_and_scope_are_not_caller_overridable(root):
     journal = Journal(root)
     journal.put(MemoryRecord(id="other", kind="fact", version=1, payload={"text": "secret"}, scope={"agent": "other"}))

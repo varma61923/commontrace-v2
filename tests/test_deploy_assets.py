@@ -78,6 +78,20 @@ class TestChart:
         kinds = {d["kind"] for d in yaml.safe_load_all(r.stdout) if d}
         assert {"Deployment", "Job", "Ingress", "NetworkPolicy", "PrometheusRule", "ServiceMonitor"} <= kinds
 
+    def test_restricted_database_egress_can_allow_explicit_https_destinations(self):
+        result = self._template(
+            "--set",
+            "networkPolicy.enabled=true",
+            "--set",
+            "networkPolicy.postgresCIDR=10.0.0.0/24",
+            "--set",
+            "networkPolicy.httpsCIDRs[0]=192.0.2.0/24",
+        )
+        assert result.returncode == 0, result.stderr
+        policy = next(doc for doc in yaml.safe_load_all(result.stdout) if doc and doc["kind"] == "NetworkPolicy")
+        https = [rule for rule in policy["spec"]["egress"] if {"port": 443, "protocol": "TCP"} in rule.get("ports", [])]
+        assert https == [{"to": [{"ipBlock": {"cidr": "192.0.2.0/24"}}], "ports": [{"port": 443, "protocol": "TCP"}]}]
+
     @pytest.mark.parametrize(
         "flag,message",
         [
@@ -135,6 +149,20 @@ def test_standalone_autoscaling_uses_shared_rate_limits():
     hpa = yaml.safe_load(Path(ROOT, "deploy/k8s/hpa.yaml").read_text())
     assert hpa["spec"]["maxReplicas"] > 1
     assert config["data"]["HUB_RATE_LIMIT_BACKEND"] == "postgres"
+
+
+def test_standalone_migrations_are_restricted_and_one_replica_can_be_drained():
+    deployment = yaml.safe_load(Path(ROOT, "deploy/k8s/deployment.yaml").read_text())
+    hpa = yaml.safe_load(Path(ROOT, "deploy/k8s/hpa.yaml").read_text())
+    pdb = yaml.safe_load(Path(ROOT, "deploy/k8s/pdb.yaml").read_text())
+    assert min(deployment["spec"]["replicas"], hpa["spec"]["minReplicas"]) > pdb["spec"]["minAvailable"]
+    pod = yaml.safe_load(Path(ROOT, "deploy/k8s/migration-job.yaml").read_text())["spec"]["template"]["spec"]
+    assert pod["securityContext"]["runAsNonRoot"]
+    assert pod["securityContext"]["seccompProfile"]["type"] == "RuntimeDefault"
+    for container in pod["containers"]:
+        security = container["securityContext"]
+        assert security["allowPrivilegeEscalation"] is False and security["readOnlyRootFilesystem"] is True
+        assert security["capabilities"]["drop"] == ["ALL"]
 
 
 def test_compose_forwards_operator_security_configuration_to_the_hub():

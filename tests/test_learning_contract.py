@@ -97,6 +97,25 @@ def test_partial_delivery_and_missing_outcomes_block_promotion():
     assert "pending_outcomes" in c.evaluate(cfg, rows)["blocked"]
 
 
+def test_in_flight_tail_does_not_discard_the_complete_chronological_prefix():
+    cfg, rows = evidence(count=400)
+    pending = c.make_assignment(cfg, "still-running", [{"id": "m", "revision": 1, "text": "memory"}])
+    report = c.evaluate(cfg, rows + [pending])
+    [decision] = report["decisions"]
+    assert decision["verdict"] == "HELPS"
+    assert decision["n_injected"] + decision["n_withheld"] == 400
+    assert "pending_outcomes" in report["blocked"]
+    assert "chronological prefix" in decision["note"]
+
+
+def test_out_of_order_completion_cannot_select_around_a_missing_occasion():
+    cfg, rows = evidence(count=400)
+    rows[40]["outcome"] = None
+    report = c.evaluate(cfg, rows)
+    assert "pending_outcomes" in report["blocked"]
+    assert all(decision["n_injected"] + decision["n_withheld"] == 40 for decision in report["decisions"])
+
+
 def test_off_and_protected_sources_are_not_randomized():
     for cfg, source in [
         (config("off"), {"id": "m", "revision": 1}),

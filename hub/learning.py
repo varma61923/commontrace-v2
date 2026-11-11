@@ -560,7 +560,7 @@ async def _evaluate(session, org_id, experiment, *, limit=10000):
 async def claim_work(session_factory, *, lease_seconds=60):
     """Short lease acquisition; generation and token fence resumed workers."""
     at = datetime.now(timezone.utc)
-    async with session_scope(session_factory) as session:
+    async with session_scope(session_factory, operator=True) as session:
         row = (
             await session.execute(
                 select(LearningWork)
