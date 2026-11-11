@@ -87,7 +87,7 @@ python-multipart==0.0.32
 PyYAML==6.0.3
 referencing==0.37.0
 rpds-py==2026.9.1
-SQLAlchemy==2.0.55
+SQLAlchemy==2.0.57
 sse-starlette==3.6.0
 starlette==1.10.0
 truststore==0.10.5
