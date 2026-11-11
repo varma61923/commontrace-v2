@@ -65,7 +65,7 @@ kafka = ["confluent-kafka>=2.16,<3.0"]
 robotics = []  # rclpy is installed from the ROS 2 distribution, never eagerly imported.
 mcap = ["mcap>=1.6.0,<2.0"]
 lerobot = []  # Metadata/JSONL ingest needs no torch or media decoder.
-payments = ["stripe>=16.0.1,<17"]
+payments = ["stripe>=16.1.0,<17"]
 memory-mem0 = ["httpx>=0.27,<1.0"]
 memory-zep = ["httpx>=0.27,<1.0"]
 memory-graphiti = ["httpx>=0.27,<1.0"]
