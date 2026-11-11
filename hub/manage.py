@@ -305,6 +305,7 @@ import uuid
 from collections import Counter
 from collections.abc import Callable, Coroutine
 from datetime import datetime, timezone
+from typing import cast
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -2426,8 +2427,10 @@ async def bind_encrypted_fields(limit: str = "500", session_factory=None) -> boo
                 .scalars()
                 .all()
             )
-            for row in rows:
-                if model is WebhookEndpoint:
+            for stored in rows:
+                # The heterogeneous model loop loses SQLAlchemy's row type.
+                row = cast(WebhookEndpoint | Connector, stored)
+                if isinstance(row, WebhookEndpoint):
                     from hub.encryption import field_aad
 
                     value = events.endpoint_url(cipher, row, allow_legacy=True)
