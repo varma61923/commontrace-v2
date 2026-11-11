@@ -336,6 +336,7 @@ async def test_rolled_back_policy_is_distinct_from_evaluation_recommendation():
                         "ci_high": -0.2,
                         "disabled": True,
                         "rate": 0.5,
+                        "note": "Based on the complete chronological prefix: " + markup,
                     }
                 ],
             },
@@ -349,6 +350,7 @@ async def test_rolled_back_policy_is_distinct_from_evaluation_recommendation():
     assert "Disabled" not in body
     assert markup not in body
     assert "&lt;svg" in body
+    assert "Why this verdict" in body and "Based on the complete chronological prefix:" in body
 
 
 async def test_live_learning_console_browser_flow(session_factory, config):
@@ -520,3 +522,26 @@ async def test_unique_legacy_cookie_resolves_the_exact_learning_principal(sessio
         assert (await client.get("/app/learning")).status_code == 200
         assert (await client.post("/app/learning/configure", data=configuration())).status_code == 303
     assert seen and set(seen) == {"key:" + key.key_id}
+
+
+@pytest.mark.parametrize("healthy", [False, True])
+@pytest.mark.parametrize("granted", [["read"], ["read", "admin"]])
+async def test_learning_console_displays_actual_worker_availability_without_global_diagnostics(
+    session_factory, config, healthy, granted
+):
+    _, key = await identity(session_factory, granted=granted)
+    app = app_for(session_factory, config)
+    app.state.learning_worker_health = {
+        "running": True,
+        "healthy": healthy,
+        "failures": 654321,
+        "last_error": "private backend diagnostic from another tenant",
+    }
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        await sign_in(client, key)
+        response = await client.get("/app/learning")
+    assert response.status_code == 200
+    expected = "Background learning worker is available." if healthy else "Background learning worker is unavailable."
+    assert expected in response.text
+    assert "654321" not in response.text and "private backend diagnostic" not in response.text
+    assert 'href="/app/learning"' in response.text

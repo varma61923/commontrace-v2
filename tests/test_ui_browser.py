@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import threading
 import time
 from dataclasses import dataclass
@@ -49,6 +50,7 @@ class Console:
     root: str
     url: str
     credential: list[str]
+    application: gateway.Gateway
 
     @property
     def headers(self) -> dict[str, str]:
@@ -91,12 +93,18 @@ def console(tmp_path: Path) -> Iterator[Console]:
         min_support=2,
     )
     credential = ["browser-contract-credential-first"]
-    app = gateway.Gateway(root, token_provider=lambda: credential[0], allow_approval=True, durable=False)
+    app = gateway.Gateway(
+        root,
+        token_provider=lambda: credential[0],
+        allow_approval=True,
+        durable=False,
+        config=gateway.GatewayConfig(protected_prefixes=("safety/",)),
+    )
     server = gateway.make_http_server(app, "127.0.0.1", 0)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        yield Console(root, f"http://127.0.0.1:{server.server_address[1]}", credential)
+        yield Console(root, f"http://127.0.0.1:{server.server_address[1]}", credential, app)
     finally:
         server.shutdown()
         server.server_close()
@@ -122,12 +130,30 @@ def connect(page: Page, console: Console) -> None:
     pw.expect(page.locator("#conn")).to_have_attribute("data-state", "ok")
 
 
+def assert_accessible(page: Page) -> None:
+    script = os.environ.get("UNIMEM_AXE_SCRIPT")
+    if not script:
+        return
+    with open(script, encoding="utf-8") as source:
+        page.evaluate(source.read())
+    violations = page.evaluate("""async()=>{const r=await axe.run(document,{runOnly:{type:'tag',
+        values:['wcag2a','wcag2aa','wcag21a','wcag21aa','wcag22a','wcag22aa','best-practice']}});
+        return r.violations.map(v=>({id:v.id,targets:v.nodes.map(n=>n.target)}));}""")
+    assert violations == []
+
+
 def navigate(page: Page, label: str) -> None:
     menu = page.get_by_role("button", name="Menu", exact=True)
     if menu.is_visible() and menu.get_attribute("aria-expanded") != "true":
         menu.click()
     page.get_by_role("navigation", name="Console sections").get_by_role("link", name=label, exact=True).click()
-    heading = "Review queue" if label == "Review" else label
+    heading = {
+        "Review": "Review queue",
+        "Safety": "Safety and policy",
+        "Fleet": "Robots and agents",
+        "Memories": "What each memory did",
+        "Live": "Live activity",
+    }.get(label, label)
     pw.expect(page.get_by_role("heading", name=heading, exact=True)).to_be_visible()
 
 
@@ -1046,3 +1072,267 @@ def test_learning_disclosure_focus_and_open_state_survive_live_updates(
     pw.expect(summary).to_be_focused()
     pw.expect(summary.locator("..")).to_have_attribute("open", "")
     assert page.evaluate("window.scrollY") == 0
+
+
+def test_safety_renders_configured_protected_prefixes_without_runtime_errors(page: Page, console: Console) -> None:
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    connect(page, console)
+    navigate(page, "Safety")
+    pw.expect(page.get_by_role("heading", name="Safety and policy", exact=True)).to_be_visible()
+    pw.expect(page.locator("main")).to_contain_text("ids starting safety/")
+    assert errors == []
+
+
+def test_command_selection_empty_filter_and_lifecycle_help_are_connected(page: Page, console: Console) -> None:
+    connect(page, console)
+    navigate(page, "Command center")
+    selector = page.get_by_label("Command", exact=True)
+    selector.select_option("fact")
+    pw.expect(page.locator(".command-title-row h2")).to_have_text("fact")
+    page.get_by_label("Command arguments, one per line", exact=True).fill("search\nAster")
+    with page.expect_response(lambda response: response.url.endswith("/v1/command")) as response:
+        page.get_by_role("button", name="Run command", exact=True).click()
+    assert response.value.status == 200 and response.value.json()["ok"]
+    pw.expect(page.locator("#command-stdout")).to_contain_text("Aster")
+    page.get_by_label("Filter commands", exact=True).fill("no-such-command-239586")
+    pw.expect(page.get_by_role("heading", name="No matching commands", exact=True)).to_be_visible()
+    for name in ("Run command", "Load --help", "Copy terminal command"):
+        pw.expect(page.get_by_role("button", name=name, exact=True)).to_be_disabled()
+    assert_accessible(page)
+    page.get_by_label("Filter commands", exact=True).fill("")
+    selector.select_option("gateway")
+    pw.expect(page.get_by_role("button", name="Run command", exact=True)).to_be_disabled()
+    with page.expect_response(lambda response: response.url.endswith("/v1/command")) as help_response:
+        page.get_by_role("button", name="Load --help", exact=True).click()
+    assert help_response.value.status == 200 and help_response.value.json()["ok"]
+    pw.expect(page.locator("#command-stdout")).to_contain_text("usage:")
+    pw.expect(page.get_by_role("button", name="Run command", exact=True)).to_be_disabled()
+
+
+def test_command_draft_and_arguments_survive_help_poll_and_navigation(page: Page, console: Console) -> None:
+    connect(page, console)
+    navigate(page, "Command center")
+    page.get_by_label("Filter commands", exact=True).fill("fact")
+    page.get_by_label("Command", exact=True).select_option("fact")
+    args = page.get_by_label("Command arguments, one per line", exact=True)
+    args.fill("search\nUnsubmitted payment investigation")
+    with page.expect_response(lambda response: response.url.endswith("/v1/command")):
+        page.get_by_role("button", name="Load --help", exact=True).click()
+    pw.expect(page.locator("#command-stdout")).to_contain_text("usage:")
+    pw.expect(args).to_have_value("search\nUnsubmitted payment investigation")
+    page.get_by_role("heading", name="Command center", exact=True).click()
+    page.evaluate("document.querySelector('#command-args').dataset.original = 'yes'")
+    holdout_io.configure(console.root, rate=0.2)
+    page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
+    page.wait_for_function("document.querySelector('#command-args').dataset.original !== 'yes'")
+    pw.expect(args).to_have_value("search\nUnsubmitted payment investigation")
+    navigate(page, "Review")
+    navigate(page, "Command center")
+    pw.expect(args).to_have_value("search\nUnsubmitted payment investigation")
+    pw.expect(page.get_by_label("Filter commands", exact=True)).to_have_value("fact")
+    page.keyboard.press("Control+k")
+    pw.expect(page.get_by_label("Filter commands", exact=True)).to_be_focused()
+
+
+def test_command_copy_buttons_copy_actual_output_and_quote_terminal_arguments(page: Page, console: Console) -> None:
+    page.add_init_script("""Object.defineProperty(navigator,'clipboard',{value:{writeText(text){
+      (window.copiedTexts=window.copiedTexts||[]).push(text);return Promise.resolve();}}});""")
+    connect(page, console)
+    navigate(page, "Command center")
+    with page.expect_response(lambda response: response.url.endswith("/v1/command")):
+        page.get_by_role("button", name="Load --help", exact=True).click()
+    expected = page.locator("#command-stdout").inner_text()
+    page.get_by_role("button", name="Copy output", exact=True).click()
+    pw.expect(page.get_by_text("Copied to clipboard.", exact=True)).to_be_visible()
+    assert page.evaluate("window.copiedTexts") == [expected]
+    page.get_by_label("Command", exact=True).select_option("fact")
+    literal = "$(touch /tmp/never-execute) `uname` $HOME 'quoted'"
+    page.get_by_label("Command arguments, one per line", exact=True).fill("search\n" + literal)
+    page.get_by_role("button", name="Copy terminal command", exact=True).click()
+    copied = page.evaluate("window.copiedTexts[1]")
+    assert shlex.split(copied) == ["unimem", "fact", "search", literal]
+    assert page.evaluate("window.copiedTexts.length") == 2
+
+
+def test_clipboard_refusal_offers_selectable_actual_output_without_errors(page: Page, console: Console) -> None:
+    page.add_init_script("""Object.defineProperty(navigator,'clipboard',{value:{writeText(){
+      return Promise.reject(new Error('Permission denied'));}}});""")
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    connect(page, console)
+    navigate(page, "Command center")
+    with page.expect_response(lambda response: response.url.endswith("/v1/command")):
+        page.get_by_role("button", name="Load --help", exact=True).click()
+    expected = page.locator("#command-stdout").inner_text()
+    page.get_by_role("button", name="Copy output", exact=True).click()
+    fallback = page.get_by_label("Text to copy", exact=True)
+    pw.expect(fallback).to_have_value(expected)
+    pw.expect(fallback).to_be_focused()
+    assert fallback.evaluate("e => e.selectionStart === 0 && e.selectionEnd === e.value.length")
+    assert errors == []
+
+
+@pytest.mark.parametrize(
+    "status,payload,message",
+    [
+        (503, {"error": {"message": "Catalog is temporarily unavailable"}}, "Catalog is temporarily unavailable"),
+        (200, {"commands": [None]}, "The gateway returned an invalid command catalog."),
+    ],
+)
+def test_command_catalog_failure_is_visible_and_retry_loads_the_real_catalog(
+    page: Page, console: Console, status: int, payload: dict, message: str
+) -> None:
+    connect(page, console)
+    page.route(
+        "**/v1/command-catalog",
+        lambda route: route.fulfill(status=status, json=payload),
+    )
+    navigate(page, "Command center")
+    pw.expect(page.get_by_role("alert")).to_contain_text(message)
+    page.unroute("**/v1/command-catalog")
+    page.get_by_role("button", name="Retry connection", exact=True).click()
+    pw.expect(page.get_by_label("Command", exact=True)).to_be_visible()
+    pw.expect(page.get_by_role("alert")).to_have_count(0)
+
+
+@pytest.mark.parametrize("replacement", [False, True])
+def test_pending_command_cannot_restore_old_output_after_session_or_navigation_change(
+    page: Page, console: Console, replacement: bool
+) -> None:
+    held = []
+    connect(page, console)
+    page.route("**/v1/command", lambda route: held.append((route, route.fetch())))
+    navigate(page, "Command center")
+    page.get_by_role("button", name="Load --help", exact=True).click()
+    page.wait_for_function("document.querySelector('#command-run').disabled")
+    deadline = time.monotonic() + 10
+    while not held and time.monotonic() < deadline:
+        page.wait_for_timeout(25)
+    assert len(held) == 1
+    if replacement:
+        page.get_by_role("button", name="Disconnect", exact=True).click()
+        console.credential[0] = "browser-command-replacement-token"
+        page.get_by_label("Access token", exact=True).fill(console.credential[0])
+        page.get_by_role("button", name="Connect", exact=True).click()
+        pw.expect(page.locator("#conn")).to_have_attribute("data-state", "ok")
+    else:
+        navigate(page, "Overview")
+        navigate(page, "Command center")
+    held[0][0].fulfill(response=held[0][1])
+    page.wait_for_timeout(150)
+    pw.expect(page.locator("#command-stdout")).to_have_count(0)
+    pw.expect(page.get_by_role("button", name="Run command", exact=True)).to_be_enabled()
+
+
+def test_bulk_review_stops_issuing_requests_after_disconnect(page: Page, console: Console) -> None:
+    draft(console, "lesson_pending_one")
+    draft(console, "lesson_pending_two")
+    held = []
+    connect(page, console)
+    page.route("**/v1/lesson/approve", lambda route: held.append((route, route.fetch())))
+    navigate(page, "Review")
+    page.get_by_label("Select lesson_pending_one", exact=True).check()
+    page.get_by_label("Select lesson_pending_two", exact=True).check()
+    page.get_by_role("button", name="Approve selected (2)", exact=True).click()
+    deadline = time.monotonic() + 10
+    while not held and time.monotonic() < deadline:
+        page.wait_for_timeout(25)
+    assert len(held) == 1
+    page.get_by_role("button", name="Disconnect", exact=True).click()
+    held[0][0].fulfill(response=held[0][1])
+    page.wait_for_timeout(150)
+    assert len(held) == 1
+    pw.expect(page.get_by_role("heading", name="Connect to the gateway", exact=True)).to_be_visible()
+    second = frontmatter.read(paths.lessons_dir(console.root) + "/lesson_pending_two.md")[0]
+    assert second["status"] == "review"
+
+
+@pytest.mark.parametrize("width", [390, 1440])
+def test_palace_creation_forms_use_real_governed_controls(page: Page, console: Console, width: int) -> None:
+    page.set_viewport_size({"width": width, "height": 1000})
+    connect(page, console)
+    navigate(page, "Memory Palace")
+    page.get_by_text("Add a standing question", exact=True).click()
+    page.get_by_label("Standing question", exact=True).fill("Which payment retries lack a stable key?")
+    page.get_by_label("Question scope labels · comma-separated", exact=True).fill("project:payments, agent:billing")
+    page.get_by_role("button", name="Create standing question", exact=True).click()
+    pw.expect(page.get_by_text("Standing question created; its first answer is queued.", exact=True)).to_be_visible()
+    models = memory_control.records(console.root, "mental-model")
+    assert len(models) == 1 and models[0]["scopes"] == ["agent:billing", "project:payments"]
+    page.get_by_text("Add a hard rule", exact=True).click()
+    page.get_by_label("Rule text", exact=True).fill("Require approval before deploying.")
+    page.get_by_label("Denied tool identifiers · comma-separated", exact=True).fill("deploy")
+    page.get_by_label("Required action tags · comma-separated", exact=True).fill("approved")
+    page.get_by_label("I confirm this rule changes agent guidance and action checks.", exact=True).check()
+    assert_accessible(page)
+    page.get_by_role("button", name="Create hard rule", exact=True).click()
+    pw.expect(page.get_by_text("Hard rule created.", exact=True)).to_be_visible()
+    with pytest.raises(PermissionError):
+        memory_control.check_action(console.root, "deploy", tags=["approved"])
+    rules = memory_control.records(console.root, "directive")
+    assert rules[0]["data"] == {"deny_tools": ["deploy"], "required_tags": ["approved"]}
+    assert not page.evaluate("document.documentElement.scrollWidth > innerWidth")
+
+
+def test_read_only_palace_cannot_create_rules_or_reject_suggestions(page: Page, console: Console) -> None:
+    console.application.allow_approval = False
+    memory_control.proposal(console.root, "Requires human evidence review", sources=["trace-1"])
+    connect(page, console)
+    navigate(page, "Memory Palace")
+    pw.expect(page.get_by_text("Add a hard rule", exact=True)).to_have_count(0)
+    pw.expect(page.get_by_role("button", name="Reject suggestion", exact=True)).to_be_disabled()
+    pw.expect(page.get_by_text("Reading only", exact=True)).to_be_visible()
+
+
+def test_palace_creation_refusal_preserves_the_submitted_draft(page: Page, console: Console) -> None:
+    connect(page, console)
+    navigate(page, "Memory Palace")
+    page.get_by_text("Add a hard rule", exact=True).click()
+    page.get_by_label("Rule text", exact=True).fill("Preserve this rule while correcting identifiers.")
+    page.get_by_label("Denied tool identifiers · comma-separated", exact=True).fill("invalid tool name")
+    page.get_by_label("I confirm this rule changes agent guidance and action checks.", exact=True).check()
+    with page.expect_response(lambda response: response.url.endswith("/v1/control/directive")) as response:
+        page.get_by_role("button", name="Create hard rule", exact=True).click()
+    assert response.value.status == 400
+    pw.expect(page.get_by_role("alert")).to_contain_text("rule identifiers")
+    pw.expect(page.get_by_label("Rule text", exact=True)).to_have_value(
+        "Preserve this rule while correcting identifiers."
+    )
+    assert memory_control.records(console.root, "directive") == []
+
+
+def test_command_timeout_preserves_arguments_and_reports_uncertain_completion(page: Page, console: Console) -> None:
+    page.add_init_script("""const realSetTimeout=window.setTimeout.bind(window);
+      window.setTimeout=(fn,delay,...args)=>realSetTimeout(fn,delay===60000?100:delay,...args);""")
+    held = []
+    connect(page, console)
+    page.route("**/v1/command", lambda route: held.append((route, route.fetch())))
+    navigate(page, "Command center")
+    args = page.get_by_label("Command arguments, one per line", exact=True)
+    args.fill("A draft retained after timeout")
+    page.get_by_role("button", name="Load --help", exact=True).click()
+    pw.expect(page.locator("#command-stderr")).to_contain_text("It may have completed")
+    pw.expect(args).to_have_value("A draft retained after timeout")
+    pw.expect(page.get_by_role("button", name="Run command", exact=True)).to_be_enabled()
+    assert len(held) == 1
+    held[0][0].abort()
+
+
+def test_command_shortcut_focuses_search_when_opened_from_another_section(page: Page, console: Console) -> None:
+    connect(page, console)
+    navigate(page, "Review")
+    page.keyboard.press("Control+k")
+    pw.expect(page.get_by_label("Filter commands", exact=True)).to_be_focused()
+
+
+def test_memory_verdict_disclosure_uses_the_actual_estimator_note(page: Page, console: Console) -> None:
+    proof.start_demo(console.root, functions.builtin_kits()["support"])
+    payload = page.request.get(console.url + "/v1/memories", headers=console.headers).json()
+    memory = payload["memories"][0]
+    assert memory["note"]
+    connect(page, console)
+    navigate(page, "Memories")
+    row = page.locator(".forest > li").filter(has_text=memory["lesson_slug"])
+    row.get_by_text("Why this verdict", exact=True).click()
+    pw.expect(row.get_by_text(memory["note"], exact=True)).to_be_visible()

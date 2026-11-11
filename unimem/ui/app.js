@@ -17,12 +17,13 @@
   var timer = null;
   var lastOk = 0;
   var state = { status: null, capabilities: null, memories: null, agents: null, events: null, lessons: null, lesson: null, commandCatalog: null, commandResult: null, explorer: null, reviewDraft: null, ledger: null, library: null, traces: null, trace: null, benchmarks: null, palace: null };
-  ["learning", "learningCapabilities", "learningDraft", "learningBusy", "learningAction", "learningScope", "learningScopeText", "learningExpanded", "identity"].forEach(function (key) { state[key] = null; });
+  ["learning", "learningCapabilities", "learningDraft", "learningBusy", "learningAction", "learningScope", "learningScopeText", "learningExpanded", "identity", "commandDraft", "reviewBusy", "pageError", "palaceDraft"].forEach(function (key) { state[key] = null; });
   var selected = {};   // slug -> true, the review queue's bulk selection; survives repaints
   var notice = null;   // { kind: "ok"|"crit", text } shown on the next paint of the review views
   var lastPaint = "";
   var connState = "";
   var navigationGeneration = 0;
+  var commandSearchRequested = false;
 
   // ---- helpers -------------------------------------------------------------------------
 
@@ -40,7 +41,8 @@
     for (var i = 2; i < arguments.length; i++) {
       var c = arguments[i];
       if (c === null || c === undefined || c === false) continue;
-      el.appendChild(typeof c === "string" || typeof c === "number" ? document.createTextNode(String(c)) : c);
+      if (Array.isArray(c)) c.forEach(function (child) { if (child) el.appendChild(child); });
+      else el.appendChild(typeof c === "string" || typeof c === "number" ? document.createTextNode(String(c)) : c);
     }
     return el;
   }
@@ -76,6 +78,29 @@
   }
   function store(key, val) { try { if (val === null) localStorage.removeItem(key); else localStorage.setItem(key, val); } catch (e) { /* private mode */ } }
   function load(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
+
+  function copyText(button, text) {
+    var pending;
+    try {
+      pending = navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject(new Error("Clipboard unavailable"));
+    } catch (error) { pending = Promise.reject(error); }
+    Promise.resolve(pending).then(function () {
+      if (!button.isConnected) return;
+      var previous = button.parentNode.querySelector(".clipboard-status");
+      if (previous) previous.remove();
+      button.parentNode.appendChild(h("span", { class: "clipboard-status muted small", role: "status", text: "Copied to clipboard." }));
+    }).catch(function () {
+      if (!button.isConnected) return;
+      var parent = button.parentNode;
+      var previous = parent.querySelector(".clipboard-fallback");
+      if (previous) previous.remove();
+      var field = h("textarea", { class: "command-args", readonly: true, rows: 4, "aria-label": "Text to copy" });
+      field.value = text;
+      parent.appendChild(h("div", { class: "clipboard-fallback" },
+        h("p", { role: "status", text: "Clipboard access was refused. Copy the selected text using your keyboard or context menu." }), field));
+      field.focus(); field.select();
+    });
+  }
 
   // ---- verdict / validity chips: icon + label + colour, never colour alone ---------------
 
@@ -131,8 +156,10 @@
     }).finally(function () { clearTimeout(timeout); });
   }
   function post(path, body, signal) {
+    var controller = signal ? null : new AbortController();
+    var timeout = controller ? setTimeout(function () { controller.abort(); }, 60000) : null;
     return fetch(path, { method: "POST", cache: "no-store",
-      signal: signal,
+      signal: signal || controller.signal,
       headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
       body: JSON.stringify(body) }).then(function (r) {
       return r.json().catch(function (error) { if (r.ok) throw error; return {}; }).then(function (d) {
@@ -140,7 +167,12 @@
         if (!r.ok) { var err = new Error((d && d.error && d.error.message) || ("HTTP " + r.status)); err.status = r.status; err.code = d && d.error && d.error.code; throw err; }
         return d;
       });
-    });
+    }).catch(function (error) {
+      if (controller && error.name === "AbortError") {
+        throw new Error("The request timed out. It may have completed; refresh before retrying.");
+      }
+      throw error;
+    }).finally(function () { if (timeout !== null) clearTimeout(timeout); });
   }
   function canon(slug) { return String(slug).replace(/\.md$/, "").replace(/^lesson_/, ""); }
   function setConn(kind, text) {
@@ -298,6 +330,67 @@
       h("p", { class: "lede", text: "Standing questions, hard rules, and experience awaiting review." }));
     var data = state.palace;
     if (!data) return root.appendChild(h("p", { text: "Loading…" })), root;
+    var canApprove = !!(state.status && state.status.gateway && state.status.gateway.approval_enabled);
+    var draft = state.palaceDraft || { question: "", budget: "600", context: "", directive: "", tools: "", tags: "", confirmed: false, busy: false, expanded: {}, message: null };
+    state.palaceDraft = draft;
+    if (draft.message) root.appendChild(h("p", { class: "alert " + (draft.message.error ? "crit" : "good"), role: draft.message.error ? "alert" : "status", text: draft.message.text }));
+    function labels(value) { return value.split(",").map(function (label) { return label.trim(); }).filter(Boolean); }
+    function createForm(kind) {
+      var rule = kind === "directive";
+      var details = h("details", { class: "card", open: !!draft.expanded[kind] });
+      details.appendChild(h("summary", { text: rule ? "Add a hard rule" : "Add a standing question" }));
+      details.addEventListener("toggle", function () { draft.expanded[kind] = details.open; });
+      var form = h("form", { "aria-label": rule ? "New hard rule" : "New standing question", "aria-busy": draft.busy ? "true" : "false" });
+      function field(name, label, options) {
+        var id = "palace-new-" + name;
+        var input = h("input", Object.assign({ id: id, type: "text", maxlength: 2000, disabled: draft.busy }, options || {}));
+        input.value = draft[name];
+        input.addEventListener("input", function () { draft[name] = input.value; });
+        form.appendChild(h("label", { for: id, text: label })); form.appendChild(input);
+      }
+      field(rule ? "directive" : "question", rule ? "Rule text" : "Standing question", { required: true });
+      if (rule) {
+        field("tools", "Denied tool identifiers · comma-separated", { maxlength: 4096 });
+        field("tags", "Required action tags · comma-separated", { maxlength: 4096 });
+        var confirm = h("input", { id: "palace-rule-confirm", type: "checkbox", required: true, checked: draft.confirmed, disabled: draft.busy });
+        confirm.addEventListener("change", function () { draft.confirmed = confirm.checked; });
+        form.appendChild(h("label", { for: "palace-rule-confirm" }, confirm, " I confirm this rule changes agent guidance and action checks."));
+        form.appendChild(h("p", { class: "muted small", text: "Denied tools and required tags are enforced by integrations that call the action gate." }));
+      } else {
+        field("context", "Question scope labels · comma-separated", { maxlength: 4096 });
+        field("budget", "Answer context budget", { type: "number", min: 0, max: 100000, step: 1, required: true });
+      }
+      form.appendChild(h("button", { type: "submit", class: "btn", disabled: draft.busy, text: rule ? "Create hard rule" : "Create standing question" }));
+      form.addEventListener("submit", function (event) {
+        event.preventDefault(); if (draft.busy) return;
+        var credential = token, generation = navigationGeneration;
+        var body = rule ? { text: draft.directive.trim(), deny_tools: labels(draft.tools), required_tags: labels(draft.tags) }
+          : { text: draft.question.trim(), context: labels(draft.context), budget: Number(draft.budget) };
+        function current() { return state.palaceDraft === draft && token === credential && navigationGeneration === generation; }
+        draft.busy = true; draft.message = null; paint(true);
+        post("/v1/control/" + kind, body).then(function () {
+          if (!current()) return;
+          if (rule) { draft.directive = ""; draft.tools = ""; draft.tags = ""; draft.confirmed = false; }
+          else draft.question = "";
+          draft.message = { text: rule ? "Hard rule created." : "Standing question created; its first answer is queued." };
+        }).catch(function (error) {
+          if (!current()) return;
+          if (error.auth) {
+            token = ""; clearCredentialState();
+            try { sessionStorage.removeItem("unimem-token"); } catch (e) { /* private mode */ }
+            refresh(); return;
+          }
+          draft.message = { error: true, text: error.message };
+        }).finally(function () {
+          var repaint = current(); draft.busy = false;
+          if (repaint) { paint(true); refresh(); }
+        });
+      });
+      details.appendChild(form); return details;
+    }
+    root.appendChild(createForm("question"));
+    if (canApprove) root.appendChild(createForm("directive"));
+    else root.appendChild(approvalOff());
     var attention = data.needs_attention || {};
     root.appendChild(h("section", { class: "card" }, h("h2", { text: "Needs attention" }),
       h("p", { text: num(attention.proposals || 0) + " suggestions awaiting review; " +
@@ -324,7 +417,7 @@
         h("p", { text: note.text }), inspect);
       if ((note.data || {}).status === "review") {
         [true, false].forEach(function (approve) {
-          var button = h("button", { class: approve ? "btn" : "btn secondary", type: "button", text: approve ? "Approve note" : "Reject note" });
+          var button = h("button", { class: approve ? "btn" : "btn secondary", type: "button", disabled: !canApprove, text: approve ? "Approve note" : "Reject note" });
           button.addEventListener("click", function () {
             button.disabled = true;
             post("/v1/control/review-foresight", { id: note.id, expected_revision: note.revision, approve: approve })
@@ -340,7 +433,7 @@
       var details = h("details", null, h("summary", { text: "Inspect evidence and applicability" }),
         h("pre", { id: "palace-proposal-" + proposal.id, tabindex: "0", role: "region", "aria-label": "Suggestion evidence and applicability",
           text: JSON.stringify(proposal.data || {}, null, 2) }));
-      var reject = h("button", { class: "btn secondary", type: "button", text: "Reject suggestion" });
+      var reject = h("button", { class: "btn secondary", type: "button", disabled: !canApprove, text: "Reject suggestion" });
       reject.addEventListener("click", function () {
         var reason = window.prompt("Why should this suggestion be rejected?");
         if (!reason) return;
@@ -409,7 +502,8 @@
           r.withdrawn ? h("span", { class: "chip" }, h("span", { class: "ic crit", "aria-hidden": "true", text: "✕" }), "Withdrawn") : null,
           h("span", { class: "f-num", text: measured(r) ? pct(r.effect) + " (" + pct(r.ci_low) + " to " + pct(r.ci_high) + ")"
             : "Not enough data yet: " + num(r.n_injected) + " with, " + num(r.n_withheld) + " without" })),
-        forestRow(r, extent)));
+        forestRow(r, extent),
+        r.note ? h("details", null, h("summary", { text: "Why this verdict" }), h("p", { class: "muted small", text: r.note })) : null));
     });
     card.appendChild(list);
     card.appendChild(axisRow(extent));
@@ -551,6 +645,34 @@
     var n = notice;
     return h("p", { class: "alert " + (n.kind === "ok" ? "good" : "crit"), role: n.kind === "ok" ? "status" : "alert", text: n.text });
   }
+  function reviewAction(work, complete) {
+    if (state.reviewBusy) return;
+    var request = {}, credential = token, generation = navigationGeneration, hash = location.hash;
+    state.reviewBusy = request;
+    function current() {
+      return state.reviewBusy === request && token === credential && navigationGeneration === generation && location.hash === hash;
+    }
+    function send(path, body) {
+      if (!current()) return Promise.reject(new Error("The review session changed."));
+      return post(path, body);
+    }
+    paint(true);
+    Promise.resolve().then(function () { return work(send, current); }).then(function (result) {
+      if (current()) complete(result);
+    }).catch(function (error) {
+      if (!current()) return;
+      if (error.auth) {
+        token = ""; clearCredentialState();
+        try { sessionStorage.removeItem("unimem-token"); } catch (e) { /* private mode */ }
+        refresh(); return;
+      }
+      notice = { kind: "crit", text: error.message };
+    }).finally(function () {
+      var repaint = current();
+      if (state.reviewBusy === request) state.reviewBusy = null;
+      if (repaint) refresh();
+    });
+  }
   function approvalOff() {
     return h("div", { class: "alert warn" }, h("strong", { text: "Reading only" }),
       h("span", null, "Editing, approving and rejecting are off, because approving changes what every agent is told. Start the gateway with "),
@@ -563,6 +685,7 @@
     root.appendChild(h("p", { class: "lede", text: "Drafts waiting for a person. Nothing here is active: no agent has been told any of it." }));
     if (!d) { root.appendChild(h("p", { class: "muted", text: "Loading…" })); return root; }
     if (notice) root.appendChild(noticeBox());
+    if (state.reviewBusy) root.appendChild(h("p", { role: "status", text: "Applying the review decision…" }));
     if (!d.approval_enabled) root.appendChild(approvalOff());
     if (!d.lessons.length) {
       if (d.total) {
@@ -576,7 +699,7 @@
     var live = d.lessons.filter(function (l) { return l.checks && l.checks.passes; });
     if (d.approval_enabled) {
       var count = Object.keys(selected).filter(function (k) { return selected[k]; }).length;
-      var bulk = h("button", { class: "btn", type: "button", disabled: count ? false : true, text: "Approve selected (" + count + ")" });
+      var bulk = h("button", { class: "btn", type: "button", disabled: !count || !!state.reviewBusy, text: "Approve selected (" + count + ")" });
       bulk.addEventListener("click", function () { approveMany(Object.keys(selected).filter(function (k) { return selected[k]; })); });
       root.appendChild(h("div", { class: "toolbar" }, bulk,
         h("span", { class: "muted small", text: live.length + " of " + d.lessons.length + " pass every gate and can be approved." })));
@@ -586,7 +709,7 @@
       var ok = l.checks && l.checks.passes;
       var box = null;
       if (d.approval_enabled) {
-        box = h("input", { type: "checkbox", id: "sel-" + l.slug, disabled: ok ? false : true,
+        box = h("input", { type: "checkbox", id: "sel-" + l.slug, disabled: !ok || !!state.reviewBusy,
           checked: ok && selected[l.slug] ? true : false, "aria-label": "Select " + l.slug });
         box.addEventListener("change", function () { selected[l.slug] = box.checked ? l.revision : false; paint(true); });
       }
@@ -614,20 +737,21 @@
   }
 
   function approveMany(slugs) {
-    var out = [], chain = Promise.resolve();
     var approvals = slugs.map(function (slug) { return { slug: slug, revision: selected[slug] }; });
-    approvals.forEach(function (entry) {
-      var slug = entry.slug;
-      chain = chain.then(function () {
-        return post("/v1/lesson/approve", { slug: slug, expected_revision: entry.revision, rationale: "approved from the review queue" })
-          .then(function () { out.push(slug + ": approved"); delete selected[slug]; })
-          .catch(function (e) { out.push(slug + ": " + e.message); });
+    reviewAction(function (send, current) {
+      var out = [], chain = Promise.resolve();
+      approvals.forEach(function (entry) {
+        chain = chain.then(function () {
+          if (!current()) return;
+          return send("/v1/lesson/approve", { slug: entry.slug, expected_revision: entry.revision, rationale: "approved from the review queue" })
+            .then(function () { if (current()) { out.push(entry.slug + ": approved"); delete selected[entry.slug]; } })
+            .catch(function (error) { if (error.auth) throw error; if (current()) out.push(entry.slug + ": " + error.message); });
+        });
       });
-    });
-    chain.then(function () {
+      return chain.then(function () { return out; });
+    }, function (out) {
       var failed = out.filter(function (x) { return x.indexOf(": approved") < 0; });
       notice = { kind: failed.length ? "crit" : "ok", text: out.join(" · ") };
-      lastPaint = ""; refresh();
     });
   }
 
@@ -654,7 +778,7 @@
     var form = h("form", { class: "card", "aria-label": "Lesson text" });
     form.appendChild(h("h2", { text: "What the agent would be told" }));
     if (can && draft.revision !== d.revision) {
-      var reload = h("button", { class: "btn secondary", type: "button", text: "Reload latest draft" });
+      var reload = h("button", { class: "btn secondary", type: "button", disabled: !!state.reviewBusy, text: "Reload latest draft" });
       reload.addEventListener("click", function () { state.reviewDraft = null; paint(true); refresh(); });
       form.appendChild(h("div", { class: "alert warn", role: "status" },
         h("p", { text: "The source changed while you were editing. Your text is preserved. Reload the latest draft before approving or saving." }), reload));
@@ -662,7 +786,7 @@
     fields.forEach(function (f) {
       form.appendChild(h("label", { for: "f-" + f[0], text: f[1] }));
       if (can) {
-        inputs[f[0]] = h("textarea", { id: "f-" + f[0], rows: 3, maxlength: 2000, spellcheck: "true" });
+        inputs[f[0]] = h("textarea", { id: "f-" + f[0], rows: 3, maxlength: 2000, spellcheck: "true", disabled: !!state.reviewBusy });
         inputs[f[0]].value = draft.values[f[0]];
         inputs[f[0]].addEventListener("input", function () {
           draft.values[f[0]] = inputs[f[0]].value;
@@ -674,15 +798,16 @@
       }
     });
     if (can) {
-      var save = h("button", { class: "btn secondary", type: "submit", text: "Save changes" });
+      var save = h("button", { class: "btn secondary", type: "submit", disabled: !!state.reviewBusy, text: "Save changes" });
       form.appendChild(save);
       form.addEventListener("submit", function (ev) {
         ev.preventDefault();
         var body = { slug: d.slug, expected_revision: draft.revision };
         fields.forEach(function (f) { if (inputs[f[0]].value.trim() !== draft.original[f[0]].trim()) body[f[0]] = inputs[f[0]].value; });
         if (Object.keys(body).length === 2) { notice = { kind: "ok", text: "Nothing changed." }; paint(true); return; }
-        post("/v1/lesson/edit", body).then(function () { state.reviewDraft = null; notice = { kind: "ok", text: "Saved. The gates below were re-checked." }; lastPaint = ""; refresh(); })
-          .catch(function (e) { notice = { kind: "crit", text: e.message }; paint(true); });
+        reviewAction(function (send) { return send("/v1/lesson/edit", body); }, function () {
+          state.reviewDraft = null; notice = { kind: "ok", text: "Saved. The gates below were re-checked." };
+        });
       });
     }
     root.appendChild(form);
@@ -730,23 +855,21 @@
     root.appendChild(hist);
 
     if (can) {
-      var why = h("input", { id: "why", type: "text", maxlength: 500, "aria-describedby": "why-help" });
+      var why = h("input", { id: "why", type: "text", maxlength: 500, disabled: !!state.reviewBusy, "aria-describedby": "why-help" });
       why.value = draft.note || "";
       why.addEventListener("input", function () { draft.note = why.value; });
-      var approve = h("button", { class: "btn", type: "button", disabled: d.checks && d.checks.passes && !d.body_truncated ? false : true, text: "Approve" });
+      var approve = h("button", { class: "btn", type: "button", disabled: !!state.reviewBusy || !(d.checks && d.checks.passes && !d.body_truncated), text: "Approve" });
       if (d.body_truncated) root.appendChild(h("p", { class: "alert warn", text: "This lesson exceeds the console's readable size. Review its complete contents in the terminal before approving." }));
-      var reject = h("button", { class: "btn danger", type: "button", text: "Reject" });
+      var reject = h("button", { class: "btn danger", type: "button", disabled: !!state.reviewBusy, text: "Reject" });
       approve.addEventListener("click", function () {
         if (draft.dirty) { notice = { kind: "crit", text: "Save your text changes before approving this lesson." }; paint(true); return; }
-        post("/v1/lesson/approve", { slug: d.slug, expected_revision: draft.revision, rationale: why.value || undefined })
-          .then(function () { notice = { kind: "ok", text: d.slug + " is now active." }; location.hash = "#/review"; })
-          .catch(function (e) { notice = { kind: "crit", text: e.message }; paint(true); });
+        reviewAction(function (send) { return send("/v1/lesson/approve", { slug: d.slug, expected_revision: draft.revision, rationale: why.value || undefined }); },
+          function () { notice = { kind: "ok", text: d.slug + " is now active." }; location.hash = "#/review"; });
       });
       reject.addEventListener("click", function () {
         if (!why.value.trim()) { notice = { kind: "crit", text: "Say why in the box before rejecting." }; paint(true); return; }
-        post("/v1/lesson/reject", { slug: d.slug, expected_revision: draft.revision, reason: why.value })
-          .then(function () { notice = { kind: "ok", text: d.slug + " was rejected." }; location.hash = "#/review"; })
-          .catch(function (e) { notice = { kind: "crit", text: e.message }; paint(true); });
+        reviewAction(function (send) { return send("/v1/lesson/reject", { slug: d.slug, expected_revision: draft.revision, reason: why.value }); },
+          function () { notice = { kind: "ok", text: d.slug + " was rejected." }; location.hash = "#/review"; });
       });
       root.appendChild(h("section", { class: "card", "aria-labelledby": "a-h" }, h("h2", { id: "a-h", text: "Decide" }),
         h("label", { for: "why", text: "Reason or note" }), why,
@@ -761,112 +884,126 @@
   }
   function commandLine(spec, args) {
     return "unimem " + spec.name + (args.length ? " " + args.map(function (arg) {
-      return /\s/.test(arg) ? JSON.stringify(arg) : arg;
+      return /^[A-Za-z0-9_@%+=:,./-]+$/.test(arg) ? arg : "'" + arg.replace(/'/g, "'\"'\"'") + "'";
     }).join(" ") : "");
   }
   function viewCommands() {
     var root = h("div"), catalog = state.commandCatalog && state.commandCatalog.commands;
     root.appendChild(h("div", { class: "page-heading" },
       h("div", null, h("h1", { text: "Command center" }),
-        h("p", { class: "lede", text: "Every UniMem capability, one authenticated surface. Run store-scoped commands without leaving the console." })),
+        h("p", { class: "lede", text: "Browse every UniMem command, inspect help, and run authorized store operations." })),
       h("span", { class: "chip command-count", text: catalog ? catalog.length + " commands" : "Loading catalog…" })));
     if (!catalog) {
-      root.appendChild(h("div", { class: "card command-loading" }, h("div", { class: "skeleton-line wide" }), h("div", { class: "skeleton-line" })));
+      root.appendChild(h("p", { class: "muted", text: "Loading command catalog…" }));
       return root;
     }
+    var draft = state.commandDraft || { query: "", name: "doctor", args: Object.create(null), busy: null };
+    state.commandDraft = draft;
     var execution = state.commandCatalog.execution_policy;
     if (execution) root.appendChild(h("p", { class: "muted small", text: execution.scoped_commands === "help_only"
       ? "This scoped session can inspect command help. Use the scoped review and exploration pages to access memory."
       : (execution.read_only ? "This session runs inspection commands. Store changes require an operator-enabled session. " : "Store changes are enabled for this session. ") + "Lesson decisions use the Review page; force overrides stay in the terminal." }));
-
-    var search = h("input", { class: "command-search", type: "search", placeholder: "Filter commands…", "aria-label": "Filter commands" });
-    var select = h("select", { class: "command-select", "aria-label": "Command" });
-    var args = h("textarea", { class: "command-args", rows: 7, spellcheck: "false", "aria-label": "Command arguments, one per line" });
-    var description = h("p", { class: "muted command-description" });
+    var search = h("input", { id: "command-search", class: "command-search", type: "search", placeholder: "Filter commands…", "aria-label": "Filter commands" });
+    search.value = draft.query;
+    var select = h("select", { id: "command-select", class: "command-select", "aria-label": "Command", disabled: !!draft.busy });
+    var args = h("textarea", { id: "command-args", class: "command-args", rows: 7, spellcheck: "false", "aria-label": "Command arguments, one per line" });
+    var title = h("h2", { class: "mono" });
+    var description = h("p", { class: "muted command-description", role: "status" });
     var badge = h("div", { class: "command-badges" });
-    var output = h("div", { class: "command-output", "aria-live": "polite" });
-    var selected = catalog.filter(function (spec) { return spec.name === "doctor"; })[0] || catalog[0];
-
-    function visibleSpecs() {
-      var query = search.value.trim().toLowerCase();
-      return catalog.filter(function (spec) {
-        return !query || (spec.name + " " + spec.group + " " + spec.description).toLowerCase().indexOf(query) >= 0;
-      });
+    var output = h("div", { class: "command-output", "aria-live": "polite", "aria-busy": draft.busy ? "true" : "false" });
+    var run = h("button", { id: "command-run", class: "btn", type: "button", text: draft.busy ? "Running…" : "Run command" });
+    var help = h("button", { id: "command-help", class: "btn secondary", type: "button", text: "Load --help" });
+    var copy = h("button", { id: "command-copy", class: "btn secondary", type: "button", text: "Copy terminal command" });
+    var chosen = null;
+    function updateSelected() {
+      chosen = catalog.filter(function (spec) { return spec.name === select.value; })[0] || null;
+      badge.textContent = "";
+      title.textContent = chosen ? chosen.name : "No matching commands";
+      description.textContent = chosen ? chosen.description + (chosen.reason ? " " + chosen.reason : "") : "Try another filter to select a command.";
+      args.value = "";
+      if (chosen) {
+        draft.name = chosen.name;
+        if (!Object.prototype.hasOwnProperty.call(draft.args, chosen.name)) draft.args[chosen.name] = (chosen.example || []).join("\n");
+        args.value = draft.args[chosen.name];
+        badge.appendChild(h("span", { class: "chip" }, chosen.group));
+        badge.appendChild(h("span", { class: "chip " + (chosen.runnable ? "good" : "warn") }, chosen.runnable ? "Runnable here" : "Terminal execution · help available"));
+      }
+      args.disabled = !chosen || !!draft.busy;
+      run.disabled = !chosen || !chosen.runnable || !!draft.busy;
+      help.disabled = !chosen || !!draft.busy;
+      copy.disabled = !chosen;
     }
     function renderOptions(keep) {
-      var specs = visibleSpecs();
-      select.textContent = "";
-      specs.forEach(function (spec) {
-        select.appendChild(h("option", { value: spec.name, text: spec.group + "  /  " + spec.name }));
+      var query = search.value.trim().toLowerCase();
+      var specs = catalog.filter(function (spec) {
+        return !query || (spec.name + " " + spec.group + " " + spec.description).toLowerCase().indexOf(query) >= 0;
       });
+      select.textContent = "";
+      specs.forEach(function (spec) { select.appendChild(h("option", { value: spec.name, text: spec.group + "  /  " + spec.name })); });
       var wanted = specs.filter(function (spec) { return spec.name === keep; })[0] || specs[0];
-      if (wanted) { select.value = wanted.name; selected = wanted; }
+      if (wanted) select.value = wanted.name;
+      select.disabled = !specs.length || !!draft.busy;
       updateSelected();
     }
-    function updateSelected() {
-      selected = catalog.filter(function (spec) { return spec.name === select.value; })[0] || catalog[0];
-      description.textContent = selected.description;
-      badge.textContent = "";
-      badge.appendChild(h("span", { class: "chip" }, selected.group));
-      badge.appendChild(h("span", { class: "chip " + (selected.runnable ? "good" : "warn") }, selected.runnable ? "Runnable here" : "Terminal only"));
-      if (!args.value.trim() && selected.example && selected.example.length) args.value = selected.example.join("\n");
-      if (!selected.runnable) {
-        args.disabled = true;
-      } else {
-        args.disabled = false;
-      }
-    }
     function paintResult(result) {
-      output.textContent = "";
       if (!result) {
-        output.appendChild(h("p", { class: "muted", text: "Run a command to see its output here." }));
+        output.appendChild(h("p", { class: "muted", text: draft.busy ? "Waiting for the command to complete…" : "Run a command to see its output here." }));
         return;
       }
+      var copyOutput = h("button", { class: "btn-link", type: "button", text: "Copy output" });
+      copyOutput.addEventListener("click", function () { copyText(copyOutput, [result.stdout, result.stderr].filter(Boolean).join("\n")); });
       output.appendChild(h("div", { class: "command-result-head" },
         h("span", { class: "chip " + (result.ok ? "good" : "crit") }, result.ok ? "Completed" : "Exited " + result.exit_code),
-        h("span", { class: "muted small", text: result.elapsed_ms + " ms" }),
-        h("button", { class: "btn-link", type: "button", text: "Copy output" })));
-      var copy = output.lastChild;
-      copy.addEventListener("click", function () {
-        var text = [result.stdout, result.stderr].filter(Boolean).join("\n");
-        if (navigator.clipboard) navigator.clipboard.writeText(text);
-      });
+        h("span", { class: "muted small", text: result.command + " · " + result.elapsed_ms + " ms" }), copyOutput));
       if (result.stdout) output.appendChild(h("pre", { id: "command-stdout", class: "command-pre", tabindex: "0", role: "region", "aria-label": "Command output" }, h("code", { text: result.stdout })));
       if (result.stderr) output.appendChild(h("pre", { id: "command-stderr", class: "command-pre stderr", tabindex: "0", role: "region", "aria-label": "Command error output" }, h("code", { text: result.stderr })));
       if (!result.stdout && !result.stderr) output.appendChild(h("p", { class: "muted", text: "Command completed without output." }));
       if (result.truncated) output.appendChild(h("p", { class: "muted small", text: "Output was capped for browser safety." }));
     }
-
-    search.addEventListener("input", function () { renderOptions(select.value); });
-    select.addEventListener("change", function () { args.value = ""; updateSelected(); });
-    renderOptions(selected.name);
+    function execute(argv) {
+      if (!chosen || draft.busy) return;
+      var request = {}, credential = token, generation = navigationGeneration, command = chosen.name;
+      var focusId = document.activeElement && document.activeElement.id;
+      function active() { return state.commandDraft === draft && token === credential; }
+      function current() { return active() && navigationGeneration === generation; }
+      draft.busy = request; paint(true);
+      post("/v1/command", { command: command, args: argv }).then(function (result) {
+        if (!current()) return;
+        if (!result || typeof result.ok !== "boolean" || typeof result.stdout !== "string" || typeof result.stderr !== "string") throw new Error("The gateway returned an invalid command result.");
+        state.commandResult = result;
+      }).catch(function (error) {
+        if (!current()) return;
+        if (error.auth) {
+          token = ""; clearCredentialState();
+          try { sessionStorage.removeItem("unimem-token"); } catch (e) { /* private mode */ }
+          refresh(); return;
+        }
+        state.commandResult = { command: command, ok: false, exit_code: 1, stdout: "", stderr: error.message, elapsed_ms: 0 };
+      }).finally(function () {
+        if (!active()) return;
+        draft.busy = null;
+        if (currentRoute().id === "commands") {
+          paint(true);
+          var focus = current() && document.getElementById(focusId);
+          if (focus && !focus.disabled) focus.focus({ preventScroll: true });
+        }
+      });
+    }
+    search.addEventListener("input", function () { draft.query = search.value; renderOptions(select.value || draft.name); });
+    select.addEventListener("change", updateSelected);
+    args.addEventListener("input", function () { if (chosen) draft.args[chosen.name] = args.value; });
+    run.addEventListener("click", function () { if (chosen && chosen.runnable) execute(commandArgsFrom(args.value)); });
+    help.addEventListener("click", function () { execute(["--help"]); });
+    copy.addEventListener("click", function () { if (chosen) copyText(copy, commandLine(chosen, commandArgsFrom(args.value))); });
+    renderOptions(draft.name);
     paintResult(state.commandResult);
-
-    var run = h("button", { class: "btn", type: "button", text: "Run command" });
-    var help = h("button", { class: "btn secondary", type: "button", text: "Load --help" });
-    var copy = h("button", { class: "btn secondary", type: "button", text: "Copy terminal command" });
-    run.addEventListener("click", function () {
-      if (!selected.runnable) return;
-      run.disabled = true; run.textContent = "Running…";
-      post("/v1/command", { command: selected.name, args: commandArgsFrom(args.value) })
-        .then(function (result) { state.commandResult = result; paint(true); })
-        .catch(function (error) { state.commandResult = { ok: false, exit_code: 1, stdout: "", stderr: error.message, elapsed_ms: 0 }; paint(true); })
-        .then(function () { run.disabled = false; run.textContent = "Run command"; });
-    });
-    help.addEventListener("click", function () { args.value = "--help"; run.click(); });
-    copy.addEventListener("click", function () {
-      if (navigator.clipboard) navigator.clipboard.writeText(commandLine(selected, commandArgsFrom(args.value)));
-    });
-
     root.appendChild(h("div", { class: "command-layout" },
       h("section", { class: "card command-panel" },
         h("div", { class: "command-toolbar" }, search, select),
-        h("div", { class: "command-title-row" }, h("h2", { class: "mono", text: selected.name }), badge),
-        description,
-        h("label", { for: "command-args", text: "Arguments · one per line" }),
-        args,
+        h("div", { class: "command-title-row" }, title, badge), description,
+        h("label", { for: "command-args", text: "Arguments · one per line" }), args,
         h("div", { class: "toolbar command-actions" }, run, help, copy),
-        h("p", { class: "muted small", text: "The gateway store is implicit. Lifecycle commands stay terminal-only so the UI cannot replace its own server." })),
+        h("p", { class: "muted small", text: "The gateway store is implicit. Lifecycle commands provide help and a copyable terminal command; execute them from a terminal." })),
       h("section", { class: "card command-output-card" }, h("div", { class: "command-output-heading" }, h("h2", { text: "Output" }), h("span", { class: "muted small", text: "stdout + stderr" })), output)));
     return root;
   }
@@ -936,9 +1073,7 @@
       if (r.context) {
         var copy = h("button", { class: "btn secondary", type: "button", text: "Copy agent context" });
         copy.addEventListener("click", function () {
-          if (!navigator.clipboard) { x.error = "Clipboard access is unavailable in this browser."; paint(true); return; }
-          navigator.clipboard.writeText(r.context).then(function () { copy.textContent = "Copied"; })
-            .catch(function () { x.error = "Could not copy. Open the full context below and select the text."; paint(true); });
+          copyText(copy, r.context);
         });
         summary.appendChild(copy);
       }
@@ -1084,7 +1219,7 @@
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
   }
-  function hashForm(fields, submitLabel, onParams) {
+  function hashForm(fields, submitLabel) {
     var form = h("form", { class: "explore-controls" });
     fields.forEach(function (f) {
       var id = "ledger-" + f.name;
@@ -1460,7 +1595,9 @@
             h("th", { scope: "col", text: "Effect · 95% interval" }), h("th", { scope: "col", text: "Injected / withheld" }))));
         var rows = h("tbody"); decisions.forEach(function (d) {
           rows.appendChild(h("tr", null, h("td", { class: "wrap" }, h("strong", { text: d.id }), h("p", { class: "muted small", text: "Revision " + d.revision + " · " + (d.task_context || "Default context") })),
-            h("td", null, verdictChip(d.verdict)), h("td", { text: pct(d.effect) + " · " + pct(d.ci_low) + " to " + pct(d.ci_high) }),
+            h("td", null, verdictChip(d.verdict), d.note ? h("details", null,
+              h("summary", { text: "Why this verdict" }), h("p", { class: "muted small", text: d.note })) : null),
+            h("td", { text: pct(d.effect) + " · " + pct(d.ci_low) + " to " + pct(d.ci_high) }),
             h("td", { text: num(d.n_injected) + " / " + num(d.n_withheld) })));
         }); table.appendChild(rows); evidence.appendChild(h("div", { id: "learning-decisions", class: "table-wrap", tabindex: "0", role: "region", "aria-label": "Learning decisions" }, table));
       }
@@ -1561,7 +1698,7 @@
     var route = currentRoute();
     var sig = route.id + "|" + location.hash + "|" + JSON.stringify([state.status, state.capabilities, state.memories, state.agents, state.events,
       state.lessons, state.lesson, state.commandCatalog, state.commandResult, state.explorer, state.reviewDraft, state.ledger, state.library, state.traces, state.trace, state.benchmarks,
-      state.learning, state.learningCapabilities, state.learningBusy, state.learningAction, state.identity, state.palace, selected, notice]);
+      state.learning, state.learningCapabilities, state.learningBusy, state.learningAction, state.identity, state.palace, state.reviewBusy, state.pageError, selected, notice]);
     if (!force && sig === lastPaint) return;
     if (!force && editing()) return;
     lastPaint = sig;
@@ -1573,6 +1710,12 @@
     });
     main.textContent = "";
     var view = VIEWS[route.id]();
+    if (state.pageError) {
+      var retry = h("button", { class: "btn secondary", type: "button", text: "Retry connection" });
+      retry.addEventListener("click", refresh);
+      view.insertBefore(h("div", { class: "alert crit", role: "alert" },
+        h("p", { text: state.pageError }), retry), view.firstChild);
+    }
     if (!view.querySelector(".page-heading")) {
       var title = view.querySelector("h1"), lede = view.querySelector(".lede");
       if (title) {
@@ -1586,6 +1729,10 @@
     main.appendChild(view);
     Array.prototype.forEach.call(main.querySelectorAll("nav.tabs"), revealCurrentTab);
     if (focusId) { var again = document.getElementById(focusId); if (again) again.focus({ preventScroll: true }); }
+    if (commandSearchRequested && route.id === "commands") {
+      var commandSearch = document.getElementById("command-search");
+      if (commandSearch) { commandSearchRequested = false; commandSearch.focus(); }
+    }
     scrollPositions.forEach(function (position) {
       var region = document.getElementById(position.id);
       if (region && main.contains(region)) { region.scrollLeft = position.left; region.scrollTop = position.top; }
@@ -1661,6 +1808,11 @@
     keys[libraryPath] = "library"; keys[tracesPath] = "traces"; keys[tracePath] = "trace"; keys["benchmark-history"] = "benchmarks";
     return Promise.all(wants.map(function (w) {
       return api("/v1/" + w).then(function (d) {
+        if (w === "command-catalog" && (!d || !Array.isArray(d.commands) || d.commands.some(function (command) {
+          return !command || typeof command.name !== "string" || !/^[a-z][a-z0-9_-]*$/.test(command.name) ||
+            typeof command.group !== "string" || typeof command.description !== "string" || typeof command.runnable !== "boolean" ||
+            command.example !== undefined && (!Array.isArray(command.example) || command.example.some(function (arg) { return typeof arg !== "string"; }));
+        }))) throw new Error("The gateway returned an invalid command catalog.");
         if (w.indexOf("learning/") === 0) {
           var valid = d && typeof d === "object" && !Array.isArray(d) && d.schema === "unimem.learning.v1";
           if (valid && w === "learning/capabilities") valid = Array.isArray(d.operations) &&
@@ -1699,6 +1851,7 @@
           state[keys[p[0]] || (p[0].indexOf("lesson?") === 0 ? "lesson" : p[0])] = p[1];
         });
         if (wants.indexOf("capabilities") !== -1) { capabilitiesAt = Date.now(); capabilitiesToken = requestedToken; }
+        state.pageError = null;
         lastOk = Date.now();
         setConn("ok", "Live · updated " + ago(new Date(lastOk).toISOString()));
         paintHeader();
@@ -1708,7 +1861,8 @@
         if (!current()) return;
         if (e && e.auth && !requestedToken && document.getElementById("tok")) { setConn("bad", "Not connected"); return; }
         if (e && e.auth) { token = ""; clearCredentialState(); try { sessionStorage.removeItem("unimem-token"); } catch (x) { /* ignore */ } main.textContent = ""; main.appendChild(viewAuth(requestedToken ? "That token was not accepted." : null)); setConn("bad", "Not connected"); return; }
-        if (e && !e.auth) console.error(e);
+        state.pageError = e && e.message || "The page could not be loaded. Check the connection and retry.";
+        paint(true);
         setConn("bad", lastOk ? "Disconnected · last update " + ago(new Date(lastOk).toISOString()) : "Cannot reach the gateway");
       });
   }
@@ -1743,7 +1897,14 @@
   document.addEventListener("keydown", function (event) {
     if (event.key === "Escape" && document.body.classList.contains("menu-open")) { closeMenu(); menuToggle.focus(); }
   });
-  if (commandLaunch) commandLaunch.addEventListener("click", function () { location.hash = "#/commands"; });
+  function openCommands() {
+    commandSearchRequested = true;
+    if (currentRoute().id === "commands") {
+      var search = document.getElementById("command-search");
+      if (search) { commandSearchRequested = false; search.focus(); }
+    } else location.hash = "#/commands";
+  }
+  if (commandLaunch) commandLaunch.addEventListener("click", openCommands);
   if (disconnect) disconnect.addEventListener("click", function () {
     token = "";
     try { sessionStorage.removeItem("unimem-token"); } catch (e) { /* private mode */ }
@@ -1756,7 +1917,7 @@
   }
   document.addEventListener("keydown", function (event) {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
-      event.preventDefault(); location.hash = "#/commands";
+      event.preventDefault(); openCommands();
     }
   });
 
@@ -1782,8 +1943,10 @@
   window.addEventListener("hashchange", function () {
     navigationGeneration++;
     closeMenu();
+    state.pageError = null;
     state.library = null; state.traces = null; state.trace = null; state.benchmarks = null;
-    render(); main.focus(); refresh();
+    var focusCommands = commandSearchRequested;
+    render(); if (!focusCommands) main.focus(); refresh();
   });
   document.addEventListener("visibilitychange", function () { if (!document.hidden) refresh(); });
   setInterval(function () { if (lastOk && connState.indexOf("ok") === 0) setConn("ok", "Live · updated " + ago(new Date(lastOk).toISOString())); }, 1000);

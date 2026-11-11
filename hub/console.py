@@ -1769,6 +1769,7 @@ def _render_learning(
     flash: str = "",
     draft: dict | None = None,
     draft_operation: str = "configure",
+    worker_available: bool | None = None,
 ) -> str:
     """Render measured evidence without confusing per-key counts with org-wide evaluation."""
     data = data or {}
@@ -1785,6 +1786,14 @@ def _render_learning(
         body.append(f'<p class="err" role="alert">{h(error)}</p>')
     if flash:
         body.append(f'<p class="flash" role="status">{h(flash)}</p>')
+    if worker_available is not None:
+        if worker_available:
+            body.append('<p class="muted" role="status">Background learning worker is available.</p>')
+        else:
+            body.append(
+                '<p class="err" role="alert">Background learning worker is unavailable. '
+                "Automatic evaluation may be delayed. Refresh evidence or contact your operator.</p>"
+            )
     description = {
         "off": "Memories are delivered without randomized holdouts. Automatic policy changes are off.",
         "observe": "Randomized holdouts collect evidence. Delivery policy changes require adaptive mode.",
@@ -1855,8 +1864,9 @@ def _render_learning(
                     f"<li>{h(_LEARNING_BLOCKERS.get(reason, str(reason).replace('_', ' ').capitalize()))}</li>"
                     for reason in blocked
                 )
-                + '</ul><p class="muted">Affected cohorts cannot change policy; '
-                "eligible cohorts are evaluated independently.</p>"
+                + '</ul><p class="muted">Pending receipts or outcomes defer the incomplete chronological tail; '
+                "complete earlier evidence may still be evaluated. Delivery mismatches and integrity failures "
+                "continue to block affected cohorts.</p>"
             )
         elif report:
             body.append(
@@ -1912,11 +1922,16 @@ def _render_learning(
                     if entry.get("ci_low") is not None and entry.get("ci_high") is not None
                     else "Unavailable"
                 )
+                rationale = (
+                    f"<details><summary>Why this verdict</summary><p>{h(entry['note'])}</p></details>"
+                    if entry.get("note")
+                    else ""
+                )
                 rows.append(
                     f'<tr><th scope="row"><code>{h(entry.get("id"))}</code><small>Revision '
                     f"{h(entry.get('revision'))}</small></th>"
                     f"<td>{h(entry.get('task_context') or 'Default context')}</td>"
-                    f"<td>{h(str(entry.get('verdict', 'Unknown')).replace('_', ' ').capitalize())}</td>"
+                    f"<td>{h(str(entry.get('verdict', 'Unknown')).replace('_', ' ').capitalize())}{rationale}</td>"
                     f"<td>{h(f'{effect:+.1%}' if effect is not None else 'Unavailable')}"
                     f"<small>{h(interval)}</small></td>"
                     f"<td>{h(delivery)}</td></tr>"
@@ -2265,7 +2280,17 @@ def add_console_routes(
         response = _page(
             "Learning",
             _render_learning(
-                data, _is_admin(claims), error=error, flash=flash, draft=draft, draft_operation=draft_operation
+                data,
+                _is_admin(claims),
+                error=error,
+                flash=flash,
+                draft=draft,
+                draft_operation=draft_operation,
+                worker_available=(
+                    bool(worker.get("running") and worker.get("healthy"))
+                    if isinstance(worker := getattr(app.state, "learning_worker_health", None), dict)
+                    else None
+                ),
             ),
         )
         response.status_code = status_code

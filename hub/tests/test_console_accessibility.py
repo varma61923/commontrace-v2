@@ -60,6 +60,17 @@ def preview():
                     f'<h1>{console.h(title)}</h1><label for="preview-filter">Filter rows</label>'
                     '<input id="preview-filter">'
                 )
+            if "controls" in self.path:
+                body = (
+                    '<h1>Audit log</h1><button type="button" data-js data-print hidden>Print audit</button>'
+                    '<div class="scroll"><table><thead><tr><th scope="col">Action</th>'
+                    '<th scope="col">Count</th></tr></thead><tbody>'
+                    + "".join(
+                        f'<tr><td>Action {index}</td><td data-v="{value}">{value}</td></tr>'
+                        for index, value in enumerate((10, 2, 0, -4, 30, 3))
+                    )
+                    + "</tbody></table></div>"
+                )
             token = console._VIEW.set({"org_name": "Browser fixture", "is_admin": True})
             try:
                 response = console._page(title, body)
@@ -196,5 +207,40 @@ def test_learning_progressive_disclosure_and_touch_targets(browser, preview):
         pw.expect(page.get_by_label("Mode", exact=True)).to_be_visible()
         pw.expect(page.locator(".learning-flow")).to_be_visible()
         assert page.evaluate("()=>document.documentElement.scrollWidth<=innerWidth")
+    finally:
+        context.close()
+
+
+def test_table_sort_filter_print_and_theme_controls_are_connected(browser, preview):
+    context = browser.new_context(viewport={"width": 1440, "height": 900})
+    try:
+        page = context.new_page()
+        page.goto(preview + "/app/audit?controls")
+        column = page.get_by_role("columnheader", name=re.compile("^Count"))
+        column.focus()
+        column.press("Enter")
+        pw.expect(column).to_have_attribute("aria-sort", "ascending")
+        assert page.locator("tbody tr td:last-child").all_text_contents() == ["-4", "0", "2", "3", "10", "30"]
+        column.press("Space")
+        pw.expect(column).to_have_attribute("aria-sort", "descending")
+        assert page.locator("tbody tr td:last-child").all_text_contents() == ["30", "10", "3", "2", "0", "-4"]
+        page.get_by_label("Filter this table", exact=True).fill("Action 3")
+        assert page.locator("tbody tr:visible").all_text_contents() == ["Action 3-4"]
+        page.get_by_label("Filter this table", exact=True).fill("missing action")
+        pw.expect(page.locator("tbody tr:visible")).to_have_count(0)
+        pw.expect(page.get_by_text("0 of 6 rows", exact=True)).to_be_visible()
+        page.get_by_label("Filter this table", exact=True).fill("")
+        pw.expect(page.locator("tbody tr:visible")).to_have_count(6)
+        page.evaluate("window.print = () => window.printInvoked = true")
+        page.get_by_role("button", name="Print audit", exact=True).click()
+        assert page.evaluate("window.printInvoked") is True
+        theme = page.get_by_role("button", name=re.compile("Colour theme:"))
+        theme.click()
+        pw.expect(page.locator("html")).to_have_attribute("data-theme", "light")
+        theme.click()
+        pw.expect(page.locator("html")).to_have_attribute("data-theme", "dark")
+        page.reload()
+        pw.expect(page.locator("html")).to_have_attribute("data-theme", "dark")
+        assert_axe(page)
     finally:
         context.close()

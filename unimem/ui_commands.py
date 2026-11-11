@@ -22,7 +22,8 @@ MAX_OUTPUT_CHARS = 200_000
 
 # These commands own the process or can recursively start another server. The
 # console can show their help and copyable command shape, but must not block the
-# gateway thread or replace the process serving the UI. Store setup/install are
+# gateway thread or replace the process serving the UI. Their exact --help
+# request only parses arguments and is safe to inspect. Store setup/install are
 # safe because the runner pins their destination to the authenticated store.
 _TERMINAL_ONLY = frozenset({"daemon", "gateway", "serve", "watch", "evolve", "up", "setup", "providers", "demo"})
 
@@ -221,7 +222,7 @@ class BoundedCapture(io.StringIO):
 # Default-deny unreviewed handlers while the operator has disabled approval.
 # Match the parsed function, so argparse option ordering/abbreviations cannot
 # disguise a write behind a read-only subcommand name. Help exits before a
-# function is selected and remains available for every non-lifecycle command.
+# function is selected. Exact --help also remains available for lifecycle commands.
 _READ_ONLY_HANDLERS = {
     "help": frozenset({"run"}),
     "doctor": frozenset({"run"}),
@@ -341,9 +342,9 @@ def run(
 
     if not isinstance(command, str) or command not in _COMMANDS:
         raise UICommandError("unknown UniMem command")
-    if command in _TERMINAL_ONLY:
-        raise UICommandError(f"{command} is terminal-only because it owns the gateway or process lifecycle")
     argv = _validate_args(args)
+    if command in _TERMINAL_ONLY and argv != ["--help"]:
+        raise UICommandError(f"{command} is terminal-only because it owns the gateway or process lifecycle")
     command_args = [*argv, "--dest", os.path.abspath(root)] if command in {"init", "install"} else argv
     stdout, stderr = BoundedCapture(), BoundedCapture()
     started = time.perf_counter()

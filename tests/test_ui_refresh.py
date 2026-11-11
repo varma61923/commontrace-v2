@@ -30,7 +30,7 @@ function ago() {return 'now';}
 function paintHeader() {}
 function render() {painted++;}
 function paint(force) {painted++;}
-function api(path) {requested.push(path); return Promise.resolve({path});}
+function api(path) {requested.push(path); return Promise.resolve(path.endsWith('/command-catalog')?{commands:[]}:{path});}
 """
     output = subprocess.run(
         [
