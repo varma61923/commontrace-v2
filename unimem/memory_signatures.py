@@ -282,7 +282,11 @@ def kernel(
     path = signatures_path(root)
     with _jsonl.locked(path):
         signatures = load(root)
-        expired = {memory for memory, sig in signatures.items() if memory not in measured | active and sig.at < cutoff}
+        expired = {
+            memory
+            for memory, sig in signatures.items()
+            if memory not in measured and memory not in active and sig.at < cutoff
+        }
         if expired:
             _jsonl.write_rows(path, [row for row in _jsonl.read_rows(path) if row.get("id") not in expired])
             with _INDEX_LOCK:
