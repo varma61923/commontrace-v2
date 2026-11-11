@@ -62,7 +62,7 @@ attrs==26.1.0
 # Remove compromised emSign certificate roots (GHSA-6q48-6c7w-9gw2).
 certifi==2026.10.23
 cffi==2.1.1
-click==8.5.0
+click==8.5.1
 cryptography==50.0.2
 greenlet==3.5.6
 h11==0.16.0
