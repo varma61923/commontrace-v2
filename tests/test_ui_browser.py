@@ -1125,7 +1125,7 @@ def test_command_draft_and_arguments_survive_help_poll_and_navigation(page: Page
     page.evaluate("document.querySelector('#command-args').dataset.original = 'yes'")
     holdout_io.configure(console.root, rate=0.2)
     page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
-    page.wait_for_function("document.querySelector('#command-args').dataset.original !== 'yes'")
+    pw.expect(page.locator("#command-args")).not_to_have_attribute("data-original", "yes")
     pw.expect(args).to_have_value("search\nUnsubmitted payment investigation")
     navigate(page, "Review")
     navigate(page, "Command center")
@@ -1205,7 +1205,7 @@ def test_pending_command_cannot_restore_old_output_after_session_or_navigation_c
     page.route("**/v1/command", lambda route: held.append((route, route.fetch())))
     navigate(page, "Command center")
     page.get_by_role("button", name="Load --help", exact=True).click()
-    page.wait_for_function("document.querySelector('#command-run').disabled")
+    pw.expect(page.locator("#command-run")).to_be_disabled()
     deadline = time.monotonic() + 10
     while not held and time.monotonic() < deadline:
         page.wait_for_timeout(25)
