@@ -25,7 +25,7 @@ httpx2==2.16.0             # MCP 2.3's native transport client; also pinned in t
 # 2.0.54 is the newest release that still supports Python 3.10, which this
 # project's CI matrix and ruff target-version both include. sqlalchemy >= 2.1.0
 # is Python >= 3.11 only, so pinning higher silently drops 3.10 support.
-sqlalchemy[asyncio]==2.0.55
+sqlalchemy[asyncio]==2.0.57
 asyncpg==0.32.0            # async Postgres driver
 alembic==1.20.1
 argon2-cffi==25.1.0        # API key hashing
