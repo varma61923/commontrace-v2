@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import math
 import os
 import random
 import types
@@ -69,6 +70,96 @@ def simulate(rng, n, lessons, *, rate_for, effect_for, base_for=lambda ctx: 0.5,
 
 
 # -- estimation -----------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("probability", [1e-160, 1e-200, math.ulp(0.0)])
+def test_extreme_valid_propensities_keep_scale_invariant_contrasts_and_posteriors(probability):
+    def rows(rate):
+        return [
+            Row("m", "withheld-success", False, True, rate, "a"),
+            Row("m", "withheld-failure", False, False, rate * 2, "a"),
+            Row("m", "injected-success", True, True, 0.5, "a"),
+            Row("m", "injected-failure", True, False, 0.5, "a"),
+        ]
+
+    actual = causal_gate.contrast(rows(probability))
+    expected = causal_gate.contrast(rows(0.1))
+    assert actual is not None and expected is not None
+    assert actual.effect == pytest.approx(expected.effect, abs=1e-14)
+    assert actual.variance == pytest.approx(expected.variance, abs=1e-14)
+    model = causal_gate.fit(rows(probability))
+    assert math.isfinite(model.lessons["m"].mean)
+    assert math.isfinite(model.lessons["m"].sd)
+
+
+def test_leaving_out_an_extreme_context_recomputes_the_retained_weight_scale():
+    grouped = {
+        ctx: [
+            Row("m", f"{ctx}-1", False, True, probability, ctx),
+            Row("m", f"{ctx}-2", False, False, probability * 2, ctx),
+            Row("m", f"{ctx}-3", True, True, 0.5, ctx),
+            Row("m", f"{ctx}-4", True, False, 0.5, ctx),
+        ]
+        for ctx, probability in (("extreme", math.ulp(0.0)), ("regular", 0.1), ("other", 0.2))
+    }
+    actual = causal_gate._context_contrasts(grouped, grouped)
+    for ctx in grouped:
+        assert actual[ctx] == causal_gate.contrast([r for key, rows in grouped.items() if key != ctx for r in rows])
+
+
+@pytest.mark.parametrize("rate", [1e-200, math.ulp(0.0)])
+def test_tiny_valid_rates_allow_injected_propensities_rounded_to_one(rate):
+    grouped = {
+        context: [
+            Row("m", f"{context}-{i}", injected, succeeded, rate, context)
+            for i, (injected, succeeded) in enumerate(((False, True), (False, False), (True, True), (True, False)))
+        ]
+        for context in ("a", "b")
+    }
+    rows = [row for group in grouped.values() for row in group]
+    assert rows[2].propensity == 1.0
+    contrast = causal_gate.contrast(rows)
+    assert contrast is not None and contrast.effect == 0.0 and math.isfinite(contrast.variance)
+    assert causal_gate._context_contrasts(grouped, grouped) == {
+        context: causal_gate.contrast(grouped["b" if context == "a" else "a"]) for context in grouped
+    }
+    model = causal_gate.fit(rows)
+    assert math.isfinite(model.lessons["m"].mean) and math.isfinite(model.lessons["m"].sd)
+
+
+@pytest.mark.parametrize("rate", [0.0, 1.0, -0.1, 1.1, float("nan"), float("inf")])
+def test_contrast_rejects_invalid_randomization_probabilities(rate):
+    with pytest.raises(ValueError, match="propensities"):
+        causal_gate.contrast([Row("m", "invalid", False, True, rate), Row("m", "other", True, False, 0.5)])
+
+
+@pytest.mark.parametrize("seed", range(8))
+def test_grouped_leave_context_out_matches_original_weighted_contrast(seed):
+    rng = random.Random(seed)
+    grouped = {
+        f"c{c}": [
+            Row("memory", f"{c}-{i}", rng.random() < 0.5, rng.random() < 0.7, rng.uniform(0.01, 0.99), f"c{c}")
+            for i in range(c * 3 + 1)
+        ]
+        for c in range(40)
+    }
+    grouped[""] = [Row("memory", "unlabelled", True, False, 0.7)]
+    targets = ["c0", "c1", "c17", "c39"]
+    actual = causal_gate._context_contrasts(grouped, targets)
+    for ctx in targets:
+        expected = causal_gate.contrast([r for key, rows in grouped.items() if key != ctx for r in rows])
+        assert expected is not None and actual[ctx] is not None
+        assert actual[ctx].effect == pytest.approx(expected.effect, abs=1e-12)
+        assert actual[ctx].variance == pytest.approx(expected.variance, abs=1e-12)
+        assert (actual[ctx].n_injected, actual[ctx].n_withheld) == (expected.n_injected, expected.n_withheld)
+
+
+def test_grouped_contexts_keep_unidentified_arms_and_nonbinary_legacy_behavior():
+    grouped = {"a": [Row("m", "1", True, True, 0.5)], "b": [Row("m", "2", True, False, 0.5)]}
+    assert causal_gate._context_contrasts(grouped, ["a", "b"]) == {"a": None, "b": None}
+    grouped["c"] = [Row("m", "3", False, 0.3, 0.5)]
+    actual = causal_gate._context_contrasts(grouped, ["a"])
+    assert actual["a"] == causal_gate.contrast([*grouped["b"], *grouped["c"]])
 
 
 def test_the_contrast_is_unbiased_when_the_holdout_rate_depends_on_the_context():
@@ -500,3 +591,23 @@ def test_mcp_retrieve_logs_the_agent_type_and_the_report_tool_answers(tmp_path):
     report = call(server, "causal_gate_report")
     assert report["model"]["rows"] == 0 and "note" in report
     assert "error" in json.dumps(call(server, "causal_gate_report", floor=0.7)).lower()
+
+
+def test_extreme_importance_weights_cannot_manufacture_overlap():
+    # Forty apparently favorable occasions have huge ratios, but one ratio
+    # dominates all the others: the evaluation has effectively one observation.
+    rows = [Row("memory", str(i), False, i < 40, 1e-200 if i == 0 else (1e-60 if i < 40 else 0.5)) for i in range(80)]
+    result = causal_gate.policy_value(rows, lambda _lesson, _context: 0.5)
+    assert result.effective_sample_size == pytest.approx(1.0)
+    assert result.verdict == "INSUFFICIENT_OVERLAP"
+
+
+def test_uniformly_tiny_joint_importance_weights_preserve_overlap():
+    # Each complete assignment is unlikely under the candidate policy, but every
+    # occasion has the same ratio. A common scale cannot change the SNIS mean/ESS.
+    rows = [Row(f"memory-{j}", str(i), False, bool(i % 2), 0.5) for i in range(40) for j in range(200)]
+    result = causal_gate.policy_value(rows, lambda _lesson, _context: 0.005)
+    assert result.effective_sample_size == pytest.approx(40.0)
+    assert result.policy_value == pytest.approx(0.5)
+    assert result.lift == pytest.approx(0.0)
+    assert result.verdict == "INCONCLUSIVE"

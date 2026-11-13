@@ -121,7 +121,7 @@ def add_signup_routes(
                     f"{MAX_NAME_CHARS} characters.</p>",
                 ),
             )
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, operator=True) as session:
             org = Organization(name=org_name)
             session.add(org)
             await session.flush()

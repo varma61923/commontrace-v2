@@ -77,9 +77,9 @@ FACT_STORES = ("sqlite", "jsonl")
 
 def fact_store_choice(args: argparse.Namespace) -> str:
     """The fact backend for a new store: --fact-store, else UNIMEM_FACT_STORE, else sqlite."""
-    from unimem.configuration import getenv
+    from unimem.configuration import setting
 
-    choice = (getattr(args, "fact_store", None) or getenv("UNIMEM_FACT_STORE", "") or "sqlite").strip().lower()
+    choice = (getattr(args, "fact_store", None) or setting("UNIMEM_FACT_STORE", "") or "sqlite").strip().lower()
     if choice not in FACT_STORES:
         raise ValueError(f"UNIMEM_FACT_STORE must be one of {', '.join(FACT_STORES)}")
     return choice

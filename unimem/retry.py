@@ -26,7 +26,7 @@ def retry_after_seconds(value: str | None, attempt: int) -> float:
     """How long to wait: the server's ``Retry-After`` if sane, else backoff.
 
     ``Retry-After`` may be delta-seconds or an HTTP-date; garbage, negative,
-    and NaN values fall back to ``2**(attempt-1)`` with ±25% jitter, capped at
+    and NaN values fall back to ``2**(attempt-1)`` with up to 25% jitter, capped at
     :data:`MAX_WAIT_SECONDS`.
     """
     if value:
@@ -41,9 +41,14 @@ def retry_after_seconds(value: str | None, attempt: int) -> float:
                     delay = (when - now).total_seconds()
             except (TypeError, ValueError, OverflowError):
                 pass
-        if delay == delay and delay > 0:  # not NaN, positive
+        if delay == delay and delay >= 0:  # not NaN; zero means retry immediately
             return min(delay, MAX_WAIT_SECONDS)
-    return min(MAX_WAIT_SECONDS, (2.0 ** max(0, attempt - 1)) * (1.0 + random.random() * 0.25))
+    # Saturate before exponentiation; a large retry budget must not overflow
+    # while computing a delay that is already capped.
+    exponent = max(0, attempt - 1)
+    if exponent >= 6:  # 2**6 already exceeds the 60-second cap, before jitter.
+        return MAX_WAIT_SECONDS
+    return min(MAX_WAIT_SECONDS, (2.0**exponent) * (1.0 + random.random() * 0.25))
 
 
 def is_retryable(exc: BaseException, *, idempotent: bool) -> tuple[bool, str | None]:
@@ -109,13 +114,19 @@ def read_within(response: Any, limit: int, seconds: float) -> bytes:
     if read is None:
         # Not an http.client response (a wrapper or test double): keep the
         # historical single bounded read, whose stream semantics are unknown.
-        return bytes(response.read(limit + 1))
+        started = time.monotonic()
+        result = bytes(response.read(limit + 1))
+        if time.monotonic() - started > seconds:
+            raise TimeoutError(f"response body not received within {seconds:g}s")
+        return result
     deadline = time.monotonic() + seconds
     body = bytearray()
     while len(body) <= limit:
         if time.monotonic() > deadline:
             raise TimeoutError(f"response body not received within {seconds:g}s")
         chunk = read(min(65536, limit + 1 - len(body)))
+        if time.monotonic() > deadline:
+            raise TimeoutError(f"response body not received within {seconds:g}s")
         if not chunk:
             break
         body += chunk

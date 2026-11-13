@@ -33,4 +33,12 @@ spec:
     {{- else }}
       {}
     {{- end }}
+    {{- if .Values.networkPolicy.httpsCIDRs }}
+    - to:
+        {{- range .Values.networkPolicy.httpsCIDRs }}
+        - ipBlock: { cidr: {{ . | quote }} }
+        {{- end }}
+      ports:
+        - { port: 443, protocol: TCP }
+    {{- end }}
 {{- end }}

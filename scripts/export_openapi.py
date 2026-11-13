@@ -1,6 +1,6 @@
 """Export the gateway's OpenAPI contracts without a live store.
 
-`sdk/openapi.json` is the memory SDK subset the generated clients are built
+`sdk/openapi.json` is the memory and learning SDK subset the generated clients are built
 from; `openapi/gateway.json` is every gateway route.
 """
 
@@ -34,11 +34,14 @@ def document() -> dict:
     with tempfile.TemporaryDirectory() as root:
         result = Gateway(root)._openapi({}, {})
     result.pop("tags", None)
-    result["paths"] = {path: value for path, value in result["paths"].items() if path.startswith("/v1/memory/")}
-    # The SDK clients take the memory operations only: no shared header parameters and
-    # no schemas the memory paths never reference.
+    result["paths"] = {
+        path: value for path, value in result["paths"].items() if path.startswith(("/v1/memory/", "/v1/learning/"))
+    }
+    # Keep operation query parameters, removing only shared gateway headers.
     for operation in (op for item in result["paths"].values() for op in item.values()):
-        del operation["parameters"]
+        parameters = [p for p in operation.pop("parameters", []) if "$ref" not in p]
+        if parameters:
+            operation["parameters"] = parameters
         for response in operation["responses"].values():
             response.pop("headers", None)
     components = result["components"]

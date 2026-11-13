@@ -326,3 +326,158 @@ def test_ros_stl_service_blocks_violating_action_and_contains_malformed_input(tm
         SimpleNamespace(request_json="not-json"), SimpleNamespace()
     )
     assert not malformed.allowed and malformed.error == "JSONDecodeError" and errors
+
+
+class _Refusing:
+    """A gateway that definitively refuses one occasion and accepts the rest."""
+
+    def __init__(self, refused):
+        self.refused, self.accepted = refused, []
+
+    def post(self, path, body):
+        if body["occasion_id"] == self.refused:
+            raise bridge.GatewayRefused(409, "conflicting_outcome")
+        self.accepted.append(body["occasion_id"])
+        return {"recorded": True}
+
+
+def test_a_refused_outcome_never_blocks_the_outcomes_queued_after_it(tmp_path):
+    queue = edge.OutcomeQueue(str(tmp_path))
+    for occasion in ("t1", "t2", "t3"):
+        queue.enqueue({"occasion_id": occasion, "reward": 0.5})
+    gateway_ = _Refusing("t2")
+    assert queue.flush(gateway_.post) == 2 and gateway_.accepted == ["t1", "t3"]
+    assert queue.pending() == []
+    [refused] = queue.rejected()
+    assert refused == {
+        "occasion_id": "t2",
+        "status": 409,
+        "code": "conflicting_outcome",
+        "body": {"occasion_id": "t2", "reward": 0.5},
+    }
+
+    def offline(_path, _body):
+        raise ConnectionError("offline")
+
+    queue.enqueue({"occasion_id": "t4", "succeeded": True})
+    with pytest.raises(ConnectionError):
+        queue.flush(offline)
+    assert [b["occasion_id"] for b in queue.pending()] == ["t4"]
+
+
+def test_a_robot_learns_of_a_refusal_and_its_queue_settles_it(tmp_path):
+    root = str(tmp_path / "store")
+    holdout_io.configure(root, rate=0.5, salt="refusal")
+    queue = edge.OutcomeQueue(str(tmp_path / "edge"))
+    robot = bridge.RobotBridge(
+        _Refusing("t1"), embodiment="arm", site="cell", skill="pick", robot="r1", outcome_queue=queue
+    )
+    with pytest.raises(bridge.GatewayRefused, match="409"):
+        robot.finish("t1", reward=0.4)
+    assert queue.pending() == [] and [r["occasion_id"] for r in queue.rejected()] == ["t1"]
+
+
+def test_the_http_transport_tells_a_refusal_from_an_outage():
+    import http.server
+    import threading
+
+    replies = {"/v1/outcome": (409, {"error": {"code": "conflicting_outcome", "message": "x"}})}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            status, body = replies["/v1/outcome"]
+            raw = json.dumps(body).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def log_message(self, *_args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        transport = bridge.HTTPGateway(f"http://127.0.0.1:{server.server_address[1]}", TOKEN)
+        with pytest.raises(bridge.GatewayRefused) as refused:
+            transport.post("/v1/outcome", {"occasion_id": "t1", "reward": 0.5})
+        assert (refused.value.status, refused.value.code) == (409, "conflicting_outcome")
+        for status in (401, 403, 404, 429, 503):
+            replies["/v1/outcome"] = (status, {"error": {"code": "later"}})
+            with pytest.raises(bridge.GatewayUnavailable, match="queued for retry") as unavailable:
+                transport.post("/v1/outcome", {"occasion_id": "t1", "reward": 0.5})
+            assert isinstance(unavailable.value, ConnectionError)
+            assert (unavailable.value.status, unavailable.value.code) == (status, "later")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.mark.parametrize("endpoint", ["https:///path", "https://host:0", "https://host:bad", "https://host:65536"])
+def test_gateway_rejects_invalid_hosts_and_ports(endpoint):
+    with pytest.raises(ValueError):
+        bridge.HTTPGateway(endpoint, TOKEN)
+
+
+@pytest.mark.parametrize("status", [200, 409, 503])
+def test_gateway_bounds_body_reads_and_closes_responses(monkeypatch, status):
+    from urllib.error import HTTPError
+
+    from unimem import retry
+
+    clock = [0.0]
+
+    class Response:
+        closed = False
+
+        def read1(self, n):
+            clock[0] += 0.6
+            return b"x"
+
+        def close(self):
+            self.closed = True
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            self.close()
+
+    response = Response()
+
+    class Opener:
+        def open(self, *_args, **_kwargs):
+            if status != 200:
+                raise HTTPError("https://gateway", status, "failure", {}, response)
+            return response
+
+    monkeypatch.setattr(bridge, "build_opener", lambda *_: Opener())
+    monkeypatch.setattr(retry.time, "monotonic", lambda: clock[0])
+    transport = bridge.HTTPGateway("https://gateway", TOKEN, timeout=1)
+    with pytest.raises(bridge.GatewayRefused if status == 409 else ConnectionError):
+        transport.post("/v1/outcome", {"occasion_id": "task", "reward": 1})
+    assert response.closed and clock[0] == pytest.approx(1.2)
+
+
+def test_a_replayed_outcome_after_a_power_loss_completes_through_the_gateway(tmp_path, monkeypatch):
+    from unimem import rewards
+
+    root = str(tmp_path / "store")
+    holdout_io.configure(root, rate=0.5, salt="power-loss")
+    queue = edge.OutcomeQueue(str(tmp_path / "edge"))
+    queue.enqueue({"occasion_id": "t1", "reward": 0.6, "agent_id": "r1"})
+    record_outcome = holdout_io.record_outcome
+
+    def power_loss(*_args, **_kwargs):
+        raise OSError("power lost between the reward and the outcome")
+
+    monkeypatch.setattr(holdout_io, "record_outcome", power_loss)
+    with pytest.raises(OSError):
+        rewards.record(root, "t1", reward=0.6)
+    monkeypatch.setattr(holdout_io, "record_outcome", record_outcome)
+    assert rewards.audit(root).interrupted == ("t1",)
+    assert queue.flush(LocalTransport(root).post) == 1
+    assert queue.pending() == [] and rewards.audit(root).problems == ()
+    assert holdout_io.read_outcomes(root)["t1"] == rewards.realize("power-loss", "t1", 0.6)

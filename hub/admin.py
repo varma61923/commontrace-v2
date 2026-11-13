@@ -71,7 +71,7 @@ from hub import audit as audit_module
 from hub import auth, crud, events, manage, plans, rbac, retention, scopes
 from hub.abuse import RateLimiterBackend, make_named_limiter, rate_limit_key
 from hub.config import HubConfig
-from hub.db import session_scope
+from hub.db import operator_session_scope as session_scope
 from hub.models import (
     ApiKey,
     AuditLogEntry,

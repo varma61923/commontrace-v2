@@ -55,7 +55,7 @@ Wait for extraction to complete before consuming its output:
 python scripts/graphify_audit.py \
   --graph ../unimem-architecture/graphify-out/graph.json \
   --output ../unimem-architecture/audit.json \
-  --source-root . --max-modules 398 --max-unreachable 318
+  --source-root . --max-modules 404 --max-unreachable 318
 
 graphify diagnose multigraph --json \
   --graph ../unimem-architecture/graphify-out/graph.json
@@ -68,6 +68,12 @@ and generated entry points can be absent from a static call graph. Self-loops
 can reflect recursive calls or imperfect name resolution; inspect them before
 calling them defects. A successful graph audit does not replace type checks,
 security analysis, or tests.
+
+The 404-module budget includes the durable local `learning` backend and shared
+`learning_contract` evaluator. Reviewed call edges connect gateway, MCP, daemon,
+leased jobs and the hosted SQL adapters to this boundary. Neither module has
+unreachable callable candidates in the reviewed extraction; retain the existing
+318-candidate reachability ceiling.
 
 Keep generated graphs outside the product tree unless the team deliberately
 chooses to version them. Graphs contain code identifiers and paths. Large graphs

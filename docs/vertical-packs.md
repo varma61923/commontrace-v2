@@ -1,7 +1,7 @@
 # Vertical configuration packs
 
 `unimem pack list` shows the eight versioned configuration bundles. Each
-contains named roadmap feature coverage, defaults, review rules, and a docs page.
+contains implemented feature coverage, defaults, review rules, and a docs page.
 `unimem pack install NAME --dest PATH` writes the pack manifest and its
 documentation without network access. `unimem pack demo NAME --seed N`
 executes real local feature workflows in temporary namespaces, then runs a

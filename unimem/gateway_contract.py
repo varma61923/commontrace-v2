@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from unimem.learning_contract import OPERATIONS as LEARNING_OPERATIONS
+
 REF = "#/components/schemas/"
 
 
@@ -214,6 +216,17 @@ SCHEMAS: dict[str, dict] = {
             "text": string(maxLength=20000),
             "protected": boolean("always delivered, never randomized"),
             "meta": obj({}, description="a small object (at most 4 KiB as JSON) echoed back"),
+            "embedding": array(
+                number(),
+                "optional vector from any encoder (text, vision-language, policy); lets the effect field "
+                "carry measured evidence between similar memories; never echoed back",
+                minItems=1,
+                maxItems=4096,
+            ),
+            "embedding_model": string(
+                "the encoder's label; memories are compared only within one label",
+                pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,63}$",
+            ),
         },
         ("id",),
     ),
@@ -765,9 +778,21 @@ OPERATIONS: dict[tuple[str, str], Operation] = {
         obj(
             {
                 "occasion_id": IDENT,
-                "succeeded": boolean("give this or signals, not both"),
+                "succeeded": boolean("give exactly one of succeeded, signals, reward or metrics"),
                 "signals": array(ref("Signal"), "evaluated three-valued", minItems=1, maxItems=16),
                 "combine": string(enum=["all", "any"]),
+                "reward": number(
+                    "graded outcome; recorded as succeeded with probability equal to the reward "
+                    "(audited randomized rounding), so effects are effects on expected reward",
+                    minimum=0,
+                    maximum=1,
+                ),
+                "metrics": {
+                    "type": "object",
+                    "description": "named measurements scored into a reward by the configured utility",
+                    "additionalProperties": number(),
+                    "maxProperties": 64,
+                },
                 "agent_id": AGENT_ID,
                 "env": ENV,
                 "secondary_metrics": obj(
@@ -782,6 +807,8 @@ OPERATIONS: dict[tuple[str, str], Operation] = {
                 "occasion_id": string(),
                 "recorded": boolean(),
                 "succeeded": boolean(),
+                "reward": number(),
+                "repaired": boolean("a reward whose outcome write was interrupted was completed by this call"),
                 "undecided": boolean(),
                 "reason": string(),
                 "note": string(),
@@ -1485,6 +1512,34 @@ EXTRA_PATHS: dict[str, dict] = {
 
 def memory_operation(operation: str) -> Operation:
     return Operation("memory_" + operation.replace("-", "_"), "Memory")
+
+
+def learning_operation(operation: str, method: str) -> Operation:
+    from unimem.learning_contract import request_schema
+
+    request = request_schema(operation)
+    request["properties"]["context"] = array(string(maxLength=256), maxItems=128)
+    query: tuple[tuple[str, dict, bool, str], ...] = (
+        ("context", array(string()), False, "Owner scope labels; agent credentials pin their scope."),
+    )
+    if operation == "status":
+        query += (("experiment_id", string(), False, "Inspect an experiment in the authenticated scope."),)
+    return Operation(
+        "learning_" + operation,
+        "Learning",
+        request=request if method == "POST" else None,
+        response=ANY_OBJECT,
+        errors=(400, 403, 404, 409, 413, 429),
+        query=query if method == "GET" else (),
+        description="Versioned scoped learning; assignment and delivery are distinct evidence.",
+    )
+
+
+for _learning_operation in LEARNING_OPERATIONS:
+    _learning_method = "GET" if _learning_operation in ("capabilities", "status") else "POST"
+    OPERATIONS[(_learning_method, "/v1/learning/" + _learning_operation)] = learning_operation(
+        _learning_operation, _learning_method
+    )
 
 
 # Inline model names derived from operationId can collide with the named memory

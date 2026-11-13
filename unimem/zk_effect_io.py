@@ -594,5 +594,11 @@ def verify(
 
 def export_witness(root: str, study: str, *, context: Sequence[str] = ()) -> dict[str, Any]:
     """Explicit owner disclosure for transparent verification, never an agent tool."""
+    from unimem import incident, policy_io, sentinel_io
+
     _store().operator()
-    return _witness(root, study, context)
+    with incident.protect(root):
+        header, _ = _study(root, study, context)
+        policy_io.assert_export(root, header["source_ids"], context=list(context))
+        sentinel_io.assert_generalize(root, header["source_ids"], context=context)
+        return _witness(root, study, context)

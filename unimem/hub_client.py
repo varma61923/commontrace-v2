@@ -7,6 +7,7 @@ if TYPE_CHECKING:
 
 import asyncio
 import contextlib
+import copy
 import glob
 import hashlib
 import itertools
@@ -18,6 +19,7 @@ import re
 import socket
 import sys
 import uuid
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Iterable, TypeVar, cast
 
@@ -177,29 +179,61 @@ def _validate_hub_url(hub_url: str) -> None:
         )
 
 
-class HttpStatusProbe:
-    """Records the last non-2xx HTTP response seen on one httpx client."""
+@dataclass
+class _HttpObservation:
+    status: int | None = None
+    retry_after: float | None = None
 
-    __slots__ = ("status", "retry_after")
+
+class HttpStatusProbe:
+    """Record non-2xx responses separately for each concurrent MCP call.
+
+    MCP's context-aware streams carry the caller's context into HTTP workers.
+    A mutable observation lets a child worker report back without sharing state
+    with another call on the same HTTP client.
+    """
+
+    __slots__ = ("_observation",)
 
     def __init__(self) -> None:
-        self.status: int | None = None
-        self.retry_after: float | None = None
+        self._observation: ContextVar[_HttpObservation | None] = ContextVar("unimem_hub_http_status", default=None)
+
+    @contextlib.contextmanager
+    def observing(self):
+        token = self._observation.set(_HttpObservation())
+        try:
+            yield
+        finally:
+            # Contexts retain their bound ContextVar keys. Restore the binding
+            # so repeated one-shot sessions do not retain every client probe.
+            self._observation.reset(token)
+
+    @property
+    def status(self) -> int | None:
+        observation = self._observation.get()
+        return observation.status if observation is not None else None
+
+    @property
+    def retry_after(self) -> float | None:
+        observation = self._observation.get()
+        return observation.retry_after if observation is not None else None
 
     def reset(self) -> None:
-        self.status = None
-        self.retry_after = None
+        self._observation.set(_HttpObservation())
 
     async def record(self, response) -> None:
         if response.status_code < 400:
             return
-        self.status = response.status_code
+        observation = self._observation.get()
+        if observation is None:
+            return
+        observation.status = response.status_code
         raw = response.headers.get("retry-after")
         if raw:
             try:
-                self.retry_after = max(0.0, float(str(raw).strip()))
+                observation.retry_after = max(0.0, float(str(raw).strip()))
             except ValueError:
-                self.retry_after = None
+                observation.retry_after = None
 
 
 async def _open_session(hub_url: str, api_key: str, timeout_seconds: float):
@@ -387,9 +421,13 @@ def _unwrap_result(name: str, result) -> dict:
         text = "; ".join(getattr(c, "text", str(c)) for c in result.content)
         raise HubToolError(f"Hub tool {name!r} returned an error: {text}")
     if result.structured_content is not None:
-        return result.structured_content
-    text = "".join(getattr(c, "text", "") for c in result.content)
-    return json.loads(text) if text else {}
+        payload = result.structured_content
+    else:
+        text = "".join(getattr(c, "text", "") for c in result.content)
+        payload = json.loads(text) if text else {}
+    if not isinstance(payload, dict):
+        raise HubToolError(f"Hub tool {name!r} response must be a JSON object")
+    return payload
 
 
 def _already_classified(exc: BaseException) -> HubConnectionError | None:
@@ -488,6 +526,60 @@ class _RateLimitGate:
                 self._min_interval = 0.0
 
 
+class HubLearningClient:
+    """Measured learning through the hosted MCP surface, with explicit negotiation."""
+
+    def __init__(self, session: "HubSession"):
+        self._session = session
+
+    async def capabilities(self) -> dict:
+        from unimem.client import learning_capabilities_reply
+
+        return learning_capabilities_reply(await self._session.call("learning_capabilities", {}))
+
+    async def call(self, operation: str, payload: dict | None = None) -> dict:
+        from unimem.client import LEARNING_OPERATIONS, learning_reply
+
+        if operation not in LEARNING_OPERATIONS:
+            raise ValueError("unknown learning operation")
+        if operation == "capabilities":
+            return await self.capabilities()
+        request = copy.deepcopy(dict(payload or {}))
+        if operation not in (await self.capabilities()).get("operations", []):
+            raise RuntimeError(f"peer does not support learning {operation}")
+        return learning_reply(
+            await self._session.call(
+                "learning_" + operation,
+                request,
+                retry_transport=operation not in {"configure", "run", "rollback"},
+            )
+        )
+
+    async def configure(self, mode: str, **options) -> dict:
+        return await self.call("configure", {**options, "mode": mode})
+
+    async def assign(self, occasion_id: str, memory_ids: list[str], **options) -> dict:
+        return await self.call("assign", {**options, "occasion_id": occasion_id, "memory_ids": memory_ids})
+
+    async def delivery(self, occasion_id: str, memory_ids: list[str], **options) -> dict:
+        return await self.call("delivery", {**options, "occasion_id": occasion_id, "memory_ids": memory_ids})
+
+    async def outcome(self, occasion_id: str, succeeded: bool | None = None, **options) -> dict:
+        body = {**options, "occasion_id": occasion_id}
+        if succeeded is not None:
+            body["succeeded"] = succeeded
+        return await self.call("outcome", body)
+
+    async def run(self, **options) -> dict:
+        return await self.call("run", options)
+
+    async def status(self, **options) -> dict:
+        return await self.call("status", options)
+
+    async def rollback(self, reason: str, **options) -> dict:
+        return await self.call("rollback", {**options, "reason": reason})
+
+
 class HubSession:
     """One live MCP session, reusable for many tool calls."""
 
@@ -500,15 +592,26 @@ class HubSession:
         probe: "HttpStatusProbe | None" = None,
         gate: "_RateLimitGate | None" = None,
     ):
+        if isinstance(timeout_seconds, bool) or not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            raise HubConfigurationError("Hub timeout must be a finite positive number")
+        if isinstance(max_attempts, bool) or not isinstance(max_attempts, int) or max_attempts < 1:
+            raise HubConfigurationError("max_attempts must be a positive integer")
         self._hub_url = hub_url
         self._api_key = api_key
+        self._timeout_seconds = timeout_seconds
         self._max_attempts = max_attempts
         self._probe = probe
         self._gate = gate if gate is not None else _RateLimitGate()
         self._session: ClientSession | None = None
+        self.learning = HubLearningClient(self)
 
     async def call(self, name: str, arguments: dict[str, Any], *, retry_transport: bool = True) -> dict:
         """One tool call, with retries."""
+        observation = self._probe.observing() if self._probe is not None else contextlib.nullcontext()
+        with observation:
+            return await self._call(name, arguments, retry_transport=retry_transport)
+
+    async def _call(self, name: str, arguments: dict[str, Any], *, retry_transport: bool) -> dict:
         current_session = self._session
         if current_session is None:
             raise HubConnectionError("Hub session is not open")
@@ -523,7 +626,13 @@ class HubSession:
                 self._probe.reset()
             await self._gate.wait()
             try:
-                result = _unwrap_result(name, await current_session.call_tool(name, arguments))
+                # HTTP read timeouts only bound inactivity on the MCP stream.
+                # Heartbeats/progress can keep that stream alive indefinitely;
+                # every RPC also needs its own completion deadline.
+                response = await asyncio.wait_for(
+                    current_session.call_tool(name, arguments), timeout=self._timeout_seconds
+                )
+                result = _unwrap_result(name, response)
                 refusal = _tool_rate_limit(result)
                 if refusal is not None:
                     raise refusal
@@ -568,14 +677,29 @@ class HubSession:
 
     async def contribute_trace(
         self,
-        text: str,
+        text: str = "",
         *,
         tags: list[str] | None = None,
         agent_type: str = "agent",
         rationale: str = "",
+        title: str | None = None,
+        context_text: str | None = None,
+        solution_text: str | None = None,
+        idempotency_key: str | None = None,
     ) -> dict:
-        """Submit a new trace or memory to the Hub Knowledge Base."""
-        args: dict[str, Any] = {"text": text, "agent_type": agent_type, "rationale": rationale}
+        """Submit a trace using the Hub's native title/context/solution contract.
+
+        Legacy ``text`` supplies the title and context, and ``rationale`` supplies
+        the solution. Explicit native fields take precedence. One key per logical
+        contribution makes retries safe after a lost response.
+        """
+        args: dict[str, Any] = {
+            "title": text[:120] if title is None else title,
+            "context_text": text if context_text is None else context_text,
+            "solution_text": rationale if solution_text is None else solution_text,
+            "agent_type": agent_type,
+            "idempotency_key": idempotency_key if idempotency_key is not None else "trace:" + uuid.uuid4().hex,
+        }
         if tags is not None:
             args["tags"] = tags
         return await self.call("contribute_trace", args)
@@ -632,7 +756,7 @@ class HubSession:
 
     async def add_comment(self, trace_id: str, body: str) -> dict:
         """Post a review comment or collaborative note on a trace."""
-        return await self.call("add_comment", {"trace_id": trace_id, "body": body})
+        return await self.call("add_comment", {"trace_id": trace_id, "body": body}, retry_transport=False)
 
     async def list_comments(self, trace_id: str) -> dict:
         """List all collaborative review comments on a trace."""
@@ -652,7 +776,7 @@ class HubSession:
 
     async def purge_subject_traces(self, subject_id: str) -> dict:
         """Purge all traces associated with a specific data subject ID."""
-        return await self.call("purge_subject_traces", {"subject_id": subject_id})
+        return await self.call("purge_traces_by_subject", {"subject_id": subject_id}, retry_transport=False)
 
     async def commons_overlap(self, failures: list[str]) -> dict:
         """Check known commons failures overlap."""
@@ -680,24 +804,27 @@ async def open_hub_session(
     on_first_pause: Callable[[float], None] | None = None,
 ):
     """Hold one MCP session open for a batch of calls. See HubSession."""
-    transport_ctx, ClientSession, http_client, probe = await _open_session(hub_url, api_key, timeout_seconds)
     hub_session = HubSession(
         hub_url,
         api_key,
         timeout_seconds,
         max_attempts,
-        probe,
         gate=_RateLimitGate(on_first_pause),
     )
+    # Validate options before allocating an HTTP client that needs cleanup.
+    transport_ctx, ClientSession, http_client, probe = await _open_session(hub_url, api_key, timeout_seconds)
+    hub_session._probe = probe
     try:
         async with transport_ctx as (read, write), ClientSession(read, write) as session:
-            try:
-                await session.initialize()
-            except Exception as exc:  # noqa: BLE001 - the handshake fails the same ways a call does
-                raise _transport_failure(hub_url, 1, exc, probe.status, probe.retry_after) from exc
+            with probe.observing():
+                try:
+                    await asyncio.wait_for(session.initialize(), timeout=timeout_seconds)
+                except Exception as exc:  # noqa: BLE001 - the handshake fails the same ways a call does
+                    raise _transport_failure(hub_url, 1, exc, probe.status, probe.retry_after) from exc
             hub_session._session = session
             yield hub_session
     finally:
+        hub_session._session = None
         await http_client.aclose()
 
 

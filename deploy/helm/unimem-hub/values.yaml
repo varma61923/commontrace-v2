@@ -1,11 +1,13 @@
 image:
   repository: ""
   tag: ""
+  digest: ""                              # preferred: sha256:<64 lowercase hex characters>
   pullPolicy: IfNotPresent
 
 existingSecret: ""
 
 replicaCount: 2
+terminationGracePeriodSeconds: 35
 config:
   HUB_HOST: "0.0.0.0"
   HUB_PORT: "8420"
@@ -17,6 +19,8 @@ config:
   HUB_DB_MAX_OVERFLOW: "5"
   HUB_REQUIRE_RLS: "true"
   HUB_REQUIRE_API_KEY_PEPPER: "true"     # existingSecret must hold HUB_API_KEY_PEPPER
+  HUB_READYZ_TIMEOUT_SECONDS: "2"        # below the readiness probe's 3s timeout
+  HUB_GRACEFUL_SHUTDOWN_SECONDS: "30"    # below terminationGracePeriodSeconds
   HUB_DATA_REGION: ""                    # e.g. eu or us; reported by /disclosure
   HUB_AUTH_CACHE_SECONDS: ""             # 0-60; revocations reach every replica by NOTIFY (hub/.env.example)
 
@@ -55,6 +59,7 @@ networkPolicy:
   enabled: false
   allowedNamespaceLabels: []             # e.g. [{kubernetes.io/metadata.name: ingress-nginx}]
   postgresCIDR: ""                       # egress to the database; empty = allow all egress
+  httpsCIDRs: []                         # explicit HTTPS destinations/proxy CIDRs when database egress is restricted
 
 metrics:
   serviceMonitor: false

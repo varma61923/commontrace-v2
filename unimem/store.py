@@ -98,21 +98,36 @@ class SQLiteStore(FilesStore):
         paths.enforce_boundary(root, self.index)
 
     def rebuild(self) -> int:
-        records = self.all()
         paths.safe_prepare_output_path(self.index)
-        with _jsonl.locked(self.index), closing(sqlite3.connect(self.index)) as db, db:
-            db.execute(
-                "CREATE TABLE IF NOT EXISTS records (id TEXT PRIMARY KEY, digest TEXT NOT NULL, text TEXT NOT NULL)"
-            )
-            db.execute("DELETE FROM records")
-            db.executemany(
-                "INSERT INTO records VALUES (?,?,?)",
-                [
-                    (r["id"], hashlib.sha256(json.dumps(r, sort_keys=True).encode()).hexdigest(), r["text"])
-                    for r in records
-                ],
-            )
+        with _jsonl.locked(self.directory), _jsonl.locked(self.index), closing(sqlite3.connect(self.index)) as db, db:
+            records = self.all()
+            self._synchronize(db, records, force=True)
         return len(records)
+
+    def _synchronize(self, db, records: list[dict], *, force: bool = False) -> None:
+        """Refresh a disposable index from the same admitted snapshot used to hydrate hits.
+
+        Checking canonical content also sees writes through FilesStore, other
+        scopes/processes, and changes in authority or expiry. Search already
+        resolves the full canonical set; no extra Markdown scan is needed.
+        """
+        prepared = sorted(
+            (row["id"], hashlib.sha256(json.dumps(row, sort_keys=True).encode()).hexdigest(), row["text"])
+            for row in records
+        )
+        generation = hashlib.sha256(
+            json.dumps([(identity, digest) for identity, digest, _ in prepared]).encode()
+        ).hexdigest()
+        db.execute("CREATE TABLE IF NOT EXISTS records (id TEXT PRIMARY KEY, digest TEXT NOT NULL, text TEXT NOT NULL)")
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS index_state (id INTEGER PRIMARY KEY CHECK(id=1), generation TEXT NOT NULL)"
+        )
+        previous = db.execute("SELECT generation FROM index_state WHERE id=1").fetchone()
+        if not force and previous is not None and previous[0] == generation:
+            return
+        db.execute("DELETE FROM records")
+        db.executemany("INSERT INTO records VALUES (?,?,?)", prepared)
+        db.execute("INSERT OR REPLACE INTO index_state VALUES(1,?)", (generation,))
 
     def search(self, query: str, *, limit: int = 10) -> list[dict]:
         if not isinstance(query, str):
@@ -121,9 +136,10 @@ class SQLiteStore(FilesStore):
             raise ValueError("limit must be a nonnegative integer")
         if limit == 0:
             return []
-        if not os.path.isfile(self.index):
-            self.rebuild()
-        with closing(sqlite3.connect(self.index)) as db:
+        paths.safe_prepare_output_path(self.index)
+        with _jsonl.locked(self.directory), _jsonl.locked(self.index), closing(sqlite3.connect(self.index)) as db, db:
+            records = self.all()
+            self._synchronize(db, records)
             # Match literal Unicode substrings before limiting candidates. LIKE
             # treats %/_ as patterns and only folds ASCII case by default.
             db.create_function("unimem_casefold", 1, str.casefold, deterministic=True)
@@ -134,5 +150,5 @@ class SQLiteStore(FilesStore):
                     (query.casefold(), limit),
                 )
             ]
-        live = {r["id"]: r for r in self.all()}
+        live = {r["id"]: r for r in records}
         return [live[i] for i in ids if i in live and query.casefold() in live[i]["text"].casefold()]

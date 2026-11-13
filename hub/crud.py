@@ -1500,7 +1500,7 @@ async def delete_trace(session: AsyncSession, org_id: str, trace_id: str, actor:
 
     from hub import retention
 
-    if await retention.active_holds(session, org_id):
+    if await retention.active_holds(session, org_id, lock=True):
         raise PermissionError("an active legal hold blocks trace erasure; release it explicitly")
 
     chain_ids = await amendment_chain(session, trace_id)
@@ -1545,7 +1545,7 @@ def _hash_deletion_token(raw_token: str) -> str:
 
 async def request_org_deletion(session: AsyncSession, org_id: str, actor: str = AUDIT_ACTOR_UNKNOWN) -> dict:
     """Start the two-step self-service account deletion. Deletes nothing."""
-    org = await session.get(Organization, org_id)
+    org = await session.get(Organization, org_id, populate_existing=True, with_for_update=True)
     if org is None:
         raise ValueError(f"no such organization: {org_id}")
 
@@ -1572,7 +1572,7 @@ async def request_org_deletion(session: AsyncSession, org_id: str, actor: str = 
 
 
 async def cancel_org_deletion(session: AsyncSession, org_id: str, actor: str = AUDIT_ACTOR_UNKNOWN) -> bool:
-    org = await session.get(Organization, org_id)
+    org = await session.get(Organization, org_id, populate_existing=True, with_for_update=True)
     if org is None or org.deletion_token_hash is None:
         return False
     org.deletion_token_hash = None
@@ -1597,7 +1597,7 @@ async def confirm_org_deletion(
     actor: str = AUDIT_ACTOR_UNKNOWN,
     stripe: StripeSettings = StripeSettings(),
 ) -> bool:
-    org = await session.get(Organization, org_id)
+    org = await session.get(Organization, org_id, populate_existing=True, with_for_update=True)
     if org is None:
         raise ValueError(f"no such organization: {org_id}")
     if org.deletion_token_hash is None or org.deletion_requested_at is None:
@@ -1612,6 +1612,11 @@ async def confirm_org_deletion(
     if not secrets.compare_digest(_hash_deletion_token(token), org.deletion_token_hash):
         raise DeletionNotReady("confirmation token does not match the pending request")
 
+    from hub import retention
+
+    if await retention.active_holds(session, org_id):
+        raise DeletionNotReady("an active legal hold blocks account deletion; release it explicitly")
+
     if org.stripe_subscription_id:
         try:
             await cancel_subscription(stripe, subscription_id=org.stripe_subscription_id)
@@ -1621,8 +1626,11 @@ async def confirm_org_deletion(
                 f"account deletion was NOT performed: {exc}"
             ) from exc
 
-    trace_ids = (await session.execute(select(Trace.id).where(Trace.org_id == org_id))).scalars().all()
-    if trace_ids:
+    trace_ids = select(Trace.id).where(Trace.org_id == org_id)
+    n_traces = int(await session.scalar(select(func.count()).select_from(Trace).where(Trace.org_id == org_id)) or 0)
+    if n_traces:
+        # Keep the deletion in SQL: a large tenant can exceed asyncpg's bind
+        # limit if every trace identity is materialized into one IN list.
         await session.execute(delete(TraceRelation).where(TraceRelation.related_trace_id.in_(trace_ids)))
     org_name = org.name
     had_subscription = bool(org.stripe_subscription_id)
@@ -1637,8 +1645,7 @@ async def confirm_org_deletion(
         org_id=org_id,
         target_type="org",
         target_id=org_id,
-        summary=f"name={org_name!r} n_traces={len(trace_ids)} "
-        f"stripe_subscription_cancelled={had_subscription} irreversible",
+        summary=f"name={org_name!r} n_traces={n_traces} stripe_subscription_cancelled={had_subscription} irreversible",
     )
     return True
 
@@ -1904,6 +1911,8 @@ async def holdout_assign(
                         "injected": d["injected"],
                         "salt": org.holdout_salt,
                         "trace_revision": d["trace_revision"],
+                        "assignment_rate": org.holdout_rate,
+                        "assignment_context": {},
                     }
                     for d in decisions
                 ]
@@ -2154,7 +2163,6 @@ async def _attach_evidence(session: AsyncSession, org_id: str, result: dict) -> 
 
 
 async def holdout_assignments(session: AsyncSession, org_id: str) -> list:
-    org = await session.get(Organization, org_id)
     rows = (
         await session.execute(
             select(
@@ -2166,10 +2174,12 @@ async def holdout_assignments(session: AsyncSession, org_id: str) -> list:
                 HoldoutObservation.created_at,
                 HoldoutObservation.resolved_at,
                 HoldoutObservation.trace_revision,
+                HoldoutObservation.assignment_rate,
             )
             .where(
                 HoldoutObservation.org_id == org_id,
-                HoldoutObservation.salt == (org.holdout_salt if org else ""),
+                HoldoutObservation.salt
+                == select(Organization.holdout_salt).where(Organization.id == org_id).scalar_subquery(),
             )
             .order_by(HoldoutObservation.created_at, HoldoutObservation.id)
         )
@@ -2180,7 +2190,7 @@ async def holdout_assignments(session: AsyncSession, org_id: str) -> list:
             lesson=r.trace_id,
             occasion_id=r.occasion_id,
             injected=r.injected,
-            rate=(org.holdout_rate if org else experiment.DEFAULT_HOLDOUT_RATE),
+            rate=r.assignment_rate,
             salt=r.salt,
             succeeded=r.succeeded,
             at=r.created_at,
@@ -2188,6 +2198,7 @@ async def holdout_assignments(session: AsyncSession, org_id: str) -> list:
             revision=r.trace_revision,
         )
         for r in rows
+        if r.assignment_rate is not None
     ]
     return assignments
 
@@ -2247,7 +2258,19 @@ async def causal_effects(session: AsyncSession, org_id: str, alpha: float = 0.05
             )
         ).all()
     }
+    unknown_metadata = (
+        await session.execute(
+            select(func.count())
+            .select_from(HoldoutObservation)
+            .where(
+                HoldoutObservation.org_id == org_id,
+                HoldoutObservation.salt == (org.holdout_salt if org else ""),
+                HoldoutObservation.assignment_rate.is_(None),
+            )
+        )
+    ).scalar_one()
     return {
+        "legacy_unknown_assignments": unknown_metadata,
         "experiment_running": bool(org and org.holdout_rate > 0 and org.holdout_salt),
         "holdout_rate": org.holdout_rate if org else 0.0,
         "n_observations": len(observations),

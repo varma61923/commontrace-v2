@@ -24,6 +24,7 @@ from unimem.connectors.base import (
     scoped_key,
 )
 from unimem.ingest import Chunk, IngestionResult, _fingerprint, _redact_secrets
+from unimem.retry import read_within
 
 STATE_KEY = "web_crawler:default"
 MAX_PAGE_BYTES = 512 * 1024
@@ -80,20 +81,27 @@ class _HttpOnlyRedirects(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         from unimem import offline
 
-        if not _is_http_url(newurl):
-            raise urllib.error.HTTPError(newurl, code, "redirect to a non-http(s) URL refused", headers, fp)
-        offline.check_url(newurl, "web crawling redirect")
-        source = urllib.parse.urlsplit(req.full_url)
-        target = urllib.parse.urlsplit(newurl)
-        if (source.hostname, source.port) != (target.hostname, target.port):
-            if not _redirect_target_is_public(newurl):
-                raise ValueError("redirect to a non-public network address refused")
-        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
-        if redirected is not None and (source.scheme, source.netloc) != (target.scheme, target.netloc):
-            # urllib copies arbitrary headers across origins. Never forward credentials.
-            for name in ("Authorization", "Proxy-authorization", "Cookie"):
-                redirected.remove_header(name)
-        return redirected
+        try:
+            if not _is_http_url(newurl):
+                raise urllib.error.HTTPError(newurl, code, "redirect to a non-http(s) URL refused", headers, fp)
+            offline.check_url(newurl, "web crawling redirect")
+            source = urllib.parse.urlsplit(req.full_url)
+            target = urllib.parse.urlsplit(newurl)
+            if (source.hostname, source.port) != (target.hostname, target.port):
+                if not _redirect_target_is_public(newurl):
+                    raise ValueError("redirect to a non-public network address refused")
+            redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+            if redirected is not None and (source.scheme, source.netloc) != (target.scheme, target.netloc):
+                # urllib copies arbitrary headers across origins. Never forward credentials.
+                for name in ("Authorization", "Proxy-authorization", "Cookie"):
+                    redirected.remove_header(name)
+            return redirected
+        except BaseException:
+            # urllib closes the old body only after this callback succeeds.
+            # Refused destinations and DNS failures must release it here.
+            if fp is not None:
+                fp.close()
+            raise
 
 
 _OPENER = urllib.request.build_opener(_HttpOnlyRedirects)
@@ -111,7 +119,7 @@ def _get(url: str, user_agent: str, timeout: float, limit: int) -> tuple[str, by
     try:
         with _OPENER.open(req, timeout=timeout) as resp:  # nosec B310 - http(s) only, checked above
             ctype = str(resp.headers.get("Content-Type", "") or "")
-            raw = resp.read(limit + 1)
+            raw = read_within(resp, limit, timeout)
             if len(raw) > limit:
                 raise ValueError("web crawling response exceeds size limit")
             return ctype, raw

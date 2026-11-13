@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -41,6 +42,9 @@ func (c *Client) Call(ctx context.Context, operation string, data map[string]any
 	default:
 		return nil, fmt.Errorf("unknown memory operation")
 	}
+	return c.request(ctx, "memory", operation, data)
+}
+func (c *Client) request(ctx context.Context, category, operation string, data map[string]any) (map[string]any, error) {
 	body := map[string]any{}
 	for key, value := range data {
 		body[key] = value
@@ -50,7 +54,24 @@ func (c *Client) Call(ctx context.Context, operation string, data map[string]any
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, "POST", c.base+"/v1/memory/"+operation, bytes.NewReader(encoded))
+	method, endpoint := "POST", c.base+"/v1/"+category+"/"+operation
+	var payload io.Reader = bytes.NewReader(encoded)
+	if category == "learning" && (operation == "capabilities" || operation == "status") {
+		query := url.Values{}
+		if experiment, ok := data["experiment_id"]; ok {
+			value, valid := experiment.(string)
+			if !valid {
+				return nil, fmt.Errorf("experiment_id must be a string")
+			}
+			query.Set("experiment_id", value)
+		}
+		for _, label := range c.scopes {
+			query.Add("context", label)
+		}
+		endpoint += "?" + query.Encode()
+		method, payload = "GET", nil
+	}
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, payload)
 	if err != nil {
 		return nil, err
 	}
@@ -94,6 +115,27 @@ func (c *Client) Profile(ctx context.Context, query string) (map[string]any, err
 }
 func (c *Client) Outcome(ctx context.Context, occasion string, succeeded bool) (map[string]any, error) {
 	return c.Call(ctx, "outcome", map[string]any{"occasion_id": occasion, "succeeded": succeeded})
+}
+
+// OutcomeReward reports a graded outcome in [0, 1], realized by the gateway's audited randomized rounding.
+func (c *Client) OutcomeReward(ctx context.Context, occasion string, reward float64) (map[string]any, error) {
+	if math.IsNaN(reward) || reward < 0 || reward > 1 {
+		return nil, fmt.Errorf("reward must be a finite number between 0 and 1")
+	}
+	return c.Call(ctx, "outcome", map[string]any{"occasion_id": occasion, "reward": reward})
+}
+
+// OutcomeMetrics reports named measurements that the store's configured utility scores into a reward.
+func (c *Client) OutcomeMetrics(ctx context.Context, occasion string, metrics map[string]float64) (map[string]any, error) {
+	if len(metrics) == 0 || len(metrics) > 64 {
+		return nil, fmt.Errorf("metrics must hold 1 to 64 numbers")
+	}
+	for name, value := range metrics {
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return nil, fmt.Errorf("metric %q must be finite", name)
+		}
+	}
+	return c.Call(ctx, "outcome", map[string]any{"occasion_id": occasion, "metrics": metrics})
 }
 
 // PutRecord stores a versioned envelope without changing its payload or lineage.

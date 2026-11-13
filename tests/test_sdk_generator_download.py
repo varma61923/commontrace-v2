@@ -2,7 +2,9 @@
 
 import hashlib
 import io
+import threading
 import urllib.error
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -35,6 +37,50 @@ def test_checksum_failure_is_never_retried_or_cached(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="checksum"):
         generate_sdks.checked_jar(path)
     assert not path.exists() and not path.with_suffix(".download").exists()
+
+
+def test_concurrent_generator_downloads_install_the_same_verified_bytes(tmp_path, monkeypatch):
+    content = b"verified generator"
+    monkeypatch.setattr(generate_sdks, "SHA256", hashlib.sha256(content).hexdigest())
+    barrier = threading.Barrier(2)
+
+    class Response(io.BytesIO):
+        def read(self, size=-1):
+            if self.tell() == 0:
+                barrier.wait(timeout=10)
+            return super().read(size)
+
+    monkeypatch.setattr(generate_sdks.urllib.request, "urlopen", lambda *_, **__: Response(content))
+    path = tmp_path / "generator.jar"
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(generate_sdks.checked_jar, path) for _ in range(2)]
+        assert [future.result(timeout=15) for future in futures] == [path, path]
+    assert path.read_bytes() == content
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def test_preexisting_download_symlink_cannot_overwrite_local_data(tmp_path, monkeypatch):
+    content = b"verified generator"
+    monkeypatch.setattr(generate_sdks, "SHA256", hashlib.sha256(content).hexdigest())
+    monkeypatch.setattr(generate_sdks.urllib.request, "urlopen", lambda *_, **__: io.BytesIO(content))
+    protected = tmp_path / "keep.txt"
+    protected.write_bytes(b"private local data")
+    path = tmp_path / "generator.jar"
+    path.with_suffix(".download").symlink_to(protected)
+    assert generate_sdks.checked_jar(path) == path
+    assert protected.read_bytes() == b"private local data"
+    assert not path.is_symlink() and path.read_bytes() == content
+
+
+def test_oversized_cached_generator_is_refused_without_network(tmp_path, monkeypatch):
+    path = tmp_path / "generator.jar"
+    with path.open("wb") as stream:
+        stream.truncate(65 * 1024 * 1024)
+    monkeypatch.setattr(
+        generate_sdks.urllib.request, "urlopen", lambda *_, **__: pytest.fail("cache must be checked locally")
+    )
+    with pytest.raises(ValueError, match="bounded download size"):
+        generate_sdks.checked_jar(path)
 
 
 def test_typescript_generator_prevents_model_and_parameter_name_collisions(tmp_path, monkeypatch):

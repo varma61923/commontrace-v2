@@ -654,14 +654,24 @@ def execute(features: Sequence[str], *, seed: int) -> dict[str, dict[str, Scalar
     return checks
 
 
-# The flagship `unimem demo` tour: remember, measure, govern against a simulated
-# agent with planted effects. Everything but the agent is the real product.
+# The flagship `unimem demo` tour: remember, measure, govern, learn against simulated
+# agents with planted effects. Everything but the agent is the real product.
 TOUR_MEMORIES = (
     ("verify-owner", "Verify the account owner before any password reset.", 0.20),
     ("retry-429", "On HTTP 429, back off exponentially and retry.", 0.0),
     ("legacy-refund-api", "Issue refunds through the v1 refunds endpoint.", -0.20),
 )
 TOUR_BASE_SUCCESS = 0.55
+TOUR_FLEET_KINDS = (
+    ("agent", "agent/coding/fix-bug"),
+    ("llm", "llm/chat/support"),
+    ("robot", "robot/arm/pick"),
+)
+TOUR_FLEET_MEMORIES = (
+    ("confirm-before-acting", "Confirm the target before acting on it.", {"agent": 0.15, "llm": 0.15, "robot": 0.15}),
+    ("move-fast-skip-checks", "Skip verification steps to finish faster.", {"agent": 0.0, "llm": 0.0, "robot": -0.20}),
+    ("cite-sources", "Cite the source for every claim.", {"agent": 0.0, "llm": 0.10, "robot": 0.0}),
+)
 
 
 def _tour_cli(*argv: str) -> str:
@@ -761,18 +771,52 @@ def _tour_govern(root: str) -> dict[str, Any]:
     }
 
 
+def _tour_learn(root: str, occasions: int, seed: int) -> dict[str, Any]:
+    from unimem import causal_gate, holdout_io, rewards
+    from unimem.measure import CausalMemory
+
+    sub = os.path.join(root, "fleet")
+    _tour_cli("init", "--dest", sub)
+    holdout_io.configure(sub, rate=0.5, salt=f"demo-fleet-{seed}", note="unimem demo")
+    memories = [{"id": key, "text": text} for key, text, _ in TOUR_FLEET_MEMORIES]
+    fleet_truth = {key: effects for key, _, effects in TOUR_FLEET_MEMORIES}
+    store = CausalMemory(lambda task, **_: memories, root=sub, durable=False)
+    rng = random.Random(seed)
+    for i in range(occasions):
+        kind, context = TOUR_FLEET_KINDS[i % len(TOUR_FLEET_KINDS)]
+        occasion = f"{kind}-{i:05d}"
+        shown = store.recall("fleet task", occasion_id=occasion, context=context)
+        lift = sum(fleet_truth[m["id"]][kind] for m in shown)
+        reward = min(1.0, max(0.0, 0.5 + lift + rng.gauss(0, 0.1)))
+        store.record_outcome(occasion, reward=reward)
+    problems = rewards.verify(sub)
+    model = causal_gate.fit(causal_gate.current_rows(sub))
+    rows = []
+    for key, _, _ in TOUR_FLEET_MEMORIES:
+        effects = {}
+        for kind, context in TOUR_FLEET_KINDS:
+            p = model.posterior(key, context)
+            effects[kind] = None if p is None else {"mean": p.mean, "ci": [p.mean - 1.96 * p.sd, p.mean + 1.96 * p.sd]}
+        rows.append({"memory": key, "effects": effects})
+    return {
+        "occasions": occasions,
+        "audit": "SOUND" if not problems else f"{len(problems)} problems",
+        "memories": rows,
+    }
+
+
 def _tour_pct(value: float | None) -> str:
     return "   n/a" if value is None else f"{value * 100:+5.0f}%"
 
 
 def print_tour(result: dict[str, Any]) -> None:
-    r, m, g = result["remember"], result["measure"], result["govern"]
+    r, m, g, n = result["remember"], result["measure"], result["govern"], result["learn"]
     print(f"UniMem demo  ·  offline, no LLM, no API key  ·  {result['seconds']:.1f}s\n")
-    print("1/3 REMEMBER  facts that know when they were true")
+    print("1/4 REMEMBER  facts that know when they were true")
     print(f"    Q: {r['question']}")
     print(f"    today            → {r['today']}")
     print(f"    as of {r['as_of']} → {r['then']}\n")
-    print(f"2/3 MEASURE   {m['occasions']:,} simulated support tickets; every memory randomly withheld on half")
+    print(f"2/4 MEASURE   {m['occasions']:,} simulated support tickets; every memory randomly withheld on half")
     print(f"    integrity audit: {m['integrity']}")
     print(f"    {'memory':<20}{'planted':>9}{'measured':>10}   {'95% interval':<17}verdict")
     for row in m["memories"]:
@@ -781,10 +825,24 @@ def print_tour(result: dict[str, Any]) -> None:
         planted, measured = _tour_pct(row["planted"]), _tour_pct(row["effect"])
         print(f"    {row['memory']:<20}{planted:>9}{measured:>10}   {interval:<17}{row['verdict']}")
     print()
-    print("3/3 GOVERN    the evidence changes what the agent sees next")
+    print("3/4 GOVERN    the evidence changes what the agent sees next")
     print(f"    withdrawn  (proven harmful, never delivered)  {', '.join(g['withdrawn']) or 'none'}")
     print(f"    graduated  (proven helpful, always delivered) {', '.join(g['graduated']) or 'none'}")
     print(f"    under test (still randomized)                 {', '.join(g['under_test']) or 'none'}\n")
+    print(f"4/4 LEARN     {n['occasions']:,} graded tasks from coding agents, LLM apps and robots in one store")
+    print("    reward: agent = share of tests passing · llm = evaluator score · robot = task progress")
+    print(f"    {'measured (planted)':<24}" + "".join(f"{kind:>14}" for kind, _ in TOUR_FLEET_KINDS))
+    fleet_truth = {key: effects for key, _, effects in TOUR_FLEET_MEMORIES}
+    for row in n["memories"]:
+        cells = []
+        for kind, _ in TOUR_FLEET_KINDS:
+            cell = row["effects"][kind]
+            measured = _tour_pct(None if cell is None else cell["mean"]).strip()
+            cells.append(f"{measured} ({fleet_truth[row['memory']][kind] * 100:+.0f}%)")
+        print(f"    {row['memory']:<24}" + "".join(f"{cell:>14}" for cell in cells))
+    print(f"    reward audit: {n['audit']}")
+    print("    One memory can help one kind of client and hurt another; the store estimates each context")
+    print("    separately instead of averaging them together.\n")
     print("The agent and its outcomes are simulated with planted effects. The store, randomization,")
     print("integrity audit, causal analysis and withdrawal are the real product.")
     if result.get("store"):
@@ -802,6 +860,7 @@ def tour(occasions: int, seed: int, keep: str | None = None) -> dict[str, Any]:
             "remember": _tour_remember(root),
             "measure": _tour_measure(root, occasions, seed),
             "govern": _tour_govern(root),
+            "learn": _tour_learn(root, occasions, seed),
         }
     finally:
         if not keep:

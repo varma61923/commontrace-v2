@@ -209,7 +209,7 @@ async def test_console_session_rechecks_delegate_enrollment(monkeypatch, failure
             return None
 
         async def execute(self, statement):
-            return SimpleNamespace(first=lambda: (key.key_id, list(key.scopes), "Test", "free"))
+            return SimpleNamespace(all=lambda: [(key.key_id, list(key.scopes), "Test", "free", None, None)])
 
     @asynccontextmanager
     async def session_scope(*args, **kwargs):

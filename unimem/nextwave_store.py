@@ -459,4 +459,10 @@ def _erase_sources(root: str, identities: Sequence[str]) -> list[dict[str, Any]]
                 "failed_tiers": receipt["failed_tiers"],
             }
         )
+    # Content signatures (hashed terms, embeddings) are derived from source memory.
+    from unimem import memory_signatures
+
+    removed.extend(
+        {"kind": "memory-signatures", "id": identity} for identity in memory_signatures.forget(root, deleted)
+    )
     return removed

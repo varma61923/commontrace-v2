@@ -137,6 +137,8 @@ def activate(root: str, lesson: str, model: Targeting, contexts: dict[str, dict[
     The Hub can carry this signed scope map alongside a tenant-owned lesson.
     It never promotes a lesson into an unmeasured site/embodiment class.
     """
+    from unimem import holdout_io
+
     fp.text(lesson)
     fp.count(len(contexts), 1, 64)
     if not model.valid:
@@ -157,6 +159,7 @@ def activate(root: str, lesson: str, model: Targeting, contexts: dict[str, dict[
         "uplift-policies.jsonl",
         {
             "type": "validated-uplift-policy-v1",
+            "salt": holdout_io.load_config(root).salt,
             "lesson": lesson,
             "rates": rates,
             "classes": classes,
@@ -172,9 +175,13 @@ def activate(root: str, lesson: str, model: Targeting, contexts: dict[str, dict[
 def apply_rates(
     root: str, contextual: dict[str, dict[str, float]], floor: float, *, lesson_rates: dict[str, float] | None = None
 ) -> dict[str, dict[str, float]]:
+    from unimem import holdout_io
+
     policies = fp.journal(root, "uplift-policies.jsonl")
     result = {lesson: dict(rates) for lesson, rates in contextual.items()}
-    for row in policies:
+    salt = holdout_io.load_config(root).salt
+    latest = {row["lesson"]: row for row in policies if row.get("salt") == salt}
+    for row in latest.values():
         if row["rate_lower"] <= 0:
             continue
         if lesson_rates is not None:

@@ -108,6 +108,7 @@ _COMMANDS = (
     "sentinel",
     "person",
     "demo",
+    "reward",
 )
 
 ALIASES = {

@@ -22,7 +22,8 @@ MAX_OUTPUT_CHARS = 200_000
 
 # These commands own the process or can recursively start another server. The
 # console can show their help and copyable command shape, but must not block the
-# gateway thread or replace the process serving the UI. Store setup/install are
+# gateway thread or replace the process serving the UI. Their exact --help
+# request only parses arguments and is safe to inspect. Store setup/install are
 # safe because the runner pins their destination to the authenticated store.
 _TERMINAL_ONLY = frozenset({"daemon", "gateway", "serve", "watch", "evolve", "up", "setup", "providers", "demo"})
 
@@ -55,6 +56,7 @@ _GROUPS: dict[str, tuple[str, ...]] = {
         "prove",
         "reliability",
         "retrieval",
+        "reward",
         "signals",
     ),
     "Explore": (
@@ -110,7 +112,7 @@ _DESCRIPTIONS = {
     "team": "Measure UniMem writer contributions, nested holdouts and team incident tags.",
     "skill": "Induce, screen, measure and publish UniMem skills with signed causal evidence.",
     "help": "Find commands by topic, category and common-operation shortcuts.",
-    "demo": "Run a 30-second offline tour of the memory loop: remember, measure, govern.",
+    "demo": "Run an offline tour of the memory loop: remember, measure, govern, learn.",
     "setup": "Guide runtime initialization, document ingestion or competitor-data migration.",
     "providers": "Discover LLM, embedding, vector and reranking providers and validate strict configurations.",
     "up": "Initialize a runtime with local, team or server settings and native agent hooks.",
@@ -131,6 +133,7 @@ _DESCRIPTIONS = {
     "conversation": "Add, recall, summarize, profile, and forget conversation memory.",
     "experiment": "Design and analyze randomized memory holdout experiments.",
     "proof": "Track proof progress and the evidence needed for a causal verdict.",
+    "reward": "Record graded outcomes, configure a utility, audit the rounding and read reward-scale effects.",
     "bench": "Run memory health and benchmark evaluations.",
     "defense": "Screen, redact, and block secrets, PII, and injection payloads.",
     "sql_query": "Run a guarded, read-only SQL query against a store-local SQLite database.",
@@ -219,7 +222,7 @@ class BoundedCapture(io.StringIO):
 # Default-deny unreviewed handlers while the operator has disabled approval.
 # Match the parsed function, so argparse option ordering/abbreviations cannot
 # disguise a write behind a read-only subcommand name. Help exits before a
-# function is selected and remains available for every non-lifecycle command.
+# function is selected. Exact --help also remains available for lifecycle commands.
 _READ_ONLY_HANDLERS = {
     "help": frozenset({"run"}),
     "doctor": frozenset({"run"}),
@@ -339,9 +342,9 @@ def run(
 
     if not isinstance(command, str) or command not in _COMMANDS:
         raise UICommandError("unknown UniMem command")
-    if command in _TERMINAL_ONLY:
-        raise UICommandError(f"{command} is terminal-only because it owns the gateway or process lifecycle")
     argv = _validate_args(args)
+    if command in _TERMINAL_ONLY and argv != ["--help"]:
+        raise UICommandError(f"{command} is terminal-only because it owns the gateway or process lifecycle")
     command_args = [*argv, "--dest", os.path.abspath(root)] if command in {"init", "install"} else argv
     stdout, stderr = BoundedCapture(), BoundedCapture()
     started = time.perf_counter()

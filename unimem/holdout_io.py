@@ -11,7 +11,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import SupportsIndex, SupportsInt
 
-from unimem import experiment, frontmatter, lesson_io, paths
+from unimem import _jsonl, experiment, frontmatter, lesson_io, paths
 
 DEFAULT_SALT = "default"
 
@@ -68,10 +68,14 @@ def configure(
     salt: str | None = None,
 ) -> ExperimentConfig:
     """Start (or restart) this store's experiment. Returns the new settings."""
-    if not 0.0 <= rate < 1.0:
+    if type(rate) not in (int, float) or not 0.0 <= rate < 1.0:
         raise ValueError(f"holdout rate must be in [0.0, 1.0), got {rate}")
-    if not 0.0 < detect < 1.0:
+    if type(detect) not in (int, float) or not 0.0 < detect < 1.0:
         raise ValueError(f"detectable effect must be in (0.0, 1.0), got {detect}")
+    if salt is not None and not isinstance(salt, str):
+        raise ValueError("experiment salt must be a string")
+    if not isinstance(note, str):
+        raise ValueError("experiment note must be a string")
 
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     config = ExperimentConfig(
@@ -84,22 +88,19 @@ def configure(
     path = config_path(root)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with frontmatter.locked(path):
-        with open(path, "w", encoding="utf-8") as fh:
-            json.dump(
-                {
-                    "rate": config.rate,
-                    "salt": config.salt,
-                    "detect": config.detect,
-                    "started_at": config.started_at,
-                    "note": config.note,
-                },
-                fh,
-                indent=2,
-                sort_keys=True,
-            )
-            fh.write("\n")
-            fh.flush()
-            os.fsync(fh.fileno())
+        # Readers do not take the writer lock. Publish complete settings in one
+        # rename so a restart never briefly falls back to the default salt/rate,
+        # and a failed write leaves the previous experiment usable.
+        _jsonl.write_json(
+            path,
+            {
+                "rate": config.rate,
+                "salt": config.salt,
+                "detect": config.detect,
+                "started_at": config.started_at,
+                "note": config.note,
+            },
+        )
     return config
 
 
@@ -359,21 +360,30 @@ def record_outcome(
     fp.text(occasion_id, "occasion")
     if not isinstance(succeeded, bool):
         raise TypeError(f"succeeded must be a bool, got {type(succeeded).__name__}")
-    if secondary_metrics is not None:
-        from unimem import sycophancy_io
+    from unimem import _jsonl, rewards
 
-        sycophancy_io.record_metrics(root, occasion_id, secondary_metrics)
     path = outcomes_log_path(root)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with frontmatter.locked(path):
+    with _jsonl.locked(path):
+        commitment = rewards.committed_outcome(root, occasion_id)
+        if commitment is not None and commitment is not succeeded:
+            raise ConflictingOutcome(f"occasion {occasion_id!r} already has a committed reward; refusing to change it")
         existing = _outcomes_shared(path).get(occasion_id)
         if existing is not None:
             if existing == succeeded:
+                if secondary_metrics is not None:
+                    from unimem import sycophancy_io
+
+                    sycophancy_io.record_metrics(root, occasion_id, secondary_metrics)
                 return False
             raise ConflictingOutcome(
                 f"occasion {occasion_id!r} is already recorded as "
                 f"{'succeeded' if existing else 'failed'}; refusing to change it"
             )
+        if secondary_metrics is not None:
+            from unimem import sycophancy_io
+
+            sycophancy_io.record_metrics(root, occasion_id, secondary_metrics)
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
         _append_lines(
             path,

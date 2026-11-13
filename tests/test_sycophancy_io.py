@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -13,6 +14,7 @@ from unimem import (
     hierarchical,
     holdout_io,
     memory_authority,
+    paths,
     search_recipes,
 )
 from unimem import frontier_protocol as fp
@@ -21,6 +23,19 @@ from unimem import sycophancy_io as io
 
 clock = test_skill_foundry.clock
 CONTEXT = ["domain:science"]
+
+
+@pytest.fixture(autouse=True)
+def fixed_origin_key(tmp_path):
+    def seed(root):
+        key = Path(paths.memory_dir(str(root))) / ".origin-key"
+        key.parent.mkdir(parents=True, exist_ok=True)
+        key.touch(mode=0o600)
+        # Keep real signing/verification, with reproducible test-only identity.
+        key.write_bytes(bytes(range(32)))
+
+    seed(tmp_path)
+    return seed
 
 
 def prepare(root, clock, *, statement="The user believes crystals improve computer performance.", horizon=400):
@@ -52,6 +67,18 @@ def traffic(root, identity, clock, *, n=400, helpful=False, prefix="personal"):
         outcome = arm if helpful else not arm
         holdout_io.record_outcome(root, occasion, outcome, secondary_metrics={"accuracy": outcome, "agreement": arm})
         clock.tick(1)
+
+
+def test_frozen_clock_reproduces_source_revisions_and_trial_assignments(tmp_path, clock, fixed_origin_key):
+    moment = clock.moment
+    fixed_origin_key(tmp_path / "first")
+    fixed_origin_key(tmp_path / "second")
+    first, first_identity = prepare(str(tmp_path / "first"), clock)
+    clock.moment = moment
+    second, second_identity = prepare(str(tmp_path / "second"), clock)
+    assert first.created_at == first.updated_at == first.valid_from == moment.isoformat()
+    assert first.revision == second.revision
+    assert first_identity == second_identity
 
 
 def test_flattering_audit_changes_actual_gate_and_factual_admission(tmp_path, clock):

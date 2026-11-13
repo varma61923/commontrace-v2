@@ -124,3 +124,12 @@ def test_command_denial_restores_process_root(root, monkeypatch):
     with pytest.raises(ui_commands.UICommandError):
         ui_commands.run(root, "lesson", ["approve", "lesson_good"])
     assert os.environ["UNIMEM_ROOT"] == "previous-root"
+
+
+@pytest.mark.parametrize("command", sorted(ui_commands._TERMINAL_ONLY))
+def test_lifecycle_commands_expose_help_without_running_their_handlers(root, command):
+    result = ui_commands.run(root, command, ["--help"])
+    assert result["ok"] and "usage:" in result["stdout"]
+    for args in ([], ["--", "--help"], ["--help", "--start"]):
+        with pytest.raises(ui_commands.UICommandError, match="terminal-only"):
+            ui_commands.run(root, command, args, allow_approval=True)

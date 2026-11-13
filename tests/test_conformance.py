@@ -45,6 +45,7 @@ def test_the_reference_passes_over_stdio():
         "vectors:digest",
         "vectors:revision",
         "vectors:allocate",
+        "vectors:learning",
     ]
     assert all(r.ok for r in results), [r.detail for r in results if not r.ok]
 
@@ -148,6 +149,59 @@ def test_a_dead_gateway_fails_cleanly(capsys):
 def test_the_report_names_what_it_does_not_test():
     text = conformance.render([conformance.Result("a", True)])
     assert "1/1 checks passed" in text and "not tested" in text and "statistics" in text
+
+
+def test_missing_vectors_cannot_claim_conformance():
+    vectors = conformance.load_vectors()
+    vectors["learning"] = []
+    results = conformance.run_exec(REFERENCE, vectors, only=("learning",))
+    assert len(results) == 1 and not results[0].ok
+    assert "no vectors" in results[0].detail
+
+
+def test_correct_answers_followed_by_a_crash_fail_conformance(tmp_path):
+    script = tmp_path / "crash_after_answers.py"
+    script.write_text("from unimem.conformance import main_reference\nmain_reference()\nraise SystemExit(3)\n")
+    results = conformance.run_exec(f"{sys.executable} {script}", conformance.load_vectors())
+    assert len(results) == 1 and not results[0].ok
+    assert "status 3" in results[0].detail
+
+
+@pytest.mark.parametrize("profiles", [("embedded",), ("embedded", "http", "robot")])
+def test_learning_conformance_replays_real_acknowledged_evidence(profiles):
+    report = conformance.check_learning_lifecycle(profiles=profiles, samples=3)
+    assert report["passed"], [row for row in report["checks"] if not row["ok"]]
+    assert report["expected_refusals"] == 4 * len(profiles)
+    assert report["store_bytes_before_cleanup"] > 0
+    assert {row["adapter_operation"].partition(":")[0] for row in report["measurements"]} == set(profiles)
+    for row in report["measurements"]:
+        assert 0 <= row["p50_ms"] <= row["p95_ms"] <= row["p99_ms"]
+
+
+def test_learning_conformance_mcp_shares_the_authenticated_scope():
+    pytest.importorskip("mcp")
+    report = conformance.check_learning_lifecycle(profiles=("embedded", "http", "mcp", "robot"), samples=3)
+    assert report["passed"], [row for row in report["checks"] if not row["ok"]]
+
+
+def test_learning_conformance_fails_when_an_adapter_loses_evidence(monkeypatch):
+    from unimem.client import LearningClient
+
+    original = LearningClient.call
+
+    def incomplete(self, operation, payload=None):
+        result = original(self, operation, payload)
+        return {**result, "occasions": 0} if operation == "status" else result
+
+    monkeypatch.setattr(LearningClient, "call", incomplete)
+    report = conformance.check_learning_lifecycle(profiles=("embedded",), samples=1)
+    assert not report["passed"]
+    assert any(not row["ok"] and "occasion-count" in row["name"] for row in report["checks"])
+
+
+@pytest.mark.parametrize("args", [["--samples", "0"], ["--profiles", "unknown"], ["--profiles", "embedded,embedded"]])
+def test_learning_conformance_cli_rejects_invalid_workloads(args):
+    assert main(["conformance", "learning", *args]) == 2
 
 
 @pytest.mark.skipif(

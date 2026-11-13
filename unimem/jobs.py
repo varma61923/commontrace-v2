@@ -424,6 +424,10 @@ def run_pending(
     if not math.isfinite(lease) or lease <= 0:
         raise JobError("worker lease must be finite and positive")
     started = time.monotonic()
+    if kinds is None or "learn-measured" in kinds:
+        from unimem.learning import enqueue_pending
+
+        enqueue_pending(root, limit=max(0, int(limit)))
     done = failed = 0
     for _ in range(max(0, int(limit))):
         if time_budget is not None and time.monotonic() - started > time_budget:
@@ -594,3 +598,12 @@ def _learn_session(root: str, payload: dict) -> dict:
 
 
 HANDLERS["learn-session"] = _learn_session
+
+
+def _learn_measured(root: str, payload: dict) -> dict:
+    from unimem.learning import operate
+
+    return operate(root, "run", {"experiment_id": payload["experiment_id"]}, scope=payload["scope"])
+
+
+HANDLERS["learn-measured"] = _learn_measured

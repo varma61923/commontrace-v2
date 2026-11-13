@@ -4,9 +4,9 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import func, select
+from sqlalchemy import func, insert, select
 
-from hub import crud
+from hub import crud, retention
 from hub.abuse import make_rate_limiter
 from hub.crud import amend_trace, contribute_trace
 from hub.db import session_scope
@@ -397,6 +397,59 @@ class TestConfirmOrgDeletion:
         assert result is True
         async with session_scope(session_factory) as session:
             assert await session.get(Organization, orgs["a"]) is None
+
+    async def test_a_legal_hold_blocks_account_deletion_before_stripe_is_called(
+        self, session_factory, orgs, monkeypatch
+    ):
+        token = await self._requested_and_ready(session_factory, orgs["a"])
+        called = []
+
+        async def cancel(*args, **kwargs):
+            called.append(True)
+
+        monkeypatch.setattr(crud, "cancel_subscription", cancel)
+        async with session_scope(session_factory) as session:
+            (await session.get(Organization, orgs["a"])).stripe_subscription_id = "sub_current"
+            hold = await retention.place_hold(session, orgs["a"], reason="preserve evidence", placed_by="test")
+            hold_id = hold.id
+        with pytest.raises(crud.DeletionNotReady, match="legal hold"):
+            async with session_scope(session_factory) as session:
+                await crud.confirm_org_deletion(session, orgs["a"], token)
+        assert called == []
+        async with session_scope(session_factory) as session:
+            assert await session.get(Organization, orgs["a"]) is not None
+            await retention.release_hold(session, hold_id)
+        async with session_scope(session_factory) as session:
+            assert await crud.confirm_org_deletion(session, orgs["a"], token)
+        assert called == [True]
+
+    async def test_large_account_deletion_does_not_materialize_an_oversized_in_list(self, session_factory, orgs):
+        count = 32768
+        async with session_scope(session_factory) as session:
+            await session.execute(
+                insert(Trace),
+                [
+                    {"org_id": orgs["a"], "title": "t", "context_text": "c", "solution_text": "s", "agent_type": "code"}
+                    for _ in range(count)
+                ],
+            )
+            target = await session.scalar(select(Trace.id).where(Trace.org_id == orgs["a"]).limit(1))
+            foreign = Trace(org_id=orgs["b"], title="survivor", context_text="c", solution_text="s", agent_type="code")
+            session.add(foreign)
+            await session.flush()
+            session.add(TraceRelation(trace_id=foreign.id, related_trace_id=target, relationship_type="supports"))
+            foreign_id = foreign.id
+        token = await self._requested_and_ready(session_factory, orgs["a"])
+        async with session_scope(session_factory) as session:
+            assert await crud.confirm_org_deletion(session, orgs["a"], token)
+        async with session_scope(session_factory) as session:
+            assert await session.get(Organization, orgs["a"]) is None
+            assert await session.get(Trace, foreign_id) is not None
+            assert not list((await session.execute(select(TraceRelation))).scalars())
+            summary = await session.scalar(
+                select(AuditLogEntry.summary).where(AuditLogEntry.action == "confirm_org_deletion")
+            )
+            assert f"n_traces={count}" in summary
 
     async def test_deletion_cascades_to_traces_votes_and_api_keys(self, session_factory, config, orgs):
         rate_limiter = make_rate_limiter(config)

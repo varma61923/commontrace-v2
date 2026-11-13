@@ -3,6 +3,7 @@ package unimem
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -153,6 +154,51 @@ func TestRecordAndTurnWrappers(t *testing.T) {
 	for _, limit := range []int{0, -1, 101} {
 		if _, err = client.ReapDueRecords(ctx, limit); err == nil {
 			t.Fatalf("accepted invalid limit %d", limit)
+		}
+	}
+	if len(requests) != 0 {
+		t.Fatal("invalid request reached server")
+	}
+}
+
+func TestGradedOutcomesUseTheMemoryOutcomeContract(t *testing.T) {
+	requests := make(chan map[string]any, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var data map[string]any
+		json.NewDecoder(r.Body).Decode(&data)
+		data["path"] = r.URL.Path
+		requests <- data
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"recorded":true,"succeeded":false,"reward":0.4}`))
+	}))
+	defer server.Close()
+	client, err := New(server.URL, "secret", "robot-7", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err = client.OutcomeReward(ctx, "pick-1", 0.4); err != nil {
+		t.Fatal(err)
+	}
+	request := <-requests
+	if request["path"] != "/v1/memory/outcome" || request["reward"] != 0.4 || request["succeeded"] != nil {
+		t.Fatal(request)
+	}
+	if _, err = client.OutcomeMetrics(ctx, "pick-2", map[string]float64{"progress": 0.7, "energy_wh": 30}); err != nil {
+		t.Fatal(err)
+	}
+	request = <-requests
+	if !reflect.DeepEqual(request["metrics"], map[string]any{"progress": 0.7, "energy_wh": float64(30)}) {
+		t.Fatal(request)
+	}
+	for _, reward := range []float64{-0.1, 1.1, math.NaN()} {
+		if _, err = client.OutcomeReward(ctx, "pick-3", reward); err == nil {
+			t.Fatalf("accepted reward %v", reward)
+		}
+	}
+	for _, metrics := range []map[string]float64{{}, {"force": math.Inf(1)}} {
+		if _, err = client.OutcomeMetrics(ctx, "pick-3", metrics); err == nil {
+			t.Fatalf("accepted metrics %v", metrics)
 		}
 	}
 	if len(requests) != 0 {

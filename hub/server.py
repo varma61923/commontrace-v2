@@ -31,7 +31,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp
 
-from hub import auth, collab, commons, crud, observability, plans, scheduler, scopes
+from hub import auth, collab, commons, crud, learning, observability, plans, scheduler, scopes
 from hub.abuse import (
     RateLimited,
     RateLimiterBackend,
@@ -49,7 +49,7 @@ from hub.billing import StripeSettings, add_billing_webhook_route
 from hub.config import DEFAULT_SEARCH_LIMIT, HubConfig
 from hub.connector_routes import add_connector_routes
 from hub.console import CONSOLE_PATH, add_console_routes
-from hub.db import check_row_level_security, session_scope
+from hub.db import check_row_level_security, operator_session_scope, session_scope
 from hub.disclosure import add_disclosure_route
 from hub.observability import RequestContextMiddleware, add_health_routes
 from hub.openapi import add_openapi_route
@@ -158,14 +158,13 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
 
         if looks_like_jwt(raw_token) and self._identity_provider is not None:
             person = None
-            async with self._session_factory() as session:
+            async with operator_session_scope(self._session_factory) as session:
                 person = await auth.verify_user_token(
                     session,
                     raw_token,
                     self._identity_provider,
                     jwks_cache=self._jwks_cache,
                 )
-                await session.commit()
             if person is None:
                 return self._unauthorized({"error": "invalid, expired, or unlinked identity token"})
             self._auth_rate_limiter.refund(client_key)
@@ -201,9 +200,8 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
 
         authenticated = auth.cached_key(raw_token)
         if authenticated is None:
-            async with self._session_factory() as session:
+            async with operator_session_scope(self._session_factory) as session:
                 authenticated = await auth.verify_api_key(session, raw_token)
-                await session.commit()
 
         if authenticated is None:
             return self._unauthorized({"error": "invalid, revoked, or expired API key"})
@@ -217,6 +215,7 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
 
         org_token = auth.current_org_id.set(authenticated.org_id)
         actor_token = auth.current_actor.set(authenticated.key_prefix)
+        key_token = auth.current_key_id.set(authenticated.key_id or None)
         scope_token = auth.current_scopes.set(authenticated.scopes)
         try:
             if self._capability_config is not None:
@@ -231,6 +230,7 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
         finally:
             auth.current_org_id.reset(org_token)
             auth.current_actor.reset(actor_token)
+            auth.current_key_id.reset(key_token)
             auth.current_scopes.reset(scope_token)
 
     def _unauthorized(self, payload: dict) -> JSONResponse:
@@ -563,7 +563,7 @@ async def _join_background_tasks(tasks: list[asyncio.Task], grace_seconds: float
     """
     if not tasks:
         return
-    _done, pending = await asyncio.wait(tasks, timeout=grace_seconds if grace_seconds > 0 else None)
+    _done, pending = await asyncio.wait(tasks, timeout=max(0, grace_seconds))
     for task in pending:
         logger.warning("background task %s did not stop within %ss; cancelling it", task.get_name(), grace_seconds)
         task.cancel()
@@ -1623,6 +1623,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         """
         return await run_batch(delete_trace, ids, field="id")
 
+    learning.register_mcp(scoped_tool, session_factory)
     setattr(mcp, "unimem_tool_scopes", dict(tool_scopes))
     return mcp
 
@@ -1750,6 +1751,8 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
         ),
         trusted_proxy_hops=config.trusted_proxy_hops,
         metrics_token=config.metrics_token,
+        readiness_timeout_seconds=config.readyz_timeout_seconds,
+        worker_health=lambda: getattr(inner_app.state, "learning_worker_health", None),
     )
     add_disclosure_route(inner_app, config)
     add_openapi_route(inner_app)
@@ -1768,12 +1771,15 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
     @contextlib.asynccontextmanager
     async def _lifespan_with_rls_check(app):
         async with _previous_lifespan(app):
-            await check_row_level_security(
-                session_factory,
-                allow_bypass=config.allow_rls_bypass,
-                require=config.require_rls,
-            )
             try:
+                await check_row_level_security(
+                    session_factory,
+                    allow_bypass=config.allow_rls_bypass,
+                    require=config.require_rls,
+                )
+                from hub.encryption import ensure_bound_fields
+
+                await ensure_bound_fields(session_factory, config.cipher())
                 yield
             finally:
                 factory = getattr(app.state, "memory_projection_factory", None)
@@ -1784,7 +1790,14 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
     async def _lifespan_with_scheduler(app):
         async with _lifespan_with_rls_check(app):
             stop_event = asyncio.Event()
-            tasks = []
+            worker_health = {"running": False, "healthy": False, "failures": 0, "restarts": 0}
+            app.state.learning_worker_health = worker_health
+            tasks = [
+                asyncio.create_task(
+                    learning.supervise_worker(session_factory, stop_event=stop_event, health=worker_health),
+                    name="unimem-learning-supervisor",
+                )
+            ]
             if config.alert_scheduler_enabled:
                 tasks.append(
                     asyncio.create_task(

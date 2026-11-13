@@ -31,17 +31,14 @@ import time
 import zipfile
 from typing import Any
 
+import yaml
+
 try:
     import numpy as np_import
 except ImportError:
     np = None
 else:
     np = np_import
-
-try:
-    import yaml
-except ImportError:
-    yaml = None
 
 SentenceTransformer: type[Any] | None = None
 try:

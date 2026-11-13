@@ -203,9 +203,11 @@ def verify(root: str, receipt: dict, record: dict | None = None) -> bool:
     return origin.verify(receipt, {principal.id: principal}) and matches
 
 
-def bind(root: str, record: dict, *, sources: list[str] | None = None) -> dict:
+def bind(root: str, record: dict, *, sources: list[str] | None = None, _redact_history: bool = False) -> dict:
     from unimem import safety
 
+    if _redact_history and not is_operator():
+        raise PermissionError("only the store operator can replace redacted origin history")
     if record_class(record) != "journal":
         from unimem import policy_io
 
@@ -249,7 +251,11 @@ def bind(root: str, record: dict, *, sources: list[str] | None = None) -> dict:
             minimum = min(TRUST[authority], *ranks)
             authority = next(name for name in ("external", "agent", "user", "operator") if TRUST[name] == minimum)
         signed = origin.bind(record, origin.Principal(principal_id, "local-store", authority, key, algorithm))
-        _jsonl.append_row(ledger, signed)
+        if _redact_history:
+            retained = [row for row in _jsonl.read_rows(ledger) if row.get("record", {}).get("id") != record.get("id")]
+            _jsonl.write_rows(ledger, [*retained, signed])
+        else:
+            _jsonl.append_row(ledger, signed)
     if record.get("id"):
         from unimem import lineage
 

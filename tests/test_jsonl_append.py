@@ -9,6 +9,26 @@ import pytest
 from unimem import _jsonl
 
 
+def test_streaming_rows_preserve_reader_policy_and_close_on_early_exit(tmp_path, monkeypatch):
+    path = tmp_path / "rows.jsonl"
+    path.write_text('\nnot JSON\n[1,2]\n{"id":"a"}\n{"id":"é"}\n', encoding="utf-8")
+    assert _jsonl.read_rows(str(path)) == [{"id": "a"}, {"id": "é"}]
+    assert list(_jsonl.iter_rows(str(tmp_path / "missing"))) == []
+    handles = []
+
+    def tracked_open(*args, **kwargs):
+        handle = open(*args, **kwargs)
+        handles.append(handle)
+        return handle
+
+    monkeypatch.setattr(_jsonl, "open", tracked_open, raising=False)
+    rows = _jsonl.iter_rows(str(path))
+    assert next(rows) == {"id": "a"}
+    assert not handles[0].closed
+    rows.close()
+    assert handles[0].closed
+
+
 def test_a_short_write_is_completed_not_truncated(tmp_path, monkeypatch):
     real_write = os.write
 

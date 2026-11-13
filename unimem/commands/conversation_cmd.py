@@ -345,7 +345,7 @@ def run_index(args) -> int:
         with _store(args, create=False) as store:
             encoder = embed.Embedder(store.root, tag)
             result = embed.prepare(store, encoder, sessions=args.session)
-    except (ConversationError, ImportError, RuntimeError, OSError) as exc:
+    except (ValueError, ImportError, RuntimeError, OSError) as exc:
         print(f"[unimem] {exc}", file=sys.stderr)
         return 2
     finally:

@@ -1385,7 +1385,7 @@ class TestEncryptionAtRestCLI:
         async with session_scope(session_factory) as session:
             row = await session.get(WebhookEndpoint, endpoint_id)
         assert row.url != self.URL
-        assert cipher.decrypt(row.url) == self.URL
+        assert events.endpoint_url(cipher, row) == self.URL
 
         capsys.readouterr()
         assert await manage.webhook_list(org_id, session_factory=session_factory)

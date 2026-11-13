@@ -51,10 +51,13 @@ allocation weight, not a proof. Billing and release decisions keep using
 from __future__ import annotations
 
 import math
+import sys
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from typing import Any
+
+from unimem import effect_field
 
 DEFAULT_TAU = 0.10  # prior sd of a memory's effect before any data (10 points of success rate)
 TAU_FLOOR = 0.03  # lessons are never pooled into one another completely
@@ -65,8 +68,9 @@ MAX_CONTEXTS_PER_LESSON = 64
 DRIFT_SPLITS = (0.25, 0.5, 0.75)
 RESET_ALPHA = 0.01  # evidence is only forgotten on stronger proof of drift than is reported
 MIN_OVERLAP_ESS = 30.0
-MAX_LOG_WEIGHT = 50.0  # importance weights beyond e**50 are treated as unbounded
+MAX_LOG_WEIGHT = 50.0  # rescale extreme log weights before exponentiation; ratios and ESS stay unchanged
 UNKNOWN_SOURCE = "local"
+_WEIGHT_ROOT_MAX = math.sqrt(sys.float_info.max) / 2.0
 
 
 # -- inputs --------------------------------------------------------------------------------------
@@ -177,7 +181,15 @@ def _arm(rows: Sequence[Row]) -> tuple[float, float, int] | None:
     """Self-normalized mean, its linearized variance (floored by a Jeffreys term), and the count."""
     if not rows:
         return None
-    weights = [1.0 / r.propensity for r in rows]
+    propensities = [r.propensity for r in rows]
+    if any(not 0.0 < row.rate < 1.0 for row in rows):
+        raise ValueError("arm propensities require finite randomization rates strictly between zero and one")
+    smallest = min(propensities)
+    # Hajek means, variance and ESS are invariant under a common weight scale.
+    # Normalize only when the unscaled total's square could overflow; preserve
+    # the usual arithmetic for ordinary randomized-assignment probabilities.
+    normalizer = smallest if smallest < len(rows) / _WEIGHT_ROOT_MAX else 1.0
+    weights = [normalizer / p for p in propensities]
     total = math.fsum(weights)
     mean = math.fsum(w * r.succeeded for w, r in zip(weights, rows)) / total
     variance = math.fsum((w * (r.succeeded - mean)) ** 2 for w, r in zip(weights, rows)) / total**2
@@ -193,6 +205,65 @@ def contrast(rows: Sequence[Row]) -> Contrast | None:
     if injected is None or withheld is None:
         return None
     return Contrast(injected[0] - withheld[0], injected[1] + withheld[1], injected[2], withheld[2])
+
+
+def _context_contrasts(by_context: Mapping[str, Sequence[Row]], targets: Iterable[str]) -> dict[str, Contrast | None]:
+    """Leave-one-context-out binary contrasts without rescanning every other row.
+
+    Positive weighted success/failure moments avoid subtracting nearly equal
+    totals. Recombine the other context groups with fsum, retaining the original
+    Jeffreys floor and effective sample size. Nonbinary legacy inputs use the
+    original general scorer.
+    """
+    minimum = sum(map(len, by_context.values())) / _WEIGHT_ROOT_MAX
+    if any(
+        type(row.succeeded) is not bool or not 0.0 < row.rate < 1.0 or not minimum <= row.propensity <= 1.0
+        for rows in by_context.values()
+        for row in rows
+    ):
+        # Scale each retained arm independently for extreme probabilities. A
+        # common normalization across contexts would erase small weights when
+        # the context holding the largest weight is itself left out.
+        return {
+            ctx: contrast([r for other, rows in by_context.items() if other != ctx for r in rows]) for ctx in targets
+        }
+    moments: dict[str, dict[bool, tuple[float, float, float, float, int]]] = {}
+    for ctx, rows in by_context.items():
+        arms: dict[bool, list[list[float]]] = {True: [[], []], False: [[], []]}
+        for row in rows:
+            arms[row.injected][int(row.succeeded)].append(1.0 / row.propensity)
+        moments[ctx] = {}
+        for arm, (failed_weights, success_weights) in arms.items():
+            moments[ctx][arm] = (
+                math.fsum(failed_weights),
+                math.fsum(success_weights),
+                math.fsum(w * w for w in failed_weights),
+                math.fsum(w * w for w in success_weights),
+                len(failed_weights) + len(success_weights),
+            )
+    result: dict[str, Contrast | None] = {}
+    for ctx in targets:
+        estimates = []
+        for arm in (True, False):
+            others = [value[arm] for key, value in moments.items() if key != ctx]
+            n = sum(value[4] for value in others)
+            if not n:
+                break
+            failed, succeeded, failed2, succeeded2 = (math.fsum(value[i] for value in others) for i in range(4))
+            total = math.fsum((failed, succeeded))
+            mean = succeeded / total
+            variance = (failed2 * mean**2 + succeeded2 * (1.0 - mean) ** 2) / total**2
+            effective = total**2 / math.fsum((failed2, succeeded2))
+            smoothed = (mean * effective + 0.5) / (effective + 1.0)
+            estimates.append((mean, max(variance, smoothed * (1.0 - smoothed) / (effective + 1.0)), n))
+        result[ctx] = (
+            Contrast(
+                estimates[0][0] - estimates[1][0], estimates[0][1] + estimates[1][1], estimates[0][2], estimates[1][2]
+            )
+            if len(estimates) == 2
+            else None
+        )
+    return result
 
 
 def _dersimonian_laird(groups: Sequence[Sequence[tuple[float, float]]]) -> float | None:
@@ -255,20 +326,41 @@ class Model:
     tau_source: float = 0.0
     tau_context: float = CONTEXT_TAU_FLOOR
     rows: int = 0
+    transfer: effect_field.Field | None = None
+    forecasts: dict[str, Posterior] = field(default_factory=dict)  # unmeasured memories the field informs
+    context_transfer: dict[str, effect_field.Field] = field(default_factory=dict)  # memory -> its fleet field
+    _priors: dict[str, tuple[float, float]] = field(default_factory=dict, repr=False)
+
+    def context_summary(self) -> dict[str, Any] | None:
+        if not self.context_transfer:
+            return None
+        fields = self.context_transfer
+        return {
+            "kernel": next(iter(fields.values())).kernel,
+            "memories": len(fields),
+            "validated": sorted(m for m, f in fields.items() if f.validated),
+            "insufficient": sum(f.verdict == effect_field.INSUFFICIENT for f in fields.values()),
+        }
 
     def posterior(self, lesson: str, context: str = "") -> Posterior | None:
         if context and (lesson, context) in self.contexts:
             return self.contexts[(lesson, context)]
-        return self.lessons.get(lesson)
+        return self.lessons.get(lesson) or self.forecasts.get(lesson)
 
     def to_dict(self) -> dict:
-        return {
+        out = {
             "rows": self.rows,
             "tau": {"lesson": self.tau_lesson, "source": self.tau_source, "context": self.tau_context},
             "lessons": [asdict(p) for p in sorted(self.lessons.values(), key=lambda p: p.lesson)],
             "contexts": [asdict(p) for p in sorted(self.contexts.values(), key=lambda p: (p.lesson, p.context))],
             "sources": [asdict(s) for s in sorted(self.sources.values(), key=lambda s: s.source)],
         }
+        if self.transfer is not None:
+            out["field"] = self.transfer.summary()
+            out["forecasts"] = [asdict(p) for p in sorted(self.forecasts.values(), key=lambda p: p.lesson)]
+        if self.context_transfer:
+            out["context_field"] = self.context_summary()
+        return out
 
 
 def _posterior(
@@ -289,18 +381,151 @@ def _posterior(
     )
 
 
+def _fleet_field(
+    kernel: effect_field.Kernel | None,
+    cell_base: dict[tuple[str, str], tuple[float, float]],
+    cell_raw: Mapping[tuple[str, str], Contrast | None],
+    tau2_context: float,
+    cell_rows: Mapping[tuple[str, str], Sequence[Row]],
+    rows: Sequence[Row],
+    sources: Mapping[str, str],
+) -> dict[str, effect_field.Field]:
+    """Refit nuisance priors in five disjoint family folds before evaluating transfer.
+
+    A context's own outcomes never enter its heterogeneity, anchor, witnesses or
+    reference prior. The candidate starts at a lesson prior before context pooling;
+    its witnesses therefore contribute once. The reference keeps ordinary pooling.
+    Five shared fits bound the cost independently of fleet size.
+    """
+    cells_of: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    for cell in cell_base:
+        cells_of[cell[0]].append(cell)
+    key = {cell: f"{cell[0]}\x1e{cell[1]}" for cell in cell_base}
+    estimates = {key[c]: (est.effect, est.variance) for c in cell_base if (est := cell_raw.get(c)) is not None}
+    units = {key[cell]: {row.occasion_id for row in cell_rows[cell]} for cell in cell_base}
+    cell_kernel = effect_field.CellKernel.build(kernel, {k: c for c, k in key.items()})
+    families = effect_field._validation_families(sorted(estimates), cell_kernel, units)
+    eligible = {
+        memory
+        for memory, cells in cells_of.items()
+        if len({families[key[c]] for c in cells if key[c] in families}) >= effect_field.MIN_MEASURED
+    }
+    fields: dict[str, effect_field.Field] = {}
+    for memory in sorted(cells_of.keys() - eligible):
+        count = len({families[key[c]] for c in cells_of[memory] if key[c] in families})
+        fields[memory] = effect_field.Field(
+            effect_field.INSUFFICIENT,
+            cell_kernel.kind,
+            tau2=tau2_context,
+            measured=count,
+            validation_units=count,
+            threshold=effect_field.validate_z(1),
+        )
+    if not eligible:
+        return fields
+    fold_of = {family: i % 5 for i, family in enumerate(sorted(set(families.values())))}
+    query_fold = {identity: fold_of[family] for identity, family in families.items()}
+    query_fold.update({identity: 0 for identity in key.values() if identity not in estimates})
+    cases: dict[str, effect_field.ValidationCase] = {}
+    for fold in range(5):
+        held = {identity for identity, group in query_fold.items() if group == fold or identity not in estimates}
+        held_occasions = {occasion for identity in held for occasion in units[identity]}
+        training = [
+            row
+            for row in rows
+            if key.get((row.lesson, row.context)) not in held and row.occasion_id not in held_occasions
+        ]
+        plain = fit(training, sources=sources, candidates=cells_of)
+        training_estimates = {
+            key[cell]: (posterior.raw_effect, posterior.raw_se**2)
+            for cell, posterior in plain.contexts.items()
+            if cell in key
+            and key[cell] in estimates
+            and key[cell] not in held
+            and posterior.raw_effect is not None
+            and posterior.raw_se is not None
+        }
+        deviations: dict[str, list[tuple[float, float]]] = defaultdict(list)
+        for identity, estimate in training_estimates.items():
+            deviations[cell_kernel.cells[identity][0]].append(estimate)
+        tau_of = {}
+        for memory in cells_of:
+            own = _dersimonian_laird([deviations[memory]])
+            tau_of[memory] = max(CONTEXT_TAU_FLOOR**2, own) if own is not None else plain.tau_context**2
+        scales = {identity: math.sqrt(tau_of[cell[0]]) for cell, identity in key.items()}
+        residuals = {
+            identity: estimate[0] - plain._priors[cell_kernel.cells[identity][0]][0]
+            for identity, estimate in training_estimates.items()
+        }
+        noise = {identity: estimate[1] for identity, estimate in training_estimates.items()}
+        queries = [identity for cell, identity in key.items() if cell[0] in eligible and query_fold[identity] == fold]
+        near = cell_kernel.neighbors(queries, sorted(training_estimates))
+        for identity in queries:
+            memory = cell_kernel.cells[identity][0]
+            mean, variance = plain._priors[memory]
+            posterior = plain.lessons.get(memory)
+            reference = (
+                (posterior.mean, posterior.sd**2 + plain.tau_context**2)
+                if posterior
+                else (mean, variance + plain.tau_context**2)
+            )
+            cases[identity] = effect_field.ValidationCase(
+                near[identity], (mean, variance + tau_of[memory]), reference, scales, residuals, noise
+            )
+    bases = {
+        identity: cases[identity].base if identity in cases else (0.0, DEFAULT_TAU**2 + tau2_context)
+        for identity in key.values()
+    }
+    for memory, cells in sorted(cells_of.items()):
+        if memory not in eligible:
+            continue
+        targets = [key[c] for c in cells]
+        fields[memory] = fleet = effect_field.fit(
+            estimates,
+            bases,
+            tau2_context,
+            cell_kernel,
+            candidates=[t for t in targets if t not in estimates],
+            powers=(1,),  # component overlap has no sharpness to tune
+            targets=targets,
+            units=units,
+            validation_cases={identity: cases[identity] for identity in targets},
+        )
+        if fleet.validated:
+            for c in cells:
+                cell_base[c] = fleet.prior(key[c], *bases[key[c]])
+    return fields
+
+
 def _counts(rows: Sequence[Row]) -> tuple[int, int]:
     injected = sum(r.injected for r in rows)
     return injected, len(rows) - injected
 
 
-def fit(rows: Sequence[Row], sources: Mapping[str, str] | None = None) -> Model:
-    """The hierarchical posterior of every lesson's effect, overall and per context."""
+def fit(
+    rows: Sequence[Row],
+    sources: Mapping[str, str] | None = None,
+    *,
+    kernel: effect_field.Kernel | None = None,
+    candidates: Iterable[str] = (),
+    context_transfer: bool = False,
+) -> Model:
+    """The hierarchical posterior of every lesson's effect, overall and per context.
+
+    With a content `kernel`, an `effect_field` is fitted over the lessons' raw
+    effects; if it validates, it replaces each lesson's prior and forecasts the
+    unmeasured `candidates` it has witnesses for. With `context_transfer`, a second
+    field over each lesson's context components (``embodiment/site/skill``,
+    ``model/task``) lets sparse contexts borrow from similar ones, again only once
+    it validates.
+    """
     sources = sources or {}
     by_lesson: dict[str, list[Row]] = defaultdict(list)
     for r in rows:
         by_lesson[r.lesson].append(r)
     source_of = {lesson: sources.get(lesson, UNKNOWN_SOURCE) for lesson in by_lesson}
+    unmeasured = sorted(set(candidates) - set(by_lesson))
+    candidate_source = {lesson: sources.get(lesson, UNKNOWN_SOURCE) for lesson in unmeasured}
     raw = {lesson: contrast(lesson_rows) for lesson, lesson_rows in by_lesson.items()}
     estimated = {lesson: c for lesson, c in raw.items() if c is not None}
 
@@ -329,7 +554,7 @@ def fit(rows: Sequence[Row], sources: Mapping[str, str] | None = None) -> Model:
         rest_w, rest_we = total_w - w_own, total_we - we_own
         global_mean = rest_we / rest_w if rest_w > 1e-12 else 0.0
         global_var = 1.0 / rest_w if rest_w > 1e-12 else DEFAULT_TAU**2
-        s = source_of.get(lesson, UNKNOWN_SOURCE)
+        s = source_of[lesson] if lesson in source_of else candidate_source.get(lesson, UNKNOWN_SOURCE)
         s_w, s_we = source_w.get(s, 0.0) - w_own, source_we.get(s, 0.0) - we_own
         if s_w > 1e-12 and tau2_source > 0:
             s_var = 1.0 / s_w
@@ -339,8 +564,31 @@ def fit(rows: Sequence[Row], sources: Mapping[str, str] | None = None) -> Model:
         return global_mean, tau2 + global_var
 
     model = Model(tau_lesson=math.sqrt(tau2), tau_source=math.sqrt(tau2_source), rows=len(rows))
+    model._priors = {lesson: prior(lesson) for lesson in [*by_lesson, *unmeasured]}
+    lesson_prior: Callable[[str], tuple[float, float]] = prior
+    if kernel is not None:
+        bases = model._priors
+        transfer = effect_field.fit(
+            {lesson: (c.effect, c.variance) for lesson, c in estimated.items()},
+            bases,
+            tau2,
+            kernel,
+            candidates=unmeasured,
+            units={lesson: {row.occasion_id for row in by_lesson[lesson]} for lesson in estimated},
+        )
+        model.transfer = transfer
+
+        def field_prior(lesson: str) -> tuple[float, float]:
+            return transfer.prior(lesson, *bases[lesson])
+
+        lesson_prior = field_prior
+        for lesson in unmeasured:
+            if transfer.informs(lesson):
+                model.forecasts[lesson] = _posterior(
+                    lesson, "", candidate_source[lesson], None, (0, 0), *lesson_prior(lesson)
+                )
     for lesson, lesson_rows in by_lesson.items():
-        mean, variance = _combine(*prior(lesson), raw[lesson])
+        mean, variance = _combine(*lesson_prior(lesson), raw[lesson])
         model.lessons[lesson] = _posterior(
             lesson, "", source_of[lesson], raw[lesson], _counts(lesson_rows), mean, variance
         )
@@ -353,23 +601,39 @@ def fit(rows: Sequence[Row], sources: Mapping[str, str] | None = None) -> Model:
     cell_raw = {
         (lesson, ctx): contrast(cell_rows) for lesson, by_ctx in cells.items() for ctx, cell_rows in by_ctx.items()
     }
-    tau2_context = _dersimonian_laird(
-        [
-            [(c.effect, c.variance) for (lesson, _ctx), c in cell_raw.items() if lesson == name and c is not None]
-            for name in cells
-        ]
-    )
+    context_groups: dict[str, list[tuple[float, float]]] = defaultdict(list)
+    for (lesson, _ctx), estimate in cell_raw.items():
+        if estimate is not None:
+            context_groups[lesson].append((estimate.effect, estimate.variance))
+    tau2_context = _dersimonian_laird(list(context_groups.values()))
     tau2_context = max(CONTEXT_TAU_FLOOR**2, tau2_context or 0.0)
     model.tau_context = math.sqrt(tau2_context)
+    cell_base: dict[tuple[str, str], tuple[float, float]] = {}
+    cell_rows_of: dict[tuple[str, str], list[Row]] = {}
     for lesson, by_ctx in cells.items():
         ranked = sorted(by_ctx.items(), key=lambda item: (-len(item[1]), item[0]))[:MAX_CONTEXTS_PER_LESSON]
+        grouped = dict(by_ctx)
+        unlabelled = [row for row in by_lesson[lesson] if not row.context]
+        if unlabelled:
+            grouped[""] = unlabelled
+        rest = _context_contrasts(grouped, (ctx for ctx, _ in ranked))
         for ctx, cell_rows in ranked:
-            others = [r for r in by_lesson[lesson] if r.context != ctx]
-            base_mean, base_var = _combine(*prior(lesson), contrast(others))
-            mean, variance = _combine(base_mean, base_var + tau2_context, cell_raw[(lesson, ctx)])
-            model.contexts[(lesson, ctx)] = _posterior(
-                lesson, ctx, source_of[lesson], cell_raw[(lesson, ctx)], _counts(cell_rows), mean, variance
-            )
+            base_mean, base_var = _combine(*lesson_prior(lesson), rest[ctx])
+            cell_base[(lesson, ctx)] = (base_mean, base_var + tau2_context)
+            cell_rows_of[(lesson, ctx)] = cell_rows
+    if context_transfer and cell_base:
+        model.context_transfer = _fleet_field(kernel, cell_base, cell_raw, tau2_context, cell_rows_of, rows, source_of)
+    for (lesson, ctx), (prior_mean, prior_var) in cell_base.items():
+        mean, variance = _combine(prior_mean, prior_var, cell_raw[(lesson, ctx)])
+        model.contexts[(lesson, ctx)] = _posterior(
+            lesson,
+            ctx,
+            source_of[lesson],
+            cell_raw[(lesson, ctx)],
+            _counts(cell_rows_of[(lesson, ctx)]),
+            mean,
+            variance,
+        )
 
     for s in sorted(set(source_of.values())):
         members = [lesson for lesson, src in source_of.items() if src == s]
@@ -394,8 +658,10 @@ def withhold_rate(p_helps: float, floor: float = DEFAULT_FLOOR) -> float:
 
 
 def rates(model: Model, floor: float = DEFAULT_FLOOR) -> tuple[dict[str, float], dict[str, dict[str, float]]]:
-    """Per-lesson withholding rates, and per-context rates where a context differs from its lesson."""
-    lesson_rates = {lesson: withhold_rate(p.p_helps, floor) for lesson, p in model.lessons.items()}
+    """Per-lesson withholding rates (forecast memories included), and per-context rates where they differ."""
+    lesson_rates = {
+        lesson: withhold_rate(p.p_helps, floor) for lesson, p in [*model.forecasts.items(), *model.lessons.items()]
+    }
     context_rates: dict[str, dict[str, float]] = defaultdict(dict)
     for (lesson, ctx), p in model.contexts.items():
         rate = withhold_rate(p.p_helps, floor)
@@ -540,7 +806,7 @@ def policy_value(rows: Sequence[Row], rate_for: RateFor, *, z: float = 1.9599639
     occasions: dict[str, list[Row]] = defaultdict(list)
     for r in rows:
         occasions[r.occasion_id].append(r)
-    weights: list[float] = []
+    log_weights: list[float] = []
     outcomes: list[float] = []
     for occasion_rows in occasions.values():
         log_ratio = 0.0
@@ -551,11 +817,17 @@ def policy_value(rows: Sequence[Row], rate_for: RateFor, *, z: float = 1.9599639
                 log_ratio = -math.inf
                 break
             log_ratio += math.log(new_p) - math.log(r.propensity)
-        weights.append(math.exp(min(log_ratio, MAX_LOG_WEIGHT)) if log_ratio > -math.inf else 0.0)
+        log_weights.append(log_ratio)
         outcomes.append(float(occasion_rows[0].succeeded))
-    n = len(weights)
+    n = len(log_weights)
     if n == 0:
         return OffPolicy("INSUFFICIENT_DATA", 0, 0)
+    largest = max(log_weights)
+    # Self-normalized value, ESS and influence are invariant to a common scale.
+    # Capping each weight separately fabricates overlap; directly exponentiating
+    # uniformly tiny weights instead loses a perfectly supported evaluation.
+    offset = largest if math.isfinite(largest) and abs(largest) > MAX_LOG_WEIGHT else 0.0
+    weights = [math.exp(value - offset) for value in log_weights]
     total = math.fsum(weights)
     logged = math.fsum(outcomes) / n
     if total <= 0:
@@ -584,15 +856,24 @@ def evaluate(
     *,
     floor: float = DEFAULT_FLOOR,
     default_rate: float = 0.5,
+    kernel: effect_field.Kernel | None = None,
 ) -> OffPolicy:
-    """Fit the gate on the earlier half of the occasions; estimate its value on the later half."""
+    """Fit the gate on the earlier half of the occasions; estimate its value on the later half.
+
+    With a `kernel`, the gate fitted is the effect-field gate, and memories first seen
+    in the later half are scored at their forecast rates: an out-of-sample check of
+    the forecasts themselves.
+    """
     order = list(dict.fromkeys(r.occasion_id for r in rows))
     if len(order) < 2:
         return OffPolicy("INSUFFICIENT_DATA", 0, len(order))
     cut = set(order[: len(order) // 2])
     fit_rows = [r for r in rows if r.occasion_id in cut]
     eval_rows = [r for r in rows if r.occasion_id not in cut]
-    lesson_rates, context_rates = rates(fit(fit_rows, sources), floor)
+    later = {r.lesson for r in eval_rows} if kernel is not None else set()
+    lesson_rates, context_rates = rates(
+        fit(fit_rows, sources, kernel=kernel, candidates=later, context_transfer=kernel is not None), floor
+    )
 
     def rate_for(lesson: str, context: str) -> float:
         if context and context in context_rates.get(lesson, {}):
@@ -625,11 +906,33 @@ def current_rows(root: str) -> list[Row]:
     return rows_from_assignments(assignments)
 
 
-def plan_rates(root: str, floor: float) -> tuple[dict[str, float], dict[str, dict[str, float]], dict]:
-    """The next era's rates for a Thompson allocation schedule, with a compact basis for the record."""
+def store_kernel(root: str, measured: Iterable[str]) -> tuple[effect_field.Kernel, list[str]]:
+    """A kernel over lesson texts and recorded memory signatures, and the unmeasured memories to forecast."""
+    from unimem import memory_signatures
+
+    texts, active = effect_field.lesson_texts(root)
+    return memory_signatures.kernel(root, texts, measured, active)
+
+
+def plan_rates(
+    root: str, floor: float, *, field: bool = False
+) -> tuple[dict[str, float], dict[str, dict[str, float]], dict]:
+    """The next era's rates for a Thompson allocation schedule, with a compact basis for the record.
+
+    With `field`, an `effect_field` over the lesson texts informs the priors and
+    forecasts rates for active lessons that have no evidence yet.
+    """
     rows = current_rows(root)
     gated, resets = forget_before_drift(rows, drift(rows))
-    model = fit(gated, sources_for(root, {r.lesson for r in rows}))
+    lessons = {r.lesson for r in rows}
+    kernel, candidates = store_kernel(root, lessons) if field else (None, [])
+    model = fit(
+        gated,
+        sources_for(root, lessons | set(candidates)),
+        kernel=kernel,
+        candidates=candidates,
+        context_transfer=field,
+    )
     lesson_rates, context_rates = rates(model, floor)
     from unimem import uplift
 
@@ -648,32 +951,79 @@ def plan_rates(root: str, floor: float) -> tuple[dict[str, float], dict[str, dic
         },
         "p_helps": {lesson: round(p.p_helps, 4) for lesson, p in sorted(model.lessons.items())},
     }
+    if kernel is not None and model.transfer is not None:
+        basis["mode"] = "thompson-field"
+        basis["field"] = {**model.transfer.summary(), "kernel_digest": kernel.digest()}
+        basis["forecasts"] = {lesson: round(p.p_helps, 4) for lesson, p in sorted(model.forecasts.items())}
+    if model.context_transfer:
+        basis["context_field"] = model.context_summary()
     return lesson_rates, context_rates, basis
 
 
 def report(
-    root: str, *, alpha: float = 0.05, min_arm: int = 10, practical: float = 0.10, floor: float = DEFAULT_FLOOR
+    root: str,
+    *,
+    alpha: float = 0.05,
+    min_arm: int = 10,
+    practical: float = 0.10,
+    floor: float = DEFAULT_FLOOR,
+    field: bool | None = None,
 ) -> dict:
-    """Everything the gate knows: posteriors, source reputations, proposed rates, drift and an off-policy check."""
+    """Everything the gate knows: posteriors, source reputations, proposed rates, drift and an off-policy check.
+
+    The `effect_field` section is always computed. Posteriors and rates use it only with
+    `field`, which defaults to whether the schedule in force is in ``thompson-field`` mode.
+    """
     rows = current_rows(root)
     from unimem import eprocess
     from unimem.commands.experiment_cmd import _load
 
     e_values = eprocess.report(_load(root)[0])
-    sources = sources_for(root, {r.lesson for r in rows})
+    lessons = {r.lesson for r in rows}
+    kernel, candidates = store_kernel(root, lessons)
+    sources = sources_for(root, lessons | set(candidates))
     findings = drift(rows, alpha=alpha, min_arm=min_arm, practical=practical)
     gated, resets = forget_before_drift(rows, findings)
-    model = fit(gated, sources)
-    lesson_rates, context_rates = rates(model, floor)
-    from unimem import attribution
+    from unimem import allocation, attribution
 
+    use_field = allocation.field_mode(root) if field is None else field
+    field_model = fit(gated, sources, kernel=kernel, candidates=candidates, context_transfer=True)
+    model = field_model if use_field else fit(gated, sources)
+    lesson_rates, context_rates = rates(model, floor)
+    field_off_policy = asdict(evaluate(rows, sources, floor=floor, kernel=kernel))
+
+    by_lesson: dict[str, list[Row]] = defaultdict(list)
+    for r in gated:
+        by_lesson[r.lesson].append(r)
+    estimates = {
+        lesson: (c.effect, c.variance)
+        for lesson, lesson_rows in sorted(by_lesson.items())
+        if (c := contrast(lesson_rows)) is not None
+    }
+    transfer = field_model.transfer
     return {
         "counterfactual_diagnostics": [attribution.gate_adjustment(root, identity) for identity in model.lessons],
         "e_value": e_values,
         "model": model.to_dict(),
         "proposed_rates": {"lessons": lesson_rates, "contexts": context_rates, "floor": floor, "drift_resets": resets},
         "drift": [asdict(d) for d in findings],
-        "off_policy": asdict(evaluate(rows, sources, floor=floor)),
+        "off_policy": field_off_policy if use_field else asdict(evaluate(rows, sources, floor=floor)),
+        "effect_field": {
+            **(transfer.summary() if transfer is not None else {}),
+            "used_by_gate": use_field,
+            "kernel_digest": kernel.digest(),
+            "forecasts": [
+                {
+                    **asdict(p),
+                    "withhold": withhold_rate(p.p_helps, floor),
+                    "witnesses": [list(w) for w in transfer.witnesses(lesson)] if transfer is not None else [],
+                }
+                for lesson, p in sorted(field_model.forecasts.items())
+            ],
+            "lookalikes": [asdict(x) for x in effect_field.lookalikes(estimates, kernel, practical=practical)],
+            "context_field": field_model.context_summary(),
+            "off_policy": field_off_policy,
+        },
         "note": (
             "Posteriors are empirical-Bayes allocation weights, not proofs; "
             "`unimem experiment` remains the evidence of record."
@@ -734,5 +1084,55 @@ def render(out: Mapping[str, Any]) -> str:
             f"[{_pct(ope['ci_low'])}, {_pct(ope['ci_high'])}], ESS {ope['effective_sample_size']:.0f}: "
             f"{ope['verdict']}"
         )
+    lines += _render_field(out.get("effect_field") or {})
     lines.append("  " + out["note"])
     return "\n".join(lines)
+
+
+def _render_field(section: Mapping[str, Any]) -> list[str]:
+    if not section.get("verdict"):
+        return []
+    gain, z = section.get("lpd_gain"), section.get("z")
+    detail = (
+        f"over {section['measured']} measured memories with a witness"
+        + (
+            ""
+            if gain is None
+            else f", predictive gain {gain:+.3f} nats/memory, z " + ("unbounded" if z is None else f"{z:.2f}")
+        )
+        + f" (needs {section['threshold']:.2f})"
+    )
+    used = (
+        "in use by the gate"
+        if section.get("used_by_gate")
+        else "diagnostic only (allocate enable --mode thompson-field)"
+    )
+    lines = [f"  effect field ({section['kernel']}): {section['verdict']} {detail}; {used}"]
+    if section["verdict"] == effect_field.VALIDATED:
+        lines.append(f"    kernel power {section['power']}, share of between-memory variance {section['share']:.0%}")
+    ctx = section.get("context_field")
+    if ctx:
+        validated = ctx["validated"]
+        lines.append(
+            f"    fleet field over contexts ({ctx['kernel']}): validated for {len(validated)} of "
+            f"{ctx['memories'] - ctx['insufficient']} memories with enough contexts"
+            + (f" ({', '.join(validated[:5])})" if validated else "")
+        )
+    for f in section.get("forecasts", []):
+        witness = ", ".join(f"{m} ({s:.2f})" for m, s in f["witnesses"][:3])
+        lines.append(
+            f"    forecast {f['lesson']}: {_pct(f['mean'])} +/- {f['sd']:.1%}, P(helps) {f['p_helps']:.0%}, "
+            f"withhold {f['withhold']:.0%} [like {witness}]"
+        )
+    for x in section.get("lookalikes", []):
+        lines.append(
+            f"    look-alikes with opposite effects: {x['a']} {_pct(x['effect_a'])} vs {x['b']} "
+            f"{_pct(x['effect_b'])} (similarity {x['similarity']:.2f}, q={x['q_value']:.3g}): review and separate"
+        )
+    ope = section.get("off_policy") or {}
+    if ope.get("lift") is not None:
+        lines.append(
+            f"    field gate off-policy: {ope['policy_value']:.1%} vs delivered {ope['logged_value']:.1%}, "
+            f"lift {_pct(ope['lift'])} [{_pct(ope['ci_low'])}, {_pct(ope['ci_high'])}]: {ope['verdict']}"
+        )
+    return lines

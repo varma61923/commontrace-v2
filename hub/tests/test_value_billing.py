@@ -79,7 +79,14 @@ async def test_a_plan_change_changes_what_is_reported_from_that_point_only(sent,
         ({**LINE, "kind": "credit", "amount": -5}, "only a value"),
         ({**LINE, "amount": 0}, "not positive"),
         ({**LINE, "amount": -3}, "not positive"),
+        ({**LINE, "amount": True}, "not positive"),
+        ({**LINE, "amount": float("nan")}, "finite amount"),
+        ({**LINE, "amount": float("inf")}, "finite amount"),
+        ({**LINE, "amount": 1e308}, "finite amount"),
+        ({**LINE, "amount": 10**1000}, "finite amount"),
+        ({**LINE, "amount": 0.001}, "positive after rounding"),
         ({**LINE, "evidence": {}}, "without its evidence"),
+        ({**LINE, "evidence": ["malformed"]}, "without its evidence"),
         ({**LINE, "evidence": {**LINE["evidence"], "verify": ""}}, "without its evidence"),
     ],
 )
@@ -91,8 +98,9 @@ async def test_only_a_positive_evidenced_value_line_is_reported(sent, line, mess
     assert sent == []
 
 
-async def test_a_live_key_is_refused_unless_it_is_allowed_on_purpose(sent):
-    live = billing.StripeSettings(secret_key="sk_live_abc")
+@pytest.mark.parametrize("prefix", ["sk_live_", "rk_live_"])
+async def test_a_live_key_is_refused_unless_it_is_allowed_on_purpose(sent, prefix):
+    live = billing.StripeSettings(secret_key=prefix + "abc")
     with pytest.raises(value_billing.ValueBillingRefused, match="live Stripe key"):
         await value_billing.report_value_line(
             live, org_id="o", plan="team", customer_id="cus_1", line=LINE, event_name="e"

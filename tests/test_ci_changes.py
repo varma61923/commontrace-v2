@@ -84,3 +84,12 @@ def test_each_commit_runs_once_and_the_suite_runs_in_parallel():
         assert "-n auto" in steps
     assert "--cov-fail-under=80" in " ".join(str(s.get("run", "")) for s in jobs["test-dev"]["steps"])
     assert "coverage" not in jobs and "generated-sdks" not in jobs
+
+
+def test_browser_ci_requires_chromium_and_runs_both_console_suites():
+    job = yaml.safe_load(Path(".github/workflows/ci.yml").read_text())["jobs"]["test-browser"]
+    assert job["env"]["UNIMEM_REQUIRE_BROWSER"] == "1"
+    commands = "\n".join(step.get("run", "") for step in job["steps"])
+    assert "playwright install --with-deps chromium" in commands
+    assert "tests/test_ui_browser.py" in commands
+    assert "hub/tests/test_console_accessibility.py" in commands

@@ -162,6 +162,7 @@ def test_nothing_is_withheld_until_an_experiment_is_started_on_purpose(root):
         ({"occasion_id": "o", "items": [{"id": "a", "meta": "x"}]}, "meta"),
         ({"occasion_id": "o", "items": [{"id": f"i{n}"} for n in range(201)]}, "longer than 200"),
         ({"occasion_id": "o", "items": [], "agent_id": "bad agent!"}, "agent_id"),
+        ({"occasion_id": "o", "items": [], "agent_id": "agent\n"}, "agent_id"),
         ({"occasion_id": "o", "items": [], "env": 5}, "env must be a string"),
         ({"occasion_id": "o"}, "query"),
     ],
@@ -188,6 +189,22 @@ def test_bad_recall_requests_are_400_with_the_reason(gw, body, message):
 )
 def test_non_object_or_non_json_bodies_are_400(gw, raw):
     assert gw.handle("POST", "/v1/recall", AUTH, raw).status == 400
+
+
+@pytest.mark.parametrize("number", [b"1e400", b"-1e400", b"1e9999"])
+def test_overflowed_json_numbers_are_rejected_before_dispatch(gw, number):
+    raw = b'{"occasion_id":"overflow","items":[],"pad":{"nested":[' + number + b"]}}"
+    assert gw.handle("POST", "/v1/recall", AUTH, raw).status == 400
+
+
+def test_finite_extreme_json_numbers_keep_their_standard_float_representation():
+    assert gateway.Gateway._parse_body(b'{"large":1e308,"tiny":5e-324}') == {"large": 1e308, "tiny": 5e-324}
+
+
+def test_malformed_origin_is_refused_by_the_gateway_dispatcher(gw):
+    response = gw.handle("POST", "/v1/memory/search", {**AUTH, "Origin": "http://["}, b"{}")
+    assert response.status == 403
+    assert json.loads(response.body)["error"]["code"] == "bad_origin"
 
 
 def test_an_oversized_body_is_413(gw):

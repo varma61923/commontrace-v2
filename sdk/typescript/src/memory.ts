@@ -1,3 +1,4 @@
+import { LearningClient, learningOperations, type LearningOperation } from "./learning.js";
 /** The identical scoped memory API served by the local binary and HTTP gateway. */
 export interface MemoryClientOptions {
   url: string;
@@ -8,8 +9,28 @@ export interface MemoryClientOptions {
 }
 export interface Evidence { id: string; text: string; sources?: string[]; layer?: string }
 export interface Recall { context: string; evidence: Evidence[]; occasion_id: string; tokens_estimate: number }
+export type GradedOutcome = {reward: number} | {metrics: Record<string, number>};
+function outcomeBody(result: boolean | GradedOutcome): Record<string, unknown> {
+  if (typeof result === "boolean") return {succeeded: result};
+  const keys = result && typeof result === "object" ? Object.keys(result) : [];
+  if (keys.length !== 1 || !(keys[0] === "reward" || keys[0] === "metrics")) {
+    throw new TypeError("outcome needs a boolean, {reward} or {metrics}");
+  }
+  if ("reward" in result) {
+    if (typeof result.reward !== "number" || !Number.isFinite(result.reward) || result.reward < 0 || result.reward > 1) {
+      throw new RangeError("reward must be a finite number between 0 and 1");
+    }
+    return {reward: result.reward};
+  }
+  const entries = Object.entries(result.metrics ?? {});
+  if (entries.length === 0 || entries.length > 64 || entries.some(([, v]) => typeof v !== "number" || !Number.isFinite(v))) {
+    throw new RangeError("metrics must be an object of 1 to 64 finite numbers");
+  }
+  return {metrics: result.metrics};
+}
 export class MemoryClient {
   readonly context: string[];
+  readonly learning: LearningClient;
   private readonly url: string;
   private readonly token: string;
   private readonly transport: typeof globalThis.fetch;
@@ -24,11 +45,16 @@ export class MemoryClient {
     this.token = options.token ?? "";
     this.context = [...new Set([...(options.context ?? []), ...(options.agentId ? [`agent:${options.agentId}`] : [])])];
     this.transport = options.fetch ?? globalThis.fetch;
+    this.learning = new LearningClient((operation, body) => this.learningRequest(operation, body));
+  }
+  private async learningRequest(operation: LearningOperation, data: Record<string, unknown>): Promise<unknown> {
+    return this.request(operation, data, {}, true);
   }
   async request<T>(operation: string, data: Record<string, unknown>, options: {
     timeoutMs?: number; context?: string[];
-  } = {}): Promise<T> {
-    if (!["add", "batch", "search", "profile", "reflect", "outcome", "check-action", "propose", "turn", "record-put", "record-search", "record-forget", "record-reap-due"].includes(operation)) {
+  } = {}, learning = false): Promise<T> {
+    if (learning && !learningOperations.includes(operation as LearningOperation)) throw new Error("Unknown learning operation");
+    if (!learning && !["add", "batch", "search", "profile", "reflect", "outcome", "check-action", "propose", "turn", "record-put", "record-search", "record-forget", "record-reap-due"].includes(operation)) {
       throw new Error("Unknown memory operation");
     }
     const timeoutMs = options.timeoutMs ?? 30000;
@@ -36,10 +62,14 @@ export class MemoryClient {
       throw new RangeError("Memory request timeout must be an integer from 1 to 30000 milliseconds");
     }
     const context = [...new Set([...this.context, ...(options.context ?? [])])];
-    const response = await this.transport(`${this.url}/v1/memory/${operation}`, {
-      method: "POST", redirect: "manual", signal: AbortSignal.timeout(timeoutMs),
+    const read = learning && ["capabilities", "status"].includes(operation);
+    const query = new URLSearchParams(context.map(label => ["context", label]));
+    if (read && data.experiment_id !== undefined) query.set("experiment_id", String(data.experiment_id));
+    const suffix = read ? "?" + query.toString() : "";
+    const response = await this.transport(`${this.url}/v1/${learning ? "learning" : "memory"}/${operation}${suffix}`, {
+      method: read ? "GET" : "POST", redirect: "manual", signal: AbortSignal.timeout(timeoutMs),
       headers: {"Content-Type": "application/json", ...(this.token ? {Authorization: `Bearer ${this.token}`} : {})},
-      body: JSON.stringify({...data, context}),
+      ...(read ? {} : {body: JSON.stringify({...data, context})}),
     });
     if (!response.ok) {
       // Release unread error/redirect streams so repeated refusals do not retain sockets.
@@ -91,7 +121,7 @@ export class MemoryClient {
                                                payload?: Record<string, unknown>; timeoutMs?: number;
                                                context?: string[]} = {}) {
     const {timeoutMs, context, ...data} = options;
-    return this.request<MemoryTurn>("turn", {session_id: session, query, ...data}, {timeoutMs, context});
+    return this.request<MemoryTurn>("turn", {...data, session_id: session, query}, {timeoutMs, context});
   }
   add(text: string, memoryType = "general") {
     return this.request<{facts: Record<string, unknown>[] }>("add", {text, local: true, memory_type: memoryType});
@@ -107,8 +137,10 @@ export class MemoryClient {
                                    adaptive_budget?: boolean} = {}) {
     return this.request<Recall>("reflect", {query, ...options});
   }
-  async outcome(occasionId: string, succeeded: boolean) {
-    return (await this.request<{recorded: boolean}>("outcome", {occasion_id: occasionId, succeeded})).recorded;
+  /** Report how an occasion went: a boolean, a graded `{reward}` in [0, 1], or utility `{metrics}`.
+   *  Graded outcomes are realized by the gateway's audited randomized rounding. */
+  async outcome(occasionId: string, result: boolean | GradedOutcome) {
+    return (await this.request<{recorded: boolean}>("outcome", {occasion_id: occasionId, ...outcomeBody(result)})).recorded;
   }
   async checkAction(tool: string, tags: string[] = []) {
     if ((await this.request<{allowed: boolean}>("check-action", {tool, tags})).allowed !== true) {

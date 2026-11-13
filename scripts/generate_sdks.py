@@ -34,6 +34,17 @@ PROPERTIES = {
 }
 
 
+def _jar_digest(path: Path) -> str:
+    digest, size = hashlib.sha256(), 0
+    with path.open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            size += len(chunk)
+            if size > 64 * 1024 * 1024:
+                raise ValueError("generator exceeds the bounded download size")
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def checked_jar(path: Path) -> Path:
     if not path.is_file():
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -45,9 +56,10 @@ def checked_jar(path: Path) -> Path:
             "https://repo1.maven.org" + artifact,
             "https://repo.maven.apache.org" + artifact,
         ] * 2
-        # Fetch into a disposable name; interrupted downloads never become the cache.
-        temporary = path.with_suffix(".download")
-        try:
+        # A private sibling directory isolates concurrent fetches and refuses
+        # pre-created symlinks at the old shared temporary filename.
+        with tempfile.TemporaryDirectory(prefix=f".{path.name}.", dir=path.parent) as directory:
+            temporary = Path(directory) / "download"
             for attempt, url in enumerate(urls):
                 try:
                     with urllib.request.urlopen(url, timeout=60) as response, temporary.open("wb") as output:
@@ -71,9 +83,7 @@ def checked_jar(path: Path) -> Path:
             if digest.hexdigest() != SHA256:
                 raise ValueError("OpenAPI Generator checksum mismatch")
             os.replace(temporary, path)
-        finally:
-            temporary.unlink(missing_ok=True)
-    if hashlib.sha256(path.read_bytes()).hexdigest() != SHA256:
+    if _jar_digest(path) != SHA256:
         raise ValueError("OpenAPI Generator checksum mismatch")
     return path
 
@@ -168,7 +178,7 @@ def main() -> int:
         "--api",
         choices=("memory", "gateway", "hub"),
         default="memory",
-        help="Generate the memory subset (default), all gateway routes, or the Hub REST API",
+        help="Generate the memory and learning subset (default), all gateway routes, or the Hub REST API",
     )
     parser.add_argument("--package-version", help="release version for generated package manifests (SemVer)")
     args = parser.parse_args()

@@ -164,3 +164,27 @@ def test_cli_uses_real_managed_cohort_and_explicit_witness_disclosure(tmp_path, 
     request["expected_challenge"] = "ff" * 32
     assert main(["prove", "verify", json.dumps(request), "--witness-file", str(filename), "--dest", root]) == 1
     assert not json.loads(capsys.readouterr().out)["verified"]
+
+
+def test_private_witness_disclosure_obeys_source_export_policy(tmp_path):
+    from tests.test_policy_proof import example
+    from unimem import policy_io
+
+    root = str(tmp_path)
+    _, entries, _ = setup(root)
+    io.challenge(root, "study", "ab" * 32, context=["project:a"])
+    resolve(root, entries)
+    assert len(io.export_witness(root, "study", context=["project:a"])["rows"]) == len(entries)
+    policy = example()
+    policy["domain"]["purposes"].append("default")
+    policy["domain"]["memory_classes"] += ["effect-studies", "effect-cohorts", "effect-keys"]
+    policy["rules"].append({"id": "no-export", "effect": "deny", "actions": ["export"]})
+    certificate = policy_io.certify(root, policy)
+    review = policy_io.review(root, certificate, reason="Retain source reading while forbidding external disclosure.")
+    policy_io.activate(root, certificate, review_receipt=review)
+    # The study is still readable; disclosure of its private rows and seeds is not.
+    assert io.assign(root, "study", entries[0]["episode"], context=["project:a"])["episode"] == entries[0]["episode"]
+    with pytest.raises(PermissionError, match="export"):
+        io.prove(root, "study", context=["project:a"])
+    with pytest.raises(PermissionError, match="export"):
+        io.export_witness(root, "study", context=["project:a"])

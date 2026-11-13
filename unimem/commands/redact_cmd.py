@@ -8,7 +8,7 @@ import os
 import sys
 from typing import Any
 
-from unimem import frontmatter, memory_guard, paths
+from unimem import frontmatter, memory_authority, memory_guard, memory_signatures, paths, trace_io
 from unimem.commands.capture_cmd import _slugify
 
 
@@ -35,7 +35,7 @@ def trace_paths(root: str) -> list[str]:
     )
 
 
-def redact_trace(path: str, *, write: bool) -> tuple[list[str], str]:
+def redact_trace(path: str, *, write: bool, root: str | None = None) -> tuple[list[str], str]:
     """(kinds of credential found, the path the trace ends up at)."""
     fm, body = frontmatter.read(path)
     found: list[str] = []
@@ -51,9 +51,25 @@ def redact_trace(path: str, *, write: bool) -> tuple[list[str], str]:
         if not os.path.exists(candidate):
             target = candidate
     if write:
+        root = root or os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(path))))
+        paths.enforce_boundary(root, path)
+        instance, _ = trace_io.read(path)
+        cleaned = _redact_value(instance, [])
+        record = memory_authority.trace_record(cleaned)
+        receipt = fm.get("extensions", {}).get("profile", {}).get("origin")
+        if receipt:
+            # An operator may amend only the sanitizer's transformation of an
+            # authenticated record, never bless unrelated on-disk tampering.
+            if not memory_authority.verify(root, receipt) or _redact_value(receipt["record"], []) != record:
+                raise PermissionError("redaction does not match the authenticated trace content")
+            receipt = memory_authority.bind(root, record, sources=record.get("source_traces", []), _redact_history=True)
+            new_fm.setdefault("extensions", {}).setdefault("profile", {})["origin"] = receipt
+        elif memory_authority.previously_bound(root, str(fm.get("id", ""))):
+            raise PermissionError("a previously signed trace is missing its origin receipt")
         frontmatter.write(target, new_fm, new_body)
         if target != path:
             os.remove(path)
+        memory_signatures.forget(root, [str(fm.get("id", ""))])
     return found, target
 
 
@@ -61,11 +77,13 @@ def run(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
     changed = 0
     total = 0
+    failed = 0
     for path in trace_paths(root):
         try:
-            found, target = redact_trace(path, write=not args.dry_run)
+            found, target = redact_trace(path, write=not args.dry_run, root=root)
         except Exception as exc:  # noqa: BLE001 - one unreadable trace must not stop the rest
-            print(f"[unimem] skipped {path}: {type(exc).__name__}: {exc}", file=sys.stderr)
+            failed += 1
+            print(f"[unimem] skipped {_redact_value(path, [])}: {type(exc).__name__}", file=sys.stderr)
             continue
         if not found:
             continue
@@ -73,13 +91,18 @@ def run(args: argparse.Namespace) -> int:
         total += len(found)
         verb = "would redact" if args.dry_run else "redacted"
         moved = f" -> {os.path.basename(target)}" if target != path else ""
-        print(f"{verb} {len(found)} ({', '.join(dict.fromkeys(found))}): {os.path.basename(path)}{moved}")
+        safe_name = _redact_value(os.path.basename(path), [])
+        print(f"{verb} {len(found)} ({', '.join(dict.fromkeys(found))}): {safe_name}{moved}")
     if not changed:
-        print("[unimem] no credentials found in this store's traces.")
+        print(
+            "[unimem] no traces redacted; some traces could not be checked."
+            if failed
+            else "[unimem] no credentials found in this store's traces."
+        )
     else:
         print(
             f"[unimem] {'would redact' if args.dry_run else 'redacted'} {total} credential(s) in "
             f"{changed} trace(s)."
             + ("" if args.dry_run else " Rotate those keys: they were readable in this store until now.")
         )
-    return 0
+    return 1 if failed else 0

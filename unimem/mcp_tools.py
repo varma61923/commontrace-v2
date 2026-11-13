@@ -14,6 +14,7 @@ LOCAL_TOOLS = (
     "store_status",
     "experiment_status",
     "causal_gate_report",
+    "record_reward",
     "pooled_effect",
     "skill_catalog",
     "skill_evidence",
@@ -86,7 +87,15 @@ LOCAL_TOOLS = (
     "procedural_memory_replay",
     "sql_guarded_query",
     "defense_screen_content",
+    "learning_capabilities",
+    "learning_configure",
+    "learning_assign",
+    "learning_delivery",
+    "learning_outcome",
+    "learning_run",
+    "learning_status",
+    "learning_rollback",
 )
 
 
-APPROVAL_TOOLS = ("approve_lesson", "reject_lesson")
+APPROVAL_TOOLS = ("approve_lesson", "reject_lesson", "learning_configure", "learning_run", "learning_rollback")

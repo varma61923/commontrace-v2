@@ -12,15 +12,18 @@
   var tierChip = document.getElementById("tier");
   var commandLaunch = document.getElementById("command-launch");
   var disconnect = document.getElementById("disconnect");
+  var menuToggle = document.getElementById("menu-toggle");
   var token = "";
   var timer = null;
   var lastOk = 0;
-  var state = { status: null, capabilities: null, memories: null, agents: null, events: null, lessons: null, lesson: null, commandCatalog: null, commandResult: null, explorer: null, reviewDraft: null, ledger: null, library: null, traces: null, trace: null, benchmarks: null };
+  var state = { status: null, capabilities: null, memories: null, agents: null, events: null, lessons: null, lesson: null, commandCatalog: null, commandResult: null, explorer: null, reviewDraft: null, ledger: null, library: null, traces: null, trace: null, benchmarks: null, palace: null };
+  ["learning", "learningCapabilities", "learningDraft", "learningBusy", "learningAction", "learningScope", "learningScopeText", "learningExpanded", "identity", "commandDraft", "reviewBusy", "pageError", "palaceDraft"].forEach(function (key) { state[key] = null; });
   var selected = {};   // slug -> true, the review queue's bulk selection; survives repaints
   var notice = null;   // { kind: "ok"|"crit", text } shown on the next paint of the review views
   var lastPaint = "";
   var connState = "";
   var navigationGeneration = 0;
+  var commandSearchRequested = false;
 
   // ---- helpers -------------------------------------------------------------------------
 
@@ -38,7 +41,8 @@
     for (var i = 2; i < arguments.length; i++) {
       var c = arguments[i];
       if (c === null || c === undefined || c === false) continue;
-      el.appendChild(typeof c === "string" || typeof c === "number" ? document.createTextNode(String(c)) : c);
+      if (Array.isArray(c)) c.forEach(function (child) { if (child) el.appendChild(child); });
+      else el.appendChild(typeof c === "string" || typeof c === "number" ? document.createTextNode(String(c)) : c);
     }
     return el;
   }
@@ -75,6 +79,29 @@
   function store(key, val) { try { if (val === null) localStorage.removeItem(key); else localStorage.setItem(key, val); } catch (e) { /* private mode */ } }
   function load(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
 
+  function copyText(button, text) {
+    var pending;
+    try {
+      pending = navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject(new Error("Clipboard unavailable"));
+    } catch (error) { pending = Promise.reject(error); }
+    Promise.resolve(pending).then(function () {
+      if (!button.isConnected) return;
+      var previous = button.parentNode.querySelector(".clipboard-status");
+      if (previous) previous.remove();
+      button.parentNode.appendChild(h("span", { class: "clipboard-status muted small", role: "status", text: "Copied to clipboard." }));
+    }).catch(function () {
+      if (!button.isConnected) return;
+      var parent = button.parentNode;
+      var previous = parent.querySelector(".clipboard-fallback");
+      if (previous) previous.remove();
+      var field = h("textarea", { class: "command-args", readonly: true, rows: 4, "aria-label": "Text to copy" });
+      field.value = text;
+      parent.appendChild(h("div", { class: "clipboard-fallback" },
+        h("p", { role: "status", text: "Clipboard access was refused. Copy the selected text using your keyboard or context menu." }), field));
+      field.focus(); field.select();
+    });
+  }
+
   // ---- verdict / validity chips: icon + label + colour, never colour alone ---------------
 
   var VERDICTS = {
@@ -109,23 +136,43 @@
   // ---- API ------------------------------------------------------------------------------------
 
   function api(path) {
-    return fetch(path, { headers: { Authorization: "Bearer " + token }, cache: "no-store" }).then(function (r) {
+    var controller = new AbortController();
+    var timeout = setTimeout(function () { controller.abort(); }, 15000);
+    return fetch(path, { headers: { Authorization: "Bearer " + token }, cache: "no-store", signal: controller.signal }).then(function (r) {
       if (r.status === 401) { var e = new Error("auth"); e.auth = true; throw e; }
-      if (!r.ok) throw new Error("HTTP " + r.status);
+      if (!r.ok) {
+        return r.json().catch(function () { return {}; }).then(function (d) {
+          var err = new Error((d && d.error && d.error.message) || ("HTTP " + r.status));
+          err.status = r.status; err.code = d && d.error && d.error.code; throw err;
+        });
+      }
       return r.json();
-    });
+    }).catch(function (error) {
+      if (error.name === "AbortError") {
+        var unavailable = new Error("The gateway did not respond within 15 seconds. Check the connection and retry.");
+        unavailable.status = 504; throw unavailable;
+      }
+      throw error;
+    }).finally(function () { clearTimeout(timeout); });
   }
   function post(path, body, signal) {
+    var controller = signal ? null : new AbortController();
+    var timeout = controller ? setTimeout(function () { controller.abort(); }, 60000) : null;
     return fetch(path, { method: "POST", cache: "no-store",
-      signal: signal,
+      signal: signal || controller.signal,
       headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
       body: JSON.stringify(body) }).then(function (r) {
-      return r.json().catch(function () { return {}; }).then(function (d) {
+      return r.json().catch(function (error) { if (r.ok) throw error; return {}; }).then(function (d) {
         if (r.status === 401) { var e = new Error("auth"); e.auth = true; throw e; }
-        if (!r.ok) { var err = new Error((d.error && d.error.message) || ("HTTP " + r.status)); err.code = d.error && d.error.code; throw err; }
+        if (!r.ok) { var err = new Error((d && d.error && d.error.message) || ("HTTP " + r.status)); err.status = r.status; err.code = d && d.error && d.error.code; throw err; }
         return d;
       });
-    });
+    }).catch(function (error) {
+      if (controller && error.name === "AbortError") {
+        throw new Error("The request timed out. It may have completed; refresh before retrying.");
+      }
+      throw error;
+    }).finally(function () { if (timeout !== null) clearTimeout(timeout); });
   }
   function canon(slug) { return String(slug).replace(/\.md$/, "").replace(/^lesson_/, ""); }
   function setConn(kind, text) {
@@ -140,6 +187,7 @@
 
   var ROUTES = [
     { id: "overview", label: "Overview", title: "Overview" },
+    { id: "learning", label: "Adaptive learning", title: "Adaptive learning" },
     { id: "palace", label: "Memory Palace", title: "Memory Palace" },
     { id: "explore", label: "Explore memory", title: "Explore memory" },
     { id: "memories", label: "Memories", title: "What each memory did" },
@@ -168,7 +216,7 @@
     var cur = currentRoute().id;
     ROUTES.forEach(function (r) {
       if (r.hidden) return;
-      var here = r.id === cur || (r.id === "review" && cur === "lesson");
+      var here = r.id === cur || r.id === ({ lesson: "review", trace: "traces" })[cur];
       // Data refreshes must not remove a focused link between focus and Enter.
       var link = navLinks[r.id];
       if (!link) {
@@ -179,19 +227,26 @@
       else link.removeAttribute("aria-current");
     });
   }
+  function revealCurrentTab(container) {
+    var active = container.querySelector('[aria-current="page"]');
+    if (!active || container.scrollWidth <= container.clientWidth) return;
+    var box = container.getBoundingClientRect(), item = active.getBoundingClientRect();
+    if (item.left < box.left) container.scrollLeft += item.left - box.left - 8;
+    else if (item.right > box.right) container.scrollLeft += item.right - box.right + 8;
+  }
 
   // ---- views ---------------------------------------------------------------------------------------
 
   function empty(title, body, command) {
     return h("div", { class: "card" }, h("h2", { text: title }), h("p", { class: "muted", text: body }),
-      command ? h("pre", null, h("code", { text: command })) : null);
+      command ? h("pre", { tabindex: "0", role: "region", "aria-label": title + " command example" }, h("code", { text: command })) : null);
   }
 
   function viewOverview() {
     var s = state.status, m = state.memories, a = state.agents;
     var root = h("div");
     root.appendChild(h("h1", { text: "Overview" }));
-    root.appendChild(h("p", { class: "lede", text: "Is the memory helping, can the measurement be trusted, and is anything hurting?" }));
+    root.appendChild(h("p", { class: "lede", text: "Memory activity, learning policies, and measurement health for this workspace." }));
     if (!s) return root.appendChild(h("p", { class: "muted", text: "Loading…" })), root;
 
     var attention = h("div");
@@ -212,20 +267,32 @@
     }
     if (attention.childNodes.length) root.appendChild(attention);
 
-    var grid = h("div", { class: "grid" });
+    var grid = h("div", { class: "grid overview-metrics" });
+    var learning = state.learning;
+    var learningCard = h("section", { class: "card learning-overview", "aria-labelledby": "c-learning" },
+      h("h2", { id: "c-learning", text: "Adaptive learning" }));
+    if (!learning) learningCard.appendChild(h("p", { class: "muted", text: "Loading learning state…" }));
+    else if (learning.unavailable) learningCard.appendChild(h("p", { class: "big", text: learning.unavailable === 404 ? "Not configured" : "Unavailable" }));
+    else {
+      learningCard.appendChild(h("p", { class: "big", text: ({ off: "Off", observe: "Observe", adaptive: "Adaptive" })[(learning.config || {}).mode] || "Unknown" }));
+      learningCard.appendChild(h("p", { class: "muted", text: num(learning.occasions) + " occasions · policy revision " + num(learning.decision_revision) + (learning.pending_work ? " · evaluation pending" : "") }));
+    }
+    learningCard.appendChild(h("p", { class: "muted small", text: "Scope: " + ((state.learningScope || []).join(", ") || "Gateway owner") }));
+    learningCard.appendChild(h("a", { class: "text-action", href: "#/learning", text: "Manage learning →" }));
+    grid.appendChild(learningCard);
     var exp = s.experiment || {};
     grid.appendChild(h("section", { class: "card", "aria-labelledby": "c-exp" },
-      h("h2", { id: "c-exp", text: "Experiment" }),
+      h("h2", { id: "c-exp", text: "Proof holdout" }),
       exp.running
         ? h("p", { class: "big", text: plain(exp.rate) })
         : h("p", { class: "big", text: "Not started" }),
       h("p", { class: "muted", text: exp.running
         ? "of eligible memories are withheld at random, to measure what they do."
         : "Nothing is withheld until an experiment is started on purpose." }),
-      exp.running ? null : h("pre", null, h("code", { text: "unimem proof start <function> --label NAME --daily N" }))));
+      exp.running ? null : h("pre", { tabindex: "0", role: "region", "aria-label": "Proof setup command" }, h("code", { text: "unimem proof start <function> --label NAME --daily N" }))));
 
     var p = s.proof;
-    var proofCard = h("section", { class: "card", "aria-labelledby": "c-proof" }, h("h2", { id: "c-proof", text: "Proof" }));
+    var proofCard = h("section", { class: "card", "aria-labelledby": "c-proof" }, h("h2", { id: "c-proof", text: "Proof progress" }));
     if (p) {
       var pctDone = p.planned_occasions ? Math.min(100, Math.round(100 * p.resolved_occasions / p.planned_occasions)) : 0;
       proofCard.appendChild(h("p", { class: "muted", text: p.label + (p.synthetic ? " · synthetic demo data" : "") }));
@@ -259,16 +326,77 @@
   }
 
   function viewPalace() {
-    var root = h("div", null, h("h1", { text: "Memory Palace" }),
+    var root = h("div", { class: "palace-layout" }, h("h1", { text: "Memory Palace" }),
       h("p", { class: "lede", text: "Standing questions, hard rules, and experience awaiting review." }));
     var data = state.palace;
     if (!data) return root.appendChild(h("p", { text: "Loading…" })), root;
+    var canApprove = !!(state.status && state.status.gateway && state.status.gateway.approval_enabled);
+    var draft = state.palaceDraft || { question: "", budget: "600", context: "", directive: "", tools: "", tags: "", confirmed: false, busy: false, expanded: {}, message: null };
+    state.palaceDraft = draft;
+    if (draft.message) root.appendChild(h("p", { class: "alert " + (draft.message.error ? "crit" : "good"), role: draft.message.error ? "alert" : "status", text: draft.message.text }));
+    function labels(value) { return value.split(",").map(function (label) { return label.trim(); }).filter(Boolean); }
+    function createForm(kind) {
+      var rule = kind === "directive";
+      var details = h("details", { class: "card", open: !!draft.expanded[kind] });
+      details.appendChild(h("summary", { text: rule ? "Add a hard rule" : "Add a standing question" }));
+      details.addEventListener("toggle", function () { draft.expanded[kind] = details.open; });
+      var form = h("form", { "aria-label": rule ? "New hard rule" : "New standing question", "aria-busy": draft.busy ? "true" : "false" });
+      function field(name, label, options) {
+        var id = "palace-new-" + name;
+        var input = h("input", Object.assign({ id: id, type: "text", maxlength: 2000, disabled: draft.busy }, options || {}));
+        input.value = draft[name];
+        input.addEventListener("input", function () { draft[name] = input.value; });
+        form.appendChild(h("label", { for: id, text: label })); form.appendChild(input);
+      }
+      field(rule ? "directive" : "question", rule ? "Rule text" : "Standing question", { required: true });
+      if (rule) {
+        field("tools", "Denied tool identifiers · comma-separated", { maxlength: 4096 });
+        field("tags", "Required action tags · comma-separated", { maxlength: 4096 });
+        var confirm = h("input", { id: "palace-rule-confirm", type: "checkbox", required: true, checked: draft.confirmed, disabled: draft.busy });
+        confirm.addEventListener("change", function () { draft.confirmed = confirm.checked; });
+        form.appendChild(h("label", { for: "palace-rule-confirm" }, confirm, " I confirm this rule changes agent guidance and action checks."));
+        form.appendChild(h("p", { class: "muted small", text: "Denied tools and required tags are enforced by integrations that call the action gate." }));
+      } else {
+        field("context", "Question scope labels · comma-separated", { maxlength: 4096 });
+        field("budget", "Answer context budget", { type: "number", min: 0, max: 100000, step: 1, required: true });
+      }
+      form.appendChild(h("button", { type: "submit", class: "btn", disabled: draft.busy, text: rule ? "Create hard rule" : "Create standing question" }));
+      form.addEventListener("submit", function (event) {
+        event.preventDefault(); if (draft.busy) return;
+        var credential = token, generation = navigationGeneration;
+        var body = rule ? { text: draft.directive.trim(), deny_tools: labels(draft.tools), required_tags: labels(draft.tags) }
+          : { text: draft.question.trim(), context: labels(draft.context), budget: Number(draft.budget) };
+        function current() { return state.palaceDraft === draft && token === credential && navigationGeneration === generation; }
+        draft.busy = true; draft.message = null; paint(true);
+        post("/v1/control/" + kind, body).then(function () {
+          if (!current()) return;
+          if (rule) { draft.directive = ""; draft.tools = ""; draft.tags = ""; draft.confirmed = false; }
+          else draft.question = "";
+          draft.message = { text: rule ? "Hard rule created." : "Standing question created; its first answer is queued." };
+        }).catch(function (error) {
+          if (!current()) return;
+          if (error.auth) {
+            token = ""; clearCredentialState();
+            try { sessionStorage.removeItem("unimem-token"); } catch (e) { /* private mode */ }
+            refresh(); return;
+          }
+          draft.message = { error: true, text: error.message };
+        }).finally(function () {
+          var repaint = current(); draft.busy = false;
+          if (repaint) { paint(true); refresh(); }
+        });
+      });
+      details.appendChild(form); return details;
+    }
+    root.appendChild(createForm("question"));
+    if (canApprove) root.appendChild(createForm("directive"));
+    else root.appendChild(approvalOff());
     var attention = data.needs_attention || {};
     root.appendChild(h("section", { class: "card" }, h("h2", { text: "Needs attention" }),
       h("p", { text: num(attention.proposals || 0) + " suggestions awaiting review; " +
         num((attention.jobs || {}).dead || 0) + " jobs exhausted their retries." })));
     (data.models || []).forEach(function (model) {
-      var button = h("button", { type: "button", text: "Refresh answer" });
+      var button = h("button", { class: "btn secondary", type: "button", text: "Refresh answer" });
       button.addEventListener("click", function () {
         button.disabled = true;
         post("/v1/control/refresh", { id: model.id }).then(function () {
@@ -276,18 +404,20 @@
         }).catch(function (e) { button.textContent = e.message; button.disabled = false; });
       });
       root.appendChild(h("section", { class: "card" }, h("h2", { text: model.text }),
-        h("pre", { text: ((model.data || {}).answer || {}).context || "Waiting for the offline memory engine." }), button));
+        h("pre", { id: "palace-answer-" + model.id, tabindex: "0", role: "region", "aria-label": "Answer for " + model.text,
+          text: ((model.data || {}).answer || {}).context || "Waiting for the offline memory engine." }), button));
     });
     var rules = h("section", { class: "card" }, h("h2", { text: "Hard rules" }));
     (data.directives || []).forEach(function (rule) { rules.appendChild(h("p", { text: rule.text })); });
     root.appendChild(rules);
     (data.foresight || []).forEach(function (note) {
-      var inspect = h("pre", { text: JSON.stringify(note.data || {}, null, 2) });
+      var inspect = h("pre", { id: "palace-note-" + note.id, tabindex: "0", role: "region", "aria-label": "Anticipatory note data",
+        text: JSON.stringify(note.data || {}, null, 2) });
       var card = h("section", { class: "card" }, h("h2", { text: "Anticipatory note" }),
         h("p", { text: note.text }), inspect);
       if ((note.data || {}).status === "review") {
         [true, false].forEach(function (approve) {
-          var button = h("button", { type: "button", text: approve ? "Approve note" : "Reject note" });
+          var button = h("button", { class: approve ? "btn" : "btn secondary", type: "button", disabled: !canApprove, text: approve ? "Approve note" : "Reject note" });
           button.addEventListener("click", function () {
             button.disabled = true;
             post("/v1/control/review-foresight", { id: note.id, expected_revision: note.revision, approve: approve })
@@ -301,8 +431,9 @@
     });
     (data.suggestions || []).forEach(function (proposal) {
       var details = h("details", null, h("summary", { text: "Inspect evidence and applicability" }),
-        h("pre", { text: JSON.stringify(proposal.data || {}, null, 2) }));
-      var reject = h("button", { type: "button", text: "Reject suggestion" });
+        h("pre", { id: "palace-proposal-" + proposal.id, tabindex: "0", role: "region", "aria-label": "Suggestion evidence and applicability",
+          text: JSON.stringify(proposal.data || {}, null, 2) }));
+      var reject = h("button", { class: "btn secondary", type: "button", disabled: !canApprove, text: "Reject suggestion" });
       reject.addEventListener("click", function () {
         var reason = window.prompt("Why should this suggestion be rejected?");
         if (!reason) return;
@@ -371,7 +502,8 @@
           r.withdrawn ? h("span", { class: "chip" }, h("span", { class: "ic crit", "aria-hidden": "true", text: "✕" }), "Withdrawn") : null,
           h("span", { class: "f-num", text: measured(r) ? pct(r.effect) + " (" + pct(r.ci_low) + " to " + pct(r.ci_high) + ")"
             : "Not enough data yet: " + num(r.n_injected) + " with, " + num(r.n_withheld) + " without" })),
-        forestRow(r, extent)));
+        forestRow(r, extent),
+        r.note ? h("details", null, h("summary", { text: "Why this verdict" }), h("p", { class: "muted small", text: r.note })) : null));
     });
     card.appendChild(list);
     card.appendChild(axisRow(extent));
@@ -513,6 +645,34 @@
     var n = notice;
     return h("p", { class: "alert " + (n.kind === "ok" ? "good" : "crit"), role: n.kind === "ok" ? "status" : "alert", text: n.text });
   }
+  function reviewAction(work, complete) {
+    if (state.reviewBusy) return;
+    var request = {}, credential = token, generation = navigationGeneration, hash = location.hash;
+    state.reviewBusy = request;
+    function current() {
+      return state.reviewBusy === request && token === credential && navigationGeneration === generation && location.hash === hash;
+    }
+    function send(path, body) {
+      if (!current()) return Promise.reject(new Error("The review session changed."));
+      return post(path, body);
+    }
+    paint(true);
+    Promise.resolve().then(function () { return work(send, current); }).then(function (result) {
+      if (current()) complete(result);
+    }).catch(function (error) {
+      if (!current()) return;
+      if (error.auth) {
+        token = ""; clearCredentialState();
+        try { sessionStorage.removeItem("unimem-token"); } catch (e) { /* private mode */ }
+        refresh(); return;
+      }
+      notice = { kind: "crit", text: error.message };
+    }).finally(function () {
+      var repaint = current();
+      if (state.reviewBusy === request) state.reviewBusy = null;
+      if (repaint) refresh();
+    });
+  }
   function approvalOff() {
     return h("div", { class: "alert warn" }, h("strong", { text: "Reading only" }),
       h("span", null, "Editing, approving and rejecting are off, because approving changes what every agent is told. Start the gateway with "),
@@ -525,6 +685,7 @@
     root.appendChild(h("p", { class: "lede", text: "Drafts waiting for a person. Nothing here is active: no agent has been told any of it." }));
     if (!d) { root.appendChild(h("p", { class: "muted", text: "Loading…" })); return root; }
     if (notice) root.appendChild(noticeBox());
+    if (state.reviewBusy) root.appendChild(h("p", { role: "status", text: "Applying the review decision…" }));
     if (!d.approval_enabled) root.appendChild(approvalOff());
     if (!d.lessons.length) {
       if (d.total) {
@@ -538,7 +699,7 @@
     var live = d.lessons.filter(function (l) { return l.checks && l.checks.passes; });
     if (d.approval_enabled) {
       var count = Object.keys(selected).filter(function (k) { return selected[k]; }).length;
-      var bulk = h("button", { class: "btn", type: "button", disabled: count ? false : true, text: "Approve selected (" + count + ")" });
+      var bulk = h("button", { class: "btn", type: "button", disabled: !count || !!state.reviewBusy, text: "Approve selected (" + count + ")" });
       bulk.addEventListener("click", function () { approveMany(Object.keys(selected).filter(function (k) { return selected[k]; })); });
       root.appendChild(h("div", { class: "toolbar" }, bulk,
         h("span", { class: "muted small", text: live.length + " of " + d.lessons.length + " pass every gate and can be approved." })));
@@ -548,7 +709,7 @@
       var ok = l.checks && l.checks.passes;
       var box = null;
       if (d.approval_enabled) {
-        box = h("input", { type: "checkbox", id: "sel-" + l.slug, disabled: ok ? false : true,
+        box = h("input", { type: "checkbox", id: "sel-" + l.slug, disabled: !ok || !!state.reviewBusy,
           checked: ok && selected[l.slug] ? true : false, "aria-label": "Select " + l.slug });
         box.addEventListener("change", function () { selected[l.slug] = box.checked ? l.revision : false; paint(true); });
       }
@@ -576,20 +737,21 @@
   }
 
   function approveMany(slugs) {
-    var out = [], chain = Promise.resolve();
     var approvals = slugs.map(function (slug) { return { slug: slug, revision: selected[slug] }; });
-    approvals.forEach(function (entry) {
-      var slug = entry.slug;
-      chain = chain.then(function () {
-        return post("/v1/lesson/approve", { slug: slug, expected_revision: entry.revision, rationale: "approved from the review queue" })
-          .then(function () { out.push(slug + ": approved"); delete selected[slug]; })
-          .catch(function (e) { out.push(slug + ": " + e.message); });
+    reviewAction(function (send, current) {
+      var out = [], chain = Promise.resolve();
+      approvals.forEach(function (entry) {
+        chain = chain.then(function () {
+          if (!current()) return;
+          return send("/v1/lesson/approve", { slug: entry.slug, expected_revision: entry.revision, rationale: "approved from the review queue" })
+            .then(function () { if (current()) { out.push(entry.slug + ": approved"); delete selected[entry.slug]; } })
+            .catch(function (error) { if (error.auth) throw error; if (current()) out.push(entry.slug + ": " + error.message); });
+        });
       });
-    });
-    chain.then(function () {
+      return chain.then(function () { return out; });
+    }, function (out) {
       var failed = out.filter(function (x) { return x.indexOf(": approved") < 0; });
       notice = { kind: failed.length ? "crit" : "ok", text: out.join(" · ") };
-      lastPaint = ""; refresh();
     });
   }
 
@@ -616,7 +778,7 @@
     var form = h("form", { class: "card", "aria-label": "Lesson text" });
     form.appendChild(h("h2", { text: "What the agent would be told" }));
     if (can && draft.revision !== d.revision) {
-      var reload = h("button", { class: "btn secondary", type: "button", text: "Reload latest draft" });
+      var reload = h("button", { class: "btn secondary", type: "button", disabled: !!state.reviewBusy, text: "Reload latest draft" });
       reload.addEventListener("click", function () { state.reviewDraft = null; paint(true); refresh(); });
       form.appendChild(h("div", { class: "alert warn", role: "status" },
         h("p", { text: "The source changed while you were editing. Your text is preserved. Reload the latest draft before approving or saving." }), reload));
@@ -624,7 +786,7 @@
     fields.forEach(function (f) {
       form.appendChild(h("label", { for: "f-" + f[0], text: f[1] }));
       if (can) {
-        inputs[f[0]] = h("textarea", { id: "f-" + f[0], rows: 3, maxlength: 2000, spellcheck: "true" });
+        inputs[f[0]] = h("textarea", { id: "f-" + f[0], rows: 3, maxlength: 2000, spellcheck: "true", disabled: !!state.reviewBusy });
         inputs[f[0]].value = draft.values[f[0]];
         inputs[f[0]].addEventListener("input", function () {
           draft.values[f[0]] = inputs[f[0]].value;
@@ -636,15 +798,16 @@
       }
     });
     if (can) {
-      var save = h("button", { class: "btn secondary", type: "submit", text: "Save changes" });
+      var save = h("button", { class: "btn secondary", type: "submit", disabled: !!state.reviewBusy, text: "Save changes" });
       form.appendChild(save);
       form.addEventListener("submit", function (ev) {
         ev.preventDefault();
         var body = { slug: d.slug, expected_revision: draft.revision };
         fields.forEach(function (f) { if (inputs[f[0]].value.trim() !== draft.original[f[0]].trim()) body[f[0]] = inputs[f[0]].value; });
         if (Object.keys(body).length === 2) { notice = { kind: "ok", text: "Nothing changed." }; paint(true); return; }
-        post("/v1/lesson/edit", body).then(function () { state.reviewDraft = null; notice = { kind: "ok", text: "Saved. The gates below were re-checked." }; lastPaint = ""; refresh(); })
-          .catch(function (e) { notice = { kind: "crit", text: e.message }; paint(true); });
+        reviewAction(function (send) { return send("/v1/lesson/edit", body); }, function () {
+          state.reviewDraft = null; notice = { kind: "ok", text: "Saved. The gates below were re-checked." };
+        });
       });
     }
     root.appendChild(form);
@@ -692,23 +855,21 @@
     root.appendChild(hist);
 
     if (can) {
-      var why = h("input", { id: "why", type: "text", maxlength: 500, "aria-describedby": "why-help" });
+      var why = h("input", { id: "why", type: "text", maxlength: 500, disabled: !!state.reviewBusy, "aria-describedby": "why-help" });
       why.value = draft.note || "";
       why.addEventListener("input", function () { draft.note = why.value; });
-      var approve = h("button", { class: "btn", type: "button", disabled: d.checks && d.checks.passes && !d.body_truncated ? false : true, text: "Approve" });
+      var approve = h("button", { class: "btn", type: "button", disabled: !!state.reviewBusy || !(d.checks && d.checks.passes && !d.body_truncated), text: "Approve" });
       if (d.body_truncated) root.appendChild(h("p", { class: "alert warn", text: "This lesson exceeds the console's readable size. Review its complete contents in the terminal before approving." }));
-      var reject = h("button", { class: "btn danger", type: "button", text: "Reject" });
+      var reject = h("button", { class: "btn danger", type: "button", disabled: !!state.reviewBusy, text: "Reject" });
       approve.addEventListener("click", function () {
         if (draft.dirty) { notice = { kind: "crit", text: "Save your text changes before approving this lesson." }; paint(true); return; }
-        post("/v1/lesson/approve", { slug: d.slug, expected_revision: draft.revision, rationale: why.value || undefined })
-          .then(function () { notice = { kind: "ok", text: d.slug + " is now active." }; location.hash = "#/review"; })
-          .catch(function (e) { notice = { kind: "crit", text: e.message }; paint(true); });
+        reviewAction(function (send) { return send("/v1/lesson/approve", { slug: d.slug, expected_revision: draft.revision, rationale: why.value || undefined }); },
+          function () { notice = { kind: "ok", text: d.slug + " is now active." }; location.hash = "#/review"; });
       });
       reject.addEventListener("click", function () {
         if (!why.value.trim()) { notice = { kind: "crit", text: "Say why in the box before rejecting." }; paint(true); return; }
-        post("/v1/lesson/reject", { slug: d.slug, expected_revision: draft.revision, reason: why.value })
-          .then(function () { notice = { kind: "ok", text: d.slug + " was rejected." }; location.hash = "#/review"; })
-          .catch(function (e) { notice = { kind: "crit", text: e.message }; paint(true); });
+        reviewAction(function (send) { return send("/v1/lesson/reject", { slug: d.slug, expected_revision: draft.revision, reason: why.value }); },
+          function () { notice = { kind: "ok", text: d.slug + " was rejected." }; location.hash = "#/review"; });
       });
       root.appendChild(h("section", { class: "card", "aria-labelledby": "a-h" }, h("h2", { id: "a-h", text: "Decide" }),
         h("label", { for: "why", text: "Reason or note" }), why,
@@ -723,113 +884,127 @@
   }
   function commandLine(spec, args) {
     return "unimem " + spec.name + (args.length ? " " + args.map(function (arg) {
-      return /\s/.test(arg) ? JSON.stringify(arg) : arg;
+      return /^[A-Za-z0-9_@%+=:,./-]+$/.test(arg) ? arg : "'" + arg.replace(/'/g, "'\"'\"'") + "'";
     }).join(" ") : "");
   }
   function viewCommands() {
     var root = h("div"), catalog = state.commandCatalog && state.commandCatalog.commands;
     root.appendChild(h("div", { class: "page-heading" },
-      h("div", null, h("p", { class: "eyebrow", text: "OPERATIONS" }), h("h1", { text: "Command center" }),
-        h("p", { class: "lede", text: "Every UniMem capability, one authenticated surface. Run store-scoped commands without leaving the console." })),
+      h("div", null, h("h1", { text: "Command center" }),
+        h("p", { class: "lede", text: "Browse every UniMem command, inspect help, and run authorized store operations." })),
       h("span", { class: "chip command-count", text: catalog ? catalog.length + " commands" : "Loading catalog…" })));
     if (!catalog) {
-      root.appendChild(h("div", { class: "card command-loading" }, h("div", { class: "skeleton-line wide" }), h("div", { class: "skeleton-line" })));
+      root.appendChild(h("p", { class: "muted", text: "Loading command catalog…" }));
       return root;
     }
+    var draft = state.commandDraft || { query: "", name: "doctor", args: Object.create(null), busy: null };
+    state.commandDraft = draft;
     var execution = state.commandCatalog.execution_policy;
     if (execution) root.appendChild(h("p", { class: "muted small", text: execution.scoped_commands === "help_only"
       ? "This scoped session can inspect command help. Use the scoped review and exploration pages to access memory."
       : (execution.read_only ? "This session runs inspection commands. Store changes require an operator-enabled session. " : "Store changes are enabled for this session. ") + "Lesson decisions use the Review page; force overrides stay in the terminal." }));
-
-    var search = h("input", { class: "command-search", type: "search", placeholder: "Filter commands…", "aria-label": "Filter commands" });
-    var select = h("select", { class: "command-select", "aria-label": "Command" });
-    var args = h("textarea", { class: "command-args", rows: 7, spellcheck: "false", "aria-label": "Command arguments, one per line" });
-    var description = h("p", { class: "muted command-description" });
+    var search = h("input", { id: "command-search", class: "command-search", type: "search", placeholder: "Filter commands…", "aria-label": "Filter commands" });
+    search.value = draft.query;
+    var select = h("select", { id: "command-select", class: "command-select", "aria-label": "Command", disabled: !!draft.busy });
+    var args = h("textarea", { id: "command-args", class: "command-args", rows: 7, spellcheck: "false", "aria-label": "Command arguments, one per line" });
+    var title = h("h2", { class: "mono" });
+    var description = h("p", { class: "muted command-description", role: "status" });
     var badge = h("div", { class: "command-badges" });
-    var output = h("div", { class: "command-output", "aria-live": "polite" });
-    var selected = catalog.filter(function (spec) { return spec.name === "doctor"; })[0] || catalog[0];
-
-    function visibleSpecs() {
-      var query = search.value.trim().toLowerCase();
-      return catalog.filter(function (spec) {
-        return !query || (spec.name + " " + spec.group + " " + spec.description).toLowerCase().indexOf(query) >= 0;
-      });
+    var output = h("div", { class: "command-output", "aria-live": "polite", "aria-busy": draft.busy ? "true" : "false" });
+    var run = h("button", { id: "command-run", class: "btn", type: "button", text: draft.busy ? "Running…" : "Run command" });
+    var help = h("button", { id: "command-help", class: "btn secondary", type: "button", text: "Load --help" });
+    var copy = h("button", { id: "command-copy", class: "btn secondary", type: "button", text: "Copy terminal command" });
+    var chosen = null;
+    function updateSelected() {
+      chosen = catalog.filter(function (spec) { return spec.name === select.value; })[0] || null;
+      badge.textContent = "";
+      title.textContent = chosen ? chosen.name : "No matching commands";
+      description.textContent = chosen ? chosen.description + (chosen.reason ? " " + chosen.reason : "") : "Try another filter to select a command.";
+      args.value = "";
+      if (chosen) {
+        draft.name = chosen.name;
+        if (!Object.prototype.hasOwnProperty.call(draft.args, chosen.name)) draft.args[chosen.name] = (chosen.example || []).join("\n");
+        args.value = draft.args[chosen.name];
+        badge.appendChild(h("span", { class: "chip" }, chosen.group));
+        badge.appendChild(h("span", { class: "chip " + (chosen.runnable ? "good" : "warn") }, chosen.runnable ? "Runnable here" : "Terminal execution · help available"));
+      }
+      args.disabled = !chosen || !!draft.busy;
+      run.disabled = !chosen || !chosen.runnable || !!draft.busy;
+      help.disabled = !chosen || !!draft.busy;
+      copy.disabled = !chosen;
     }
     function renderOptions(keep) {
-      var specs = visibleSpecs();
-      select.textContent = "";
-      specs.forEach(function (spec) {
-        select.appendChild(h("option", { value: spec.name, text: spec.group + "  /  " + spec.name }));
+      var query = search.value.trim().toLowerCase();
+      var specs = catalog.filter(function (spec) {
+        return !query || (spec.name + " " + spec.group + " " + spec.description).toLowerCase().indexOf(query) >= 0;
       });
+      select.textContent = "";
+      specs.forEach(function (spec) { select.appendChild(h("option", { value: spec.name, text: spec.group + "  /  " + spec.name })); });
       var wanted = specs.filter(function (spec) { return spec.name === keep; })[0] || specs[0];
-      if (wanted) { select.value = wanted.name; selected = wanted; }
+      if (wanted) select.value = wanted.name;
+      select.disabled = !specs.length || !!draft.busy;
       updateSelected();
     }
-    function updateSelected() {
-      selected = catalog.filter(function (spec) { return spec.name === select.value; })[0] || catalog[0];
-      description.textContent = selected.description;
-      badge.textContent = "";
-      badge.appendChild(h("span", { class: "chip" }, selected.group));
-      badge.appendChild(h("span", { class: "chip " + (selected.runnable ? "good" : "warn") }, selected.runnable ? "Runnable here" : "Terminal only"));
-      if (!args.value.trim() && selected.example && selected.example.length) args.value = selected.example.join("\n");
-      if (!selected.runnable) {
-        args.disabled = true;
-      } else {
-        args.disabled = false;
-      }
-    }
     function paintResult(result) {
-      output.textContent = "";
       if (!result) {
-        output.appendChild(h("p", { class: "muted", text: "Run a command to see its output here." }));
+        output.appendChild(h("p", { class: "muted", text: draft.busy ? "Waiting for the command to complete…" : "Run a command to see its output here." }));
         return;
       }
+      var copyOutput = h("button", { class: "btn-link", type: "button", text: "Copy output" });
+      copyOutput.addEventListener("click", function () { copyText(copyOutput, [result.stdout, result.stderr].filter(Boolean).join("\n")); });
       output.appendChild(h("div", { class: "command-result-head" },
         h("span", { class: "chip " + (result.ok ? "good" : "crit") }, result.ok ? "Completed" : "Exited " + result.exit_code),
-        h("span", { class: "muted small", text: result.elapsed_ms + " ms" }),
-        h("button", { class: "btn-link", type: "button", text: "Copy output" })));
-      var copy = output.lastChild;
-      copy.addEventListener("click", function () {
-        var text = [result.stdout, result.stderr].filter(Boolean).join("\n");
-        if (navigator.clipboard) navigator.clipboard.writeText(text);
-      });
-      if (result.stdout) output.appendChild(h("pre", { class: "command-pre" }, h("code", { text: result.stdout })));
-      if (result.stderr) output.appendChild(h("pre", { class: "command-pre stderr" }, h("code", { text: result.stderr })));
+        h("span", { class: "muted small", text: result.command + " · " + result.elapsed_ms + " ms" }), copyOutput));
+      if (result.stdout) output.appendChild(h("pre", { id: "command-stdout", class: "command-pre", tabindex: "0", role: "region", "aria-label": "Command output" }, h("code", { text: result.stdout })));
+      if (result.stderr) output.appendChild(h("pre", { id: "command-stderr", class: "command-pre stderr", tabindex: "0", role: "region", "aria-label": "Command error output" }, h("code", { text: result.stderr })));
       if (!result.stdout && !result.stderr) output.appendChild(h("p", { class: "muted", text: "Command completed without output." }));
       if (result.truncated) output.appendChild(h("p", { class: "muted small", text: "Output was capped for browser safety." }));
     }
-
-    search.addEventListener("input", function () { renderOptions(select.value); });
-    select.addEventListener("change", function () { args.value = ""; updateSelected(); });
-    renderOptions(selected.name);
+    function execute(argv) {
+      if (!chosen || draft.busy) return;
+      var request = {}, credential = token, generation = navigationGeneration, command = chosen.name;
+      var focusId = document.activeElement && document.activeElement.id;
+      function active() { return state.commandDraft === draft && token === credential; }
+      function current() { return active() && navigationGeneration === generation; }
+      draft.busy = request; paint(true);
+      post("/v1/command", { command: command, args: argv }).then(function (result) {
+        if (!current()) return;
+        if (!result || typeof result.ok !== "boolean" || typeof result.stdout !== "string" || typeof result.stderr !== "string") throw new Error("The gateway returned an invalid command result.");
+        state.commandResult = result;
+      }).catch(function (error) {
+        if (!current()) return;
+        if (error.auth) {
+          token = ""; clearCredentialState();
+          try { sessionStorage.removeItem("unimem-token"); } catch (e) { /* private mode */ }
+          refresh(); return;
+        }
+        state.commandResult = { command: command, ok: false, exit_code: 1, stdout: "", stderr: error.message, elapsed_ms: 0 };
+      }).finally(function () {
+        if (!active()) return;
+        draft.busy = null;
+        if (currentRoute().id === "commands") {
+          paint(true);
+          var focus = current() && document.getElementById(focusId);
+          if (focus && !focus.disabled) focus.focus({ preventScroll: true });
+        }
+      });
+    }
+    search.addEventListener("input", function () { draft.query = search.value; renderOptions(select.value || draft.name); });
+    select.addEventListener("change", updateSelected);
+    args.addEventListener("input", function () { if (chosen) draft.args[chosen.name] = args.value; });
+    run.addEventListener("click", function () { if (chosen && chosen.runnable) execute(commandArgsFrom(args.value)); });
+    help.addEventListener("click", function () { execute(["--help"]); });
+    copy.addEventListener("click", function () { if (chosen) copyText(copy, commandLine(chosen, commandArgsFrom(args.value))); });
+    renderOptions(draft.name);
     paintResult(state.commandResult);
-
-    var run = h("button", { class: "btn", type: "button", text: "Run command" });
-    var help = h("button", { class: "btn secondary", type: "button", text: "Load --help" });
-    var copy = h("button", { class: "btn secondary", type: "button", text: "Copy terminal command" });
-    run.addEventListener("click", function () {
-      if (!selected.runnable) return;
-      run.disabled = true; run.textContent = "Running…";
-      post("/v1/command", { command: selected.name, args: commandArgsFrom(args.value) })
-        .then(function (result) { state.commandResult = result; paint(true); })
-        .catch(function (error) { state.commandResult = { ok: false, exit_code: 1, stdout: "", stderr: error.message, elapsed_ms: 0 }; paint(true); })
-        .then(function () { run.disabled = false; run.textContent = "Run command"; });
-    });
-    help.addEventListener("click", function () { args.value = "--help"; run.click(); });
-    copy.addEventListener("click", function () {
-      if (navigator.clipboard) navigator.clipboard.writeText(commandLine(selected, commandArgsFrom(args.value)));
-    });
-
     root.appendChild(h("div", { class: "command-layout" },
       h("section", { class: "card command-panel" },
         h("div", { class: "command-toolbar" }, search, select),
-        h("div", { class: "command-title-row" }, h("div", null, h("p", { class: "eyebrow", text: "SELECTED COMMAND" }), h("h2", { class: "mono", text: selected.name })), badge),
-        description,
-        h("label", { for: "command-args", text: "Arguments · one per line" }),
-        args,
+        h("div", { class: "command-title-row" }, title, badge), description,
+        h("label", { for: "command-args", text: "Arguments · one per line" }), args,
         h("div", { class: "toolbar command-actions" }, run, help, copy),
-        h("p", { class: "muted small", text: "The gateway store is implicit. Lifecycle commands stay terminal-only so the UI cannot replace its own server." })),
-      h("section", { class: "card command-output-card" }, h("div", { class: "command-output-heading" }, h("p", { class: "eyebrow", text: "OUTPUT" }), h("span", { class: "muted small", text: "stdout + stderr" })), output)));
+        h("p", { class: "muted small", text: "The gateway store is implicit. Lifecycle commands provide help and a copyable terminal command; execute them from a terminal." })),
+      h("section", { class: "card command-output-card" }, h("div", { class: "command-output-heading" }, h("h2", { text: "Output" }), h("span", { class: "muted small", text: "stdout + stderr" })), output)));
     return root;
   }
 
@@ -862,7 +1037,6 @@
     factScorer.value = x.factScorer;
     factScorer.addEventListener("change", function () { x.factScorer = factScorer.value; });
     var submit = h("button", { id: "explore-submit", class: "btn", type: "submit", disabled: x.busy, text: x.busy ? "Retrieving…" : "Retrieve memory" });
-    form.appendChild(h("p", { class: "eyebrow", text: "RETRIEVAL WORKSPACE" }));
     form.appendChild(h("label", { for: "explore-question", text: "Your question" })); form.appendChild(question);
     form.appendChild(h("div", { class: "explore-options" },
       h("div", null, h("label", { for: "explore-budget", text: "Context budget" }), budget),
@@ -879,14 +1053,14 @@
     results.appendChild(status);
     if (x.error) results.appendChild(h("p", { class: "alert crit", role: "alert", text: x.error }));
     if (!x.result) {
-      results.appendChild(h("div", { class: "card explore-empty" }, h("div", { class: "explore-glyph", "aria-hidden": "true", text: "⌕" }),
+      results.appendChild(h("div", { class: "card explore-empty" },
         h("h2", { text: "Understand the context before it reaches an agent" }),
         h("p", { class: "muted", text: "Retrieve lessons and facts together. Inspect actual supporting sources and spot missing evidence." }),
         h("div", { class: "explore-steps" }, h("span", null, "01 · Ask"), h("span", null, "02 · Inspect"), h("span", null, "03 · Verify"))));
     } else {
       var r = x.result, assessment = r.assessment || {}, evidence = !assessment.abstain;
       var summary = h("section", { class: "card explore-summary" },
-        h("div", { class: "q-head" }, h("p", { class: "eyebrow", text: "RETRIEVED CONTEXT" }),
+        h("div", { class: "q-head" },
           h("span", { class: "chip " + (evidence ? "good" : "warn"), text: evidence ? "Relevant evidence" : "Insufficient evidence" })),
         h("h2", { class: "explore-query", text: r.question }),
         h("p", { class: "muted", text: assessment.reason || "No relevant evidence" }));
@@ -899,9 +1073,7 @@
       if (r.context) {
         var copy = h("button", { class: "btn secondary", type: "button", text: "Copy agent context" });
         copy.addEventListener("click", function () {
-          if (!navigator.clipboard) { x.error = "Clipboard access is unavailable in this browser."; paint(true); return; }
-          navigator.clipboard.writeText(r.context).then(function () { copy.textContent = "Copied"; })
-            .catch(function () { x.error = "Could not copy. Open the full context below and select the text."; paint(true); });
+          copyText(copy, r.context);
         });
         summary.appendChild(copy);
       }
@@ -1047,7 +1219,7 @@
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
   }
-  function hashForm(fields, submitLabel, onParams) {
+  function hashForm(fields, submitLabel) {
     var form = h("form", { class: "explore-controls" });
     fields.forEach(function (f) {
       var id = "ledger-" + f.name;
@@ -1110,7 +1282,7 @@
     root.appendChild(h("section", { class: "card" }, kv));
     (d.changed || []).forEach(function (c) {
       root.appendChild(h("section", { class: "card" }, h("h3", { text: c.lesson }),
-        c.diff ? h("pre", { class: "command-pre" }, h("code", { text: c.diff })) : h("p", { class: "muted", text: "Text for one side is not in the revision journal." })));
+        c.diff ? h("pre", { id: "ledger-diff-" + c.lesson, class: "command-pre", tabindex: "0", role: "region", "aria-label": "Revision difference for " + c.lesson }, h("code", { text: c.diff })) : h("p", { class: "muted", text: "Text for one side is not in the revision journal." })));
     });
     return root;
   }
@@ -1161,7 +1333,7 @@
     var button = h("button", { class: "btn", type: "button", text: "Download Markdown" });
     button.addEventListener("click", function () { if (d) download("unimem-digest-" + d.until.slice(0, 10) + ".md", d.markdown); });
     root.appendChild(h("div", { class: "toolbar" }, select, button));
-    if (d) root.appendChild(h("section", { class: "card" }, h("pre", { class: "command-pre" }, h("code", { text: d.markdown }))));
+    if (d) root.appendChild(h("section", { class: "card" }, h("pre", { id: "ledger-digest-content", class: "command-pre", tabindex: "0", role: "region", "aria-label": "Weekly digest content" }, h("code", { text: d.markdown }))));
     return root;
   }
   function viewLedger() {
@@ -1172,7 +1344,7 @@
     root.appendChild(h("p", { class: "lede", text: "What the memory is worth, what changed, how to measure it, and what happened on any occasion." }));
     var tabs = h("nav", { class: "tabs", "aria-label": "Ledger sections" });
     LEDGER_TABS.forEach(function (t) {
-      tabs.appendChild(h("a", { href: ledgerHash({ tab: t.id }), text: t.label, "aria-current": t.id === tab ? "page" : null }));
+      tabs.appendChild(h("a", { id: "ledger-tab-" + t.id, href: ledgerHash({ tab: t.id }), text: t.label, "aria-current": t.id === tab ? "page" : null }));
     });
     root.appendChild(tabs);
     if (needs && !d) { root.appendChild(h("p", { class: "muted", text: "Loading…" })); return root; }
@@ -1273,14 +1445,239 @@
 
   var VIEWS = { library: viewLibrary, traces: viewTraces, trace: viewTrace, benchmarks: viewBenchmarks, ledger: viewLedger, overview: viewOverview, palace: viewPalace, explore: viewExplore, memories: viewMemories, review: viewReview, lesson: viewLesson, live: viewLive, fleet: viewFleet, commands: viewCommands, safety: viewSafety };
 
+  // Learning evidence is a separate, versioned experiment from legacy proof.
+  // A write is never retried automatically: a timeout can follow an accepted commit.
+  function learningWrite(operation, body) {
+    if (state.learningBusy) return;
+    body.context = (state.learningScope || []).slice();
+    var credential = token, generation = navigationGeneration, request = {};
+    var actionFocus = document.activeElement && document.activeElement.id;
+    var controller = new AbortController();
+    var timeout = setTimeout(function () { controller.abort(); }, 20000);
+    state.learningBusy = request; state.learningAction = null; paint(true);
+    function current() { return state.learningBusy === request && token === credential && navigationGeneration === generation; }
+    post("/v1/learning/" + operation, body, controller.signal).then(function (data) {
+      if (state.learningBusy !== request || token !== credential) return;
+      if (!data || data.schema !== "unimem.learning.v1" || operation === "configure" && !data.config) throw new Error("Invalid learning reply");
+      if (operation === "configure") { state.learningDraft = null; state.learning = null; state.learningExpanded = null; }
+      if (operation === "rollback" && state.learningDraft) { state.learningDraft.reason = ""; state.learningDraft.revision = ""; }
+      if (!current()) return;
+      state.learningAction = { kind: "good", text: operation === "configure"
+        ? "New experiment created. Earlier evidence remains in its original experiment."
+        : operation === "rollback" ? "Policy restored as revision " + data.decision_revision + ". Evidence was retained."
+          : "Evaluation completed. Inspect decisions and any blocked evidence below." };
+    }).catch(function (error) {
+      if (!current()) return;
+      if (error.auth) {
+        token = ""; clearCredentialState();
+        try { sessionStorage.removeItem("unimem-token"); } catch (e) { /* private mode */ }
+        refresh();
+        return;
+      }
+      if (operation === "configure") {
+        if (!state.learningExpanded) state.learningExpanded = {};
+        state.learningExpanded["learning-config-toggle"] = true;
+        if (body.utility !== undefined) state.learningExpanded["learning-utility-toggle"] = true;
+      } else if (operation === "rollback") state.learningExpanded["learning-recovery-toggle"] = true;
+      state.learningAction = { kind: "crit", text: !error.status || error.status >= 500
+        ? "The request could not be confirmed. It may have been accepted. Refresh and check the experiment or policy revision before retrying."
+        : "Request refused: " + error.message };
+    }).finally(function () {
+      clearTimeout(timeout);
+      // Clearing credentials clears all state; a stale request cannot clear a new request's latch.
+      if (state.learningBusy !== request || token !== credential) return;
+      var restoreFocus = current() && (document.activeElement === document.body || document.activeElement === main);
+      state.learningBusy = false;
+      if (currentRoute().id === "learning") {
+        paint(true);
+        return refresh().then(function () {
+          if (!restoreFocus || token !== credential || navigationGeneration !== generation || state.learningBusy ||
+            document.activeElement !== document.body && document.activeElement !== main) return;
+          var target = document.getElementById(actionFocus);
+          if (!target || !target.getClientRects().length) target = document.getElementById("learning-run");
+          if (target && !target.disabled) target.focus({ preventScroll: true });
+        });
+      }
+    });
+  }
+
+  function viewLearning() {
+    var data = state.learning, caps = state.learningCapabilities;
+    if (!state.learningExpanded) state.learningExpanded = {};
+    var expanded = state.learningExpanded;
+    function panel(label, id, defaultOpen, className, children) {
+      var details = h("details", { class: className, open: Object.prototype.hasOwnProperty.call(expanded, id) ? expanded[id] : defaultOpen },
+        h("summary", { id: id, text: label }));
+      children.forEach(function (child) { details.appendChild(child); });
+      details.addEventListener("toggle", function () { expanded[id] = details.open; });
+      return details;
+    }
+    var root = h("div", { class: "learning-page", "aria-busy": !!state.learningBusy }, h("h1", { text: "Adaptive learning" }),
+      h("p", { class: "lede", text: "Inspect outcomes, evaluate memory selection, and restore prior policies." }));
+    if (state.learningAction) root.appendChild(h("p", { class: "alert " + state.learningAction.kind,
+      role: state.learningAction.kind === "crit" ? "alert" : "status", text: state.learningAction.text }));
+    var scopeInput = h("input", { id: "learning-scope", type: "text", maxlength: "32768", disabled: !!state.learningBusy,
+      value: state.learningScopeText || "", "aria-describedby": "learning-scope-help" });
+    scopeInput.addEventListener("input", function () { state.learningScopeText = scopeInput.value; });
+    var scopeForm = h("form", { class: "card learning-scope" },
+      h("div", null, h("label", { for: "learning-scope", text: "Learning scope labels" }), scopeInput,
+        h("p", { id: "learning-scope-help", class: "muted small", text: "Match your runtime’s exact scope, for example agent:robot-1, project:warehouse. Comma-separated; leave empty for the gateway owner." })),
+      h("button", { class: "btn secondary", id: "learning-scope-submit", type: "submit", disabled: !!state.learningBusy, text: "Switch scope" }));
+    scopeForm.addEventListener("submit", function (event) {
+      event.preventDefault(); if (state.learningBusy) return;
+      var labels = scopeInput.value.split(",").map(function (label) { return label.trim(); }).filter(Boolean);
+      if (labels.length > 128 || labels.some(function (label) { return label.length > 256; })) {
+        state.learningAction = { kind: "crit", text: "Use at most 128 scope labels, each no longer than 256 characters." }; paint(true); return;
+      }
+      state.learningScope = Array.from(new Set(labels)).sort(); state.learningScopeText = state.learningScope.join(", ");
+      state.learningExpanded = null;
+      state.learning = null; state.learningDraft = null; state.learningAction = null;
+      paint(true); document.getElementById("learning-scope-toggle").focus({ preventScroll: true }); refresh();
+    });
+    var scopeDetails = panel("Learning scope · " + ((state.learningScope || []).join(", ") || "Gateway owner") + " · Change",
+      "learning-scope-toggle", false, "learning-scope-switcher", [scopeForm]);
+    root.appendChild(scopeDetails);
+    if (!data || !caps) { root.appendChild(h("p", { role: "status", text: "Loading learning state…" })); return root; }
+    if (caps.unavailable || caps.schema !== "unimem.learning.v1" || data.unavailable && data.unavailable !== 404) {
+      root.appendChild(empty("Learning state unavailable", data.message || caps.message || "This gateway does not expose a compatible learning API."));
+      var retry = h("button", { class: "btn secondary", type: "button", text: "Retry loading" });
+      retry.addEventListener("click", function () { refresh(); }); root.appendChild(retry); return root;
+    }
+    var configured = !data.unavailable, config = data.config || {}, report = data.report || {};
+    var admin = state.identity && state.identity.role === "admin";
+    var modeNames = { off: "Off", observe: "Observe", adaptive: "Adaptive" };
+    var actions = h("div", { class: "learning-banner-actions" });
+    if (configured && admin) {
+      var run = h("button", { class: "btn", id: "learning-run", type: "button", disabled: !!state.learningBusy, text: state.learningBusy ? "Request in progress…" : "Evaluate evidence" });
+      run.addEventListener("click", function () { learningWrite("run", { experiment_id: data.experiment_id }); }); actions.appendChild(run);
+    }
+    if (!configured) actions.appendChild(h("a", { href: "#/explore", class: "btn secondary", text: "Explore memory →" }));
+    var head = h("section", { class: "learning-banner" + (configured ? " configured" : ""), "aria-label": "Experiment state" },
+      h("div", null, h("span", { class: "chip", text: configured ? modeNames[config.mode] || config.mode : "Not configured" }),
+        h("h2", { text: configured ? config.mode === "adaptive" ? "Adaptive selection is active" : config.mode === "observe"
+          ? "Observation is active" : "Learning holdouts are off" : "Start with observation" }),
+        h("p", { text: configured && config.mode === "observe" ? "Outcomes are measured without changing selection."
+          : configured && config.mode === "off" ? "New assignments use no learning holdout. Existing evidence remains available."
+            : "Selection changes require complete delivery receipts, outcomes, and valid evidence." })), actions);
+    root.appendChild(head);
+    if (configured) {
+      var metrics = h("div", { class: "learning-metrics" });
+      [["Occasions assigned", num(data.occasions), "Current experiment"],
+        ["Policy revision", num(data.decision_revision), "Rollback appends a new revision"],
+        ["Holdout rate", plain(config.holdout_rate), "For eligible memories at assignment"],
+        ["Worker state", data.pending_work ? "Pending" : "Settled", "Refreshes every five seconds"]].forEach(function (item) {
+        metrics.appendChild(h("section", { class: "card" }, h("p", { class: "metric-label", text: item[0] }),
+          h("p", { class: "big", text: item[1] }), h("p", { class: "muted small", text: item[2] })));
+      });
+      root.appendChild(metrics);
+      root.appendChild(h("p", { class: "experiment-id muted small", text: "Experiment " + data.experiment_id + " · configuration revision " + data.config_revision }));
+      var evidence = h("section", { class: "card evidence-section" },
+        h("div", { class: "section-title" }, h("h2", { text: "Evaluation and decisions" }),
+          h("span", { class: "chip", text: config.mode === "adaptive" ? "Adaptive policy" : "Report only" })));
+      if (!data.report) evidence.appendChild(h("p", { class: "muted", text: "No evaluation yet. Connect an agent, record delivery and outcomes, then evaluate the accepted evidence." }));
+      else evidence.appendChild(h("p", { class: "muted", text: num(report.evidence) + " occasions examined. Decisions require complete delivery receipts, outcomes, and sufficient valid evidence in both arms." }));
+      var reasons = { incomplete_delivery: "Delivery receipts are missing or partial.", pending_outcomes: "Some occasions still need an outcome.",
+        integrity_weakened: "The evidence does not yet meet the integrity requirements.", integrity_compromised: "Integrity checks failed; investigate the source evidence.",
+        evidence_budget_exceeded: "This experiment exceeded the evaluation budget. Create a new experiment to continue.",
+        stale_sources: "Some source revisions changed or became unavailable.", original_authority_unavailable: "The original source authority is no longer available." };
+      if ((report.blocked || []).length) {
+        var blocked = h("div", { class: "alert warn" }, h("strong", { text: "Some evidence is blocked" }));
+        var list = h("ul"); report.blocked.forEach(function (reason) { list.appendChild(h("li", { text: reasons[reason] || reason })); });
+        blocked.appendChild(list); evidence.appendChild(blocked);
+      }
+      if ((data.stale_sources || []).length || data.source_scan_truncated) evidence.appendChild(h("p", { class: "alert warn", text:
+        num((data.stale_sources || []).length) + " stale source IDs detected." + (data.source_scan_truncated ? " Source scan was bounded; additional sources were not checked." : "") }));
+      (data.failures || []).forEach(function (failure) { evidence.appendChild(h("p", { class: "alert crit", text: "Worker " + failure.status + " after " + failure.attempts + " attempts. " + (failure.error || "Inspect worker logs.") })); });
+      var decisions = report.decisions || [];
+      if (decisions.length) {
+        var table = h("table", null, h("caption", { text: "Evaluated source revisions and task contexts" }),
+          h("thead", null, h("tr", null, h("th", { scope: "col", text: "Source / context" }), h("th", { scope: "col", text: "Verdict" }),
+            h("th", { scope: "col", text: "Effect · 95% interval" }), h("th", { scope: "col", text: "Injected / withheld" }))));
+        var rows = h("tbody"); decisions.forEach(function (d) {
+          rows.appendChild(h("tr", null, h("td", { class: "wrap" }, h("strong", { text: d.id }), h("p", { class: "muted small", text: "Revision " + d.revision + " · " + (d.task_context || "Default context") })),
+            h("td", null, verdictChip(d.verdict), d.note ? h("details", null,
+              h("summary", { text: "Why this verdict" }), h("p", { class: "muted small", text: d.note })) : null),
+            h("td", { text: pct(d.effect) + " · " + pct(d.ci_low) + " to " + pct(d.ci_high) }),
+            h("td", { text: num(d.n_injected) + " / " + num(d.n_withheld) })));
+        }); table.appendChild(rows); evidence.appendChild(h("div", { id: "learning-decisions", class: "table-wrap", tabindex: "0", role: "region", "aria-label": "Learning decisions" }, table));
+      }
+      var policies = Object.keys(data.policy || {});
+      evidence.appendChild(h("p", { class: "muted small", text: num(policies.length) + " active policy entries. " + (config.mode === "adaptive"
+        ? "Evidence may change selection for a particular source revision and task context." : "This mode does not apply new adaptive selection changes.") }));
+      if (policies.length) {
+        evidence.appendChild(panel("Inspect current selection policy", "learning-policy-toggle", false, null,
+          [h("pre", { id: "learning-policy-content", tabindex: "0", role: "region", "aria-label": "Current selection policy", text: JSON.stringify(data.policy, null, 2) })]));
+      }
+      root.appendChild(evidence);
+    }
+    var layout = h("div", { class: "learning-layout" });
+    if (admin) {
+      if (!state.learningDraft) state.learningDraft = { mode: config.mode || "observe", rate: String(config.holdout_rate === undefined ? 50 : config.holdout_rate * 100),
+        minimum: String(config.min_arm || 10), utility: config.utility ? JSON.stringify(config.utility, null, 2) : "", reason: "", revision: "" };
+      var draft = state.learningDraft;
+      function field(tag, name, label, attrs) {
+        var input = h(tag, Object.assign({ id: "learning-" + name, name: name }, attrs || {}));
+        input.disabled = !!state.learningBusy;
+        input.addEventListener("input", function () { draft[name] = input.value; });
+        return { input: input, node: h("div", { class: "learning-field" }, h("label", { for: "learning-" + name, text: label }), input) };
+      }
+      var mode = field("select", "mode", "Learning mode");
+      [["off", "Off — pause new learning"], ["observe", "Observe — measure without adapting"], ["adaptive", "Adaptive — apply supported decisions"]].forEach(function (m) { mode.input.appendChild(h("option", { value: m[0], text: m[1] })); }); mode.input.value = draft.mode;
+      var rate = field("input", "rate", "Holdout rate (%)", { type: "number", min: "5", max: "95", step: "any", required: true, value: draft.rate });
+      var minimum = field("input", "minimum", "Minimum observations per arm", { type: "number", min: "10", max: "10000", step: "1", required: true, value: draft.minimum });
+      var utility = field("textarea", "utility", "Utility definition (optional JSON)", { rows: "4", spellcheck: "false", "aria-describedby": "learning-utility-help" }); utility.input.value = draft.utility;
+      var configForm = h("form", { class: "learning-form" + (configured ? "" : " card") },
+        h("h2", { text: configured ? "Create a new experiment" : "Configure learning" }),
+        h("p", { class: "muted small", text: "Each save starts a new experiment with frozen settings. Earlier evidence and pending outcomes remain tied to their original experiment." }),
+        mode.node, h("div", { class: "learning-form-row" }, rate.node, minimum.node),
+        panel("Metric-based outcomes", "learning-utility-toggle", !!draft.utility, null, [utility.node,
+          h("p", { id: "learning-utility-help", class: "muted small", text: "Leave blank for success or reward outcomes. Keep the existing definition when using metric outcomes; utility is frozen at assignment time." })]),
+        h("button", { class: "btn", id: "learning-create", type: "submit", disabled: !!state.learningBusy, text: configured ? "Create experiment" : "Start experiment" }));
+      configForm.addEventListener("submit", function (event) {
+        event.preventDefault();
+        var body = { mode: mode.input.value, holdout_rate: Number(rate.input.value) / 100, min_arm: Number(minimum.input.value) };
+        try { if (utility.input.value.trim()) body.utility = JSON.parse(utility.input.value); }
+        catch (e) {
+          expanded["learning-config-toggle"] = true; expanded["learning-utility-toggle"] = true;
+          state.learningAction = { kind: "crit", text: "Utility definition must be valid JSON. Your draft has been retained." }; paint(true); return;
+        }
+        learningWrite("configure", body);
+      }); layout.appendChild(configured ? panel("Experiment settings", "learning-config-toggle", false, "card learning-disclosure", [configForm]) : configForm);
+      if (configured) {
+        var reason = field("input", "reason", "Reason for rollback", { type: "text", required: true, maxlength: "256", value: draft.reason });
+        var revision = field("input", "revision", "Restore policy revision (optional)", { type: "number", min: "0", max: String(data.decision_revision), step: "1", value: draft.revision });
+        var rollback = h("form", { class: "learning-form" }, h("h2", { text: "Roll back selection policy" }),
+          h("p", { class: "muted small", text: "Restores a prior policy as a new revision. Leave revision blank for the preceding policy. Source access and current revisions are checked again on delivery." }),
+          reason.node, revision.node, h("button", { class: "btn secondary", id: "learning-restore", type: "submit", disabled: !!state.learningBusy, text: "Restore policy" }));
+        rollback.addEventListener("submit", function (event) {
+          event.preventDefault(); var body = { experiment_id: data.experiment_id, reason: reason.input.value.trim() };
+          if (revision.input.value !== "") body.decision_revision = Number(revision.input.value);
+          learningWrite("rollback", body);
+        }); layout.appendChild(panel("Policy recovery", "learning-recovery-toggle", false, "card learning-disclosure", [rollback]));
+      }
+    } else layout.appendChild(empty("View access", "An administrator can configure experiments, evaluate evidence, and restore policies. Your credential retains its existing permissions."));
+    root.appendChild(layout);
+    root.appendChild(panel("Connect your runtime", "learning-runtime-toggle", !configured, "card learning-connect", [
+      h("p", { class: "muted", text: "Use the learning client in an agent, LLM application, or robot bridge. Keep the same occasion and experiment IDs through the entire cycle." }),
+      h("ol", { class: "integration-steps" }, h("li", null, h("strong", { text: "Assign" }), "Request eligible source IDs before execution."),
+        h("li", null, h("strong", { text: "Deliver" }), "Report exactly the memories serialized into context."),
+        h("li", null, h("strong", { text: "Report" }), "Send success, reward, or configured metrics."),
+        h("li", null, h("strong", { text: "Evaluate" }), "Workers process evidence; inspect decisions here.")),
+      h("p", { class: "muted small", text: "Protected memories remain outside randomized holdouts. API: /v1/learning · MCP: learning_* · SDKs: Python, TypeScript, Go, Rust, Java and Kotlin" })]));
+    return root;
+  }
+  VIEWS.learning = viewLearning;
+
   function viewAuth(message) {
-    var input = h("input", { id: "tok", type: "password", autocomplete: "off", spellcheck: "false", "aria-describedby": "tok-help" });
+    var input = h("input", { id: "tok", type: "password", required: true, autocomplete: "off", spellcheck: "false", "aria-describedby": "tok-help" });
+    input.addEventListener("input", function () { input.setCustomValidity(""); });
     var form = h("form", null,
       h("label", { for: "tok" }, "Access token"), input,
       h("p", { id: "tok-help", class: "muted small", text: "Printed when the gateway started, and kept in memory/gateway.token. It is stored only for this browser tab." }),
       h("button", { class: "btn", type: "submit", text: "Connect" }));
     form.addEventListener("submit", function (ev) {
       ev.preventDefault();
+      if (!input.value.trim()) { input.setCustomValidity("Enter an access token."); input.reportValidity(); return; }
       token = input.value.trim();
       try { sessionStorage.setItem("unimem-token", token); } catch (e) { /* ignore */ }
       refresh();
@@ -1300,27 +1697,46 @@
   function paint(force) {
     var route = currentRoute();
     var sig = route.id + "|" + location.hash + "|" + JSON.stringify([state.status, state.capabilities, state.memories, state.agents, state.events,
-      state.lessons, state.lesson, state.commandCatalog, state.commandResult, state.explorer, state.reviewDraft, state.ledger, state.library, state.traces, state.trace, state.benchmarks, selected, notice]);
+      state.lessons, state.lesson, state.commandCatalog, state.commandResult, state.explorer, state.reviewDraft, state.ledger, state.library, state.traces, state.trace, state.benchmarks,
+      state.learning, state.learningCapabilities, state.learningBusy, state.learningAction, state.identity, state.palace, state.reviewBusy, state.pageError, selected, notice]);
     if (!force && sig === lastPaint) return;
     if (!force && editing()) return;
     lastPaint = sig;
     renderNav();
     document.title = route.title + " · UniMem";
     var focusId = document.activeElement && main.contains(document.activeElement) ? document.activeElement.id : "";
+    var scrollPositions = Array.prototype.map.call(main.querySelectorAll('[role="region"][id]'), function (region) {
+      return { id: region.id, left: region.scrollLeft, top: region.scrollTop };
+    });
     main.textContent = "";
     var view = VIEWS[route.id]();
+    if (state.pageError) {
+      var retry = h("button", { class: "btn secondary", type: "button", text: "Retry connection" });
+      retry.addEventListener("click", refresh);
+      view.insertBefore(h("div", { class: "alert crit", role: "alert" },
+        h("p", { text: state.pageError }), retry), view.firstChild);
+    }
     if (!view.querySelector(".page-heading")) {
       var title = view.querySelector("h1"), lede = view.querySelector(".lede");
       if (title) {
         var heading = h("div", { class: "page-heading" });
-        var copy = h("div", {}, h("p", { class: "eyebrow", text: "MEMORY OPERATIONS" }));
+        var copy = h("div");
         copy.appendChild(title);
         if (lede) copy.appendChild(lede);
         heading.appendChild(copy); view.insertBefore(heading, view.firstChild);
       }
     }
     main.appendChild(view);
-    if (focusId) { var again = document.getElementById(focusId); if (again) again.focus(); }
+    Array.prototype.forEach.call(main.querySelectorAll("nav.tabs"), revealCurrentTab);
+    if (focusId) { var again = document.getElementById(focusId); if (again) again.focus({ preventScroll: true }); }
+    if (commandSearchRequested && route.id === "commands") {
+      var commandSearch = document.getElementById("command-search");
+      if (commandSearch) { commandSearchRequested = false; commandSearch.focus(); }
+    }
+    scrollPositions.forEach(function (position) {
+      var region = document.getElementById(position.id);
+      if (region && main.contains(region)) { region.scrollLeft = position.left; region.scrollTop = position.top; }
+    });
     if (notice && (route.id === "review" || route.id === "lesson")) {
       var shown = notice; setTimeout(function () { if (notice === shown) { notice = null; } }, 8000);
     }
@@ -1363,6 +1779,10 @@
     if (route === "overview" || route === "memories" || route === "lesson") wants.push("memories");
     if (route === "overview" || route === "fleet" || route === "safety") wants.push("agents");
     if (route === "live") wants.push("occasions");
+    var learningStatusPath = "learning/status";
+    if ((state.learningScope || []).length) learningStatusPath += "?" + state.learningScope.map(function (label) { return "context=" + encodeURIComponent(label); }).join("&");
+    if (route === "learning") wants.push("learning/capabilities", learningStatusPath, "whoami");
+    if (route === "overview") wants.push(learningStatusPath);
     if (route === "palace") wants.push("palace");
     var reviewOffset = Number(hashQuery("offset"));
     if (!Number.isSafeInteger(reviewOffset) || reviewOffset < 0) reviewOffset = 0;
@@ -1383,9 +1803,45 @@
       capabilities: "capabilities", occasions: "events", "lessons?status=review": "lessons",
       "command-catalog": "commandCatalog"
     };
+    keys["learning/capabilities"] = "learningCapabilities"; keys[learningStatusPath] = "learning"; keys.whoami = "identity";
     keys[reviewPath] = "lessons";
     keys[libraryPath] = "library"; keys[tracesPath] = "traces"; keys[tracePath] = "trace"; keys["benchmark-history"] = "benchmarks";
-    return Promise.all(wants.map(function (w) { return api("/v1/" + w).then(function (d) { return [w, d]; }); }))
+    return Promise.all(wants.map(function (w) {
+      return api("/v1/" + w).then(function (d) {
+        if (w === "command-catalog" && (!d || !Array.isArray(d.commands) || d.commands.some(function (command) {
+          return !command || typeof command.name !== "string" || !/^[a-z][a-z0-9_-]*$/.test(command.name) ||
+            typeof command.group !== "string" || typeof command.description !== "string" || typeof command.runnable !== "boolean" ||
+            command.example !== undefined && (!Array.isArray(command.example) || command.example.some(function (arg) { return typeof arg !== "string"; }));
+        }))) throw new Error("The gateway returned an invalid command catalog.");
+        if (w.indexOf("learning/") === 0) {
+          var valid = d && typeof d === "object" && !Array.isArray(d) && d.schema === "unimem.learning.v1";
+          if (valid && w === "learning/capabilities") valid = Array.isArray(d.operations) &&
+            ["status", "configure", "run", "rollback"].every(function (op) { return d.operations.indexOf(op) !== -1; });
+          if (valid && w.indexOf("learning/status") === 0) {
+            var config = d.config, report = d.report;
+            valid = config && ["off", "observe", "adaptive"].indexOf(config.mode) !== -1 &&
+              typeof config.holdout_rate === "number" && config.holdout_rate >= .05 && config.holdout_rate <= .95 &&
+              Number.isInteger(config.min_arm) && config.min_arm >= 10 && config.min_arm <= 10000 &&
+              typeof d.experiment_id === "string" && !!d.experiment_id &&
+              Number.isInteger(d.config_revision) && d.config_revision >= 1 &&
+              Number.isInteger(d.decision_revision) && d.decision_revision >= 0 &&
+              Number.isInteger(d.occasions) && d.occasions >= 0 && typeof d.pending_work === "boolean" &&
+              d.policy && typeof d.policy === "object" && !Array.isArray(d.policy) &&
+              Array.isArray(d.failures) && d.failures.every(function (failure) { return failure && typeof failure === "object" && !Array.isArray(failure); }) &&
+              Array.isArray(d.stale_sources) &&
+              (report === null || report && typeof report === "object" && Array.isArray(report.decisions) &&
+                report.decisions.every(function (decision) { return decision && typeof decision === "object" && !Array.isArray(decision); }) &&
+                Array.isArray(report.blocked) && report.blocked.every(function (reason) { return typeof reason === "string"; }) &&
+                Number.isInteger(report.evidence) && report.evidence >= 0);
+          }
+          if (!valid) return [w, { unavailable: 502, message: "The gateway returned an invalid or incompatible learning reply." }];
+        }
+        return [w, d];
+      }).catch(function (error) {
+        if (error.auth || w.indexOf("learning/") !== 0 && (route !== "learning" || w !== "whoami")) throw error;
+        return [w, { unavailable: error.status || 503, message: error.message }];
+      });
+    }))
       .then(function (pairs) {
         // A slow poll from an earlier page or credential must never replace
         // newer results, or turn a valid new connection into a signed-out one.
@@ -1395,6 +1851,7 @@
           state[keys[p[0]] || (p[0].indexOf("lesson?") === 0 ? "lesson" : p[0])] = p[1];
         });
         if (wants.indexOf("capabilities") !== -1) { capabilitiesAt = Date.now(); capabilitiesToken = requestedToken; }
+        state.pageError = null;
         lastOk = Date.now();
         setConn("ok", "Live · updated " + ago(new Date(lastOk).toISOString()));
         paintHeader();
@@ -1402,8 +1859,10 @@
       })
       .catch(function (e) {
         if (!current()) return;
-        if (e && e.auth) { token = ""; clearCredentialState(); try { sessionStorage.removeItem("unimem-token"); } catch (x) { /* ignore */ } main.textContent = ""; main.appendChild(viewAuth("That token was not accepted.")); setConn("bad", "Not connected"); return; }
-        if (e && !e.auth) console.error(e);
+        if (e && e.auth && !requestedToken && document.getElementById("tok")) { setConn("bad", "Not connected"); return; }
+        if (e && e.auth) { token = ""; clearCredentialState(); try { sessionStorage.removeItem("unimem-token"); } catch (x) { /* ignore */ } main.textContent = ""; main.appendChild(viewAuth(requestedToken ? "That token was not accepted." : null)); setConn("bad", "Not connected"); return; }
+        state.pageError = e && e.message || "The page could not be loaded. Check the connection and retry.";
+        paint(true);
         setConn("bad", lastOk ? "Disconnected · last update " + ago(new Date(lastOk).toISOString()) : "Cannot reach the gateway");
       });
   }
@@ -1422,7 +1881,30 @@
   var saved = load("unimem-theme") || "system";
   themeSel.value = saved; applyTheme(saved);
   themeSel.addEventListener("change", function () { store("unimem-theme", themeSel.value); applyTheme(themeSel.value); });
-  if (commandLaunch) commandLaunch.addEventListener("click", function () { location.hash = "#/commands"; });
+  function closeMenu() {
+    if (!menuToggle) return;
+    menuToggle.setAttribute("aria-expanded", "false");
+    document.body.classList.remove("menu-open");
+  }
+  if (menuToggle) menuToggle.addEventListener("click", function () {
+    var open = menuToggle.getAttribute("aria-expanded") !== "true";
+    menuToggle.setAttribute("aria-expanded", String(open));
+    document.body.classList.toggle("menu-open", open);
+  });
+  window.addEventListener("resize", function () {
+    Array.prototype.forEach.call(main.querySelectorAll("nav.tabs"), revealCurrentTab);
+  });
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape" && document.body.classList.contains("menu-open")) { closeMenu(); menuToggle.focus(); }
+  });
+  function openCommands() {
+    commandSearchRequested = true;
+    if (currentRoute().id === "commands") {
+      var search = document.getElementById("command-search");
+      if (search) { commandSearchRequested = false; search.focus(); }
+    } else location.hash = "#/commands";
+  }
+  if (commandLaunch) commandLaunch.addEventListener("click", openCommands);
   if (disconnect) disconnect.addEventListener("click", function () {
     token = "";
     try { sessionStorage.removeItem("unimem-token"); } catch (e) { /* private mode */ }
@@ -1435,7 +1917,7 @@
   }
   document.addEventListener("keydown", function (event) {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
-      event.preventDefault(); location.hash = "#/commands";
+      event.preventDefault(); openCommands();
     }
   });
 
@@ -1460,8 +1942,11 @@
   });
   window.addEventListener("hashchange", function () {
     navigationGeneration++;
+    closeMenu();
+    state.pageError = null;
     state.library = null; state.traces = null; state.trace = null; state.benchmarks = null;
-    render(); main.focus(); refresh();
+    var focusCommands = commandSearchRequested;
+    render(); if (!focusCommands) main.focus(); refresh();
   });
   document.addEventListener("visibilitychange", function () { if (!document.hidden) refresh(); });
   setInterval(function () { if (lastOk && connState.indexOf("ok") === 0) setConn("ok", "Live · updated " + ago(new Date(lastOk).toISOString())); }, 1000);

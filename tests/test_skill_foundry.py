@@ -16,6 +16,7 @@ from unimem import (
     conformal_gate,
     experiment,
     frontmatter,
+    hierarchical,
     holdout_io,
     memory_authority,
     promotion,
@@ -46,6 +47,9 @@ def clock(monkeypatch):
     monkeypatch.setattr(allocation, "datetime", frozen)
     monkeypatch.setattr(holdout_io, "datetime", frozen)
     monkeypatch.setattr(fp, "now", lambda: clock.moment.isoformat())
+    # Source revisions feed trial IDs and assignment hashes, so they must share
+    # the clock rather than randomly changing the integration-test allocation.
+    monkeypatch.setattr(hierarchical, "_now", lambda: clock.moment.isoformat())
     monkeypatch.setattr(os, "fsync", lambda fd: None)
     return clock
 

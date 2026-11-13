@@ -20,6 +20,43 @@ def activate(root):
     return fact_store.migrate(str(root))
 
 
+@pytest.mark.parametrize("failed_sql", ["PRAGMA busy_timeout", "PRAGMA synchronous", "SELECT type FROM sqlite_master"])
+@pytest.mark.parametrize("rollback_fails", [False, True])
+def test_failed_connection_setup_closes_handle_and_preserves_original_error(
+    tmp_path, monkeypatch, failed_sql, rollback_fails
+):
+    connections = []
+    original_connect = sqlite3.connect
+
+    class FailingConnection(fact_store._Connection):
+        def execute(self, sql, *args, **kwargs):
+            if sql.startswith(failed_sql):
+                raise sqlite3.OperationalError("setup failed")
+            return super().execute(sql, *args, **kwargs)
+
+        def rollback(self):
+            if rollback_fails:
+                raise sqlite3.OperationalError("rollback failed")
+            return super().rollback()
+
+    def connect(*args, **kwargs):
+        kwargs["factory"] = FailingConnection
+        connection = original_connect(*args, **kwargs)
+        connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="^setup failed$"):
+            fact_store._connect(str(tmp_path / "facts.sqlite3"), create=True)
+        assert len(connections) == 1
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            connections[0].execute("SELECT 1")
+    finally:
+        for connection in connections:
+            connection.close()
+
+
 def test_compact_json_encoding_is_reused_and_thread_isolated(monkeypatch):
     values = [
         {"statement": "部署 uses journal <data>", "scopes": ["tenant:a"], "origin": {"zero": -0.0}},

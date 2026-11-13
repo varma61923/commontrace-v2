@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import secrets
 from typing import Any, Callable, Sequence
 
-from unimem import _jsonl, evidence, safety, search_recipes
+from unimem import _jsonl, evidence, learning_contract, safety, search_recipes
 from unimem import frontier_protocol as fp
 from unimem import transparency_log as log
 
@@ -122,6 +124,7 @@ class EdgeCache:
 
 COMPACT_AFTER = 32
 ROTATE_OUTCOMES_AFTER = 4096
+OUTCOME_SETTLEMENT_BATCH = 32
 
 
 def _hazards(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -135,43 +138,231 @@ def _hazards(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [found[identity] for identity in sorted(found)]
 
 
+class OutcomeConflict(ValueError):
+    """An immutable offline outcome was retried with different meaning."""
+
+    status_code = 409
+    code = "learning_conflict"
+
+
+def _outcome_key(body: dict[str, Any], path: str) -> str:
+    if path == "/v1/outcome":
+        return fp.digest(["legacy", body["occasion_id"]])
+    if path != "/v1/learning/outcome":
+        raise ValueError("unsupported queued outcome endpoint")
+    context = body.get("context", [])
+    if not isinstance(context, list) or len(context) > 128:
+        raise ValueError("queued learning scope must be an array of at most 128 labels")
+    for label in context:
+        learning_contract.validate_identifier(label, "scope label")
+    return fp.digest(["learning", body["experiment_id"], sorted(set(context)), body["occasion_id"]])
+
+
 class OutcomeQueue:
     def __init__(self, root: str) -> None:
         self.root = root
 
     def pending(self) -> list[dict[str, Any]]:
-        rows = [r for r in fp.journal(self.root, "edge-outcomes.jsonl") if r.get("kind") in ("enqueue", "ack")]
-        acknowledged = {r["occasion_id"] for r in rows if r["kind"] == "ack"}
-        return [r["body"] for r in rows if r["kind"] == "enqueue" and r["occasion_id"] not in acknowledged]
+        entries, settled, _ = self._state()
+        return [row["body"] for key, row in entries.items() if key not in settled]
 
-    def enqueue(self, body: dict[str, Any]) -> None:
-        identity = fp.text(body["occasion_id"])
-        if type(body.get("succeeded")) is not bool or len(fp.wire(body)) > 4096:
-            raise ValueError("outcome queue requires a bounded binary outcome")
+    def _state(self) -> tuple[dict[str, dict[str, Any]], set[str], list[dict[str, Any]]]:
+        entries: dict[str, dict[str, Any]] = {}
+        settled: set[str] = set()
+        rejected = []
+        identities: dict[str, str] = {}
+        for row in fp.journal(self.root, "edge-outcomes.jsonl"):
+            if row.get("kind") == "enqueue":
+                identity = _outcome_key(row["body"], row.get("path", "/v1/outcome"))
+                if "identity" in row:
+                    if row["identity"] != identity:
+                        raise ValueError("queued outcome identity does not match its body")
+                    if not isinstance(row.get("queue_id"), str):
+                        raise ValueError("queue receipt must be a string")
+                    key = fp.text(row["queue_id"], "queue receipt", 64)
+                else:
+                    key = row.get("queue_id", identity)
+                    if key != identity:
+                        raise ValueError("queued outcome identity does not match its body")
+                prior = identities.get(identity)
+                if prior is not None and (prior != key or fp.wire(entries[prior]["body"]) != fp.wire(row["body"])):
+                    raise OutcomeConflict("conflicting queued outcome history")
+                entries[key] = {**row, "queue_id": key, "identity": identity}
+                identities[identity] = key
+            elif row.get("kind") in {"ack", "reject"}:
+                settlement_id = row.get("queue_id")
+                if settlement_id is None:
+                    # Old settlements apply only to the preceding legacy entry,
+                    # never a later experiment that happens to reuse its occasion.
+                    preceding = [k for k, entry in entries.items() if entry["occasion_id"] == row["occasion_id"]]
+                    if len(preceding) != 1:
+                        raise ValueError("legacy outcome settlement is ambiguous")
+                    settlement_id = preceding[0]
+                if (
+                    not isinstance(settlement_id, str)
+                    or settlement_id not in entries
+                    or entries[settlement_id]["occasion_id"] != row["occasion_id"]
+                ):
+                    raise ValueError("outcome settlement has no matching queued identity")
+                settled.add(settlement_id)
+                if row["kind"] == "reject":
+                    rejected.append({**row, "body": entries[settlement_id]["body"]})
+        return entries, settled, rejected
+
+    def rejected(self) -> list[dict[str, Any]]:
+        """Outcomes the gateway definitively refused, with its status and error code, for an operator."""
+        _, _, rejected = self._state()
+        return [
+            {
+                "occasion_id": r["occasion_id"],
+                "status": r["status"],
+                "code": r["code"],
+                "body": r["body"],
+            }
+            for r in rejected
+        ]
+
+    def _settle(self, occasion: str, kind: str, queue_id: str | None, **fields: Any) -> None:
+        entries, settled, _ = self._state()
+        matches = [
+            key
+            for key, entry in entries.items()
+            if key not in settled and entry["occasion_id"] == occasion and (queue_id is None or key == queue_id)
+        ]
+        if len(matches) > 1:
+            raise OutcomeConflict("ambiguous outcome settlement requires queue_id")
+        if matches:
+            fp.append(
+                self.root,
+                "edge-outcomes.jsonl",
+                {"kind": kind, "occasion_id": occasion, "queue_id": matches[0], **fields},
+            )
+
+    def reject(self, occasion: str, status: int, code: str = "", *, queue_id: str | None = None) -> None:
+        """Settle a pending outcome the gateway refused, so it never blocks the outcomes queued after it."""
+        fp.text(occasion, "occasion", 1024)
         with _jsonl.locked(fp.filename(self.root, "edge-outcomes.jsonl")):
-            rows = fp.journal(self.root, "edge-outcomes.jsonl")
-            prior = next((r for r in rows if r.get("kind") == "enqueue" and r["occasion_id"] == identity), None)
+            self._settle(occasion, "reject", queue_id, status=int(status), code=str(code))
+
+    def enqueue(self, body: dict[str, Any], *, path: str = "/v1/outcome") -> str:
+        # Freeze caller-owned nested values before waiting for the queue lock.
+        if not isinstance(body, dict):
+            raise ValueError("queued outcome must be an object")
+        encoded = fp.wire(body)
+        if len(encoded) > 4096:
+            raise ValueError("queued outcome exceeds 4096 bytes")
+        body = json.loads(encoded)
+        if path not in {"/v1/outcome", "/v1/learning/outcome"}:
+            raise ValueError("unsupported queued outcome endpoint")
+        if path == "/v1/learning/outcome":
+            if not isinstance(body.get("experiment_id"), str):
+                raise ValueError("learning outcome requires a pinned experiment_id")
+            learning_contract.validate_request("outcome", {k: v for k, v in body.items() if k != "context"})
+            identity = body["occasion_id"]
+        else:
+            if not isinstance(body.get("occasion_id"), str):
+                raise ValueError("occasion must be a string")
+            identity = fp.text(body["occasion_id"])
+        kinds = [k for k in ("succeeded", "reward", "metrics") if k in body]
+        binary = kinds == ["succeeded"] and type(body["succeeded"]) is bool
+        graded = kinds == ["reward"] and type(body["reward"]) in (int, float) and 0 <= body["reward"] <= 1
+        measured = kinds == ["metrics"] and isinstance(body["metrics"], dict)
+        if not (binary or graded or measured):
+            raise ValueError("outcome queue requires one bounded outcome: succeeded, reward or metrics")
+        key = _outcome_key(body, path)
+        with _jsonl.locked(fp.filename(self.root, "edge-outcomes.jsonl")):
+            entries, settled, _ = self._state()
+            prior = next((row for row in entries.values() if row["identity"] == key), None)
             if prior:
-                if prior["body"] != body:
-                    raise ValueError("conflicting queued outcome")
-                return
-            fp.count(len(self.pending()), 0, 1999, "pending outcomes")
-            fp.append(self.root, "edge-outcomes.jsonl", {"kind": "enqueue", "occasion_id": identity, "body": body})
+                before, after = prior["body"], body
+                if path == "/v1/learning/outcome":
+                    before = {**before, "context": sorted(set(before.get("context", [])))}
+                    after = {**after, "context": sorted(set(after.get("context", [])))}
+                if fp.wire(before) != fp.wire(after) or prior.get("path", "/v1/outcome") != path:
+                    raise OutcomeConflict("conflicting queued outcome")
+                return fp.text(prior["queue_id"], "queue receipt", 64)
+            fp.count(sum(k not in settled for k in entries), 0, 1999, "pending outcomes")
+            receipt = secrets.token_hex(32)
+            fp.append(
+                self.root,
+                "edge-outcomes.jsonl",
+                {
+                    "kind": "enqueue",
+                    "occasion_id": identity,
+                    "body": body,
+                    "path": path,
+                    "queue_id": receipt,
+                    "identity": key,
+                },
+            )
+        return receipt
 
-    def acknowledge(self, occasion: str) -> None:
-        fp.text(occasion)
+    def acknowledge(self, occasion: str, *, queue_id: str | None = None) -> None:
+        fp.text(occasion, "occasion", 1024)
         with _jsonl.locked(fp.filename(self.root, "edge-outcomes.jsonl")):
-            if any(r["occasion_id"] == occasion for r in self.pending()):
-                fp.append(self.root, "edge-outcomes.jsonl", {"kind": "ack", "occasion_id": occasion})
+            self._settle(occasion, "ack", queue_id)
             # Acknowledged outcomes live in the gateway; once nothing is pending the
             # queue restarts so a long-lived robot never fills its bounded journal.
             if not self.pending() and fp.checkpoint(self.root, "edge-outcomes.jsonl")[0] >= ROTATE_OUTCOMES_AFTER:
                 fp.rotate(self.root, "edge-outcomes.jsonl", [])
 
+    def _settle_batch(self, rows: list[dict[str, Any]]) -> None:
+        """Commit a replay prefix against its original enqueue generations."""
+        if not rows:
+            return
+        with _jsonl.locked(fp.filename(self.root, "edge-outcomes.jsonl")):
+            entries, settled, _ = self._state()
+            for row in rows:
+                key = row["queue_id"]
+                if key not in entries or key in settled:
+                    continue  # Another flusher settled/rotated this generation.
+                if entries[key]["occasion_id"] != row["occasion_id"]:
+                    raise ValueError("outcome settlement has no matching queued identity")
+                fp.append(self.root, "edge-outcomes.jsonl", row)
+                settled.add(key)
+            if (
+                any(row["kind"] == "ack" for row in rows)
+                and not entries.keys() - settled
+                and fp.checkpoint(self.root, "edge-outcomes.jsonl")[0] >= ROTATE_OUTCOMES_AFTER
+            ):
+                fp.rotate(self.root, "edge-outcomes.jsonl", [])
+
     def flush(self, post: Callable[[str, dict[str, Any]], Any]) -> int:
+        """Send every pending outcome in order; returns how many the gateway accepted.
+
+        A definitive refusal (`bridge.GatewayRefused`) is settled as rejected and the flush
+        continues. A transport failure stops the flush and leaves the rest queued, in order.
+        """
+        from unimem.robotics.bridge import GatewayRefused
+
         sent = 0
-        for body in self.pending():
-            post("/v1/outcome", body)
-            self.acknowledge(body["occasion_id"])
-            sent += 1
+        # Derive bodies and routes from one snapshot. Concurrent producers may
+        # append after this point; they are replayed by the next flush.
+        with _jsonl.locked(fp.filename(self.root, "edge-outcomes.jsonl")):
+            entries, settled, _ = self._state()
+            pending = [(key, row) for key, row in entries.items() if key not in settled]
+        settlements: list[dict[str, Any]] = []
+        try:
+            for key, entry in pending:
+                body = entry["body"]
+                path = entry.get("path", "/v1/outcome")
+                if path not in {"/v1/outcome", "/v1/learning/outcome"}:
+                    raise ValueError("unsupported queued outcome endpoint")
+                settlement: dict[str, Any] = {"kind": "ack", "occasion_id": body["occasion_id"], "queue_id": key}
+                try:
+                    reply = post(path, body)
+                    if path == "/v1/learning/outcome":
+                        from unimem.client import learning_reply
+
+                        learning_reply(reply)
+                    sent += 1
+                except GatewayRefused as exc:
+                    settlement.update(kind="reject", status=exc.status, code=exc.code)
+                settlements.append(settlement)
+                if len(settlements) >= OUTCOME_SETTLEMENT_BATCH:
+                    self._settle_batch(settlements)
+                    settlements.clear()
+        finally:
+            # Even a later timeout/cancellation must not lose completed replies.
+            self._settle_batch(settlements)
         return sent

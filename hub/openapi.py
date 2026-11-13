@@ -180,7 +180,7 @@ def _op(
 # ---------------------------------------------------------------------------
 
 PUBLIC: list = []
-API_KEY: list[dict[str, list[str]]] = [{"apiKey": []}, {"userBearer": []}]
+API_KEY: list[dict[str, list[str]]] = [{"apiKey": []}, {"apiKeyBearer": []}, {"userBearer": []}]
 ADMIN: list[dict[str, list[str]]] = [{"adminBasic": []}]
 CONSOLE: list[dict[str, list[str]]] = [{"consoleSession": []}]
 SCIM: list[dict[str, list[str]]] = [{"scimBearer": []}]
@@ -208,6 +208,14 @@ _SECURITY_SCHEMES = {
         "bearerFormat": "JWT",
         "description": "An access token from the configured OIDC issuer (HUB_OIDC_ISSUER), for a user "
         "pre-linked with `hub.manage link-sso`. The user's Hub role determines REST scopes.",
+    },
+    "apiKeyBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": (
+            "The org API key accepted through X-API-Key, sent as Authorization: Bearer unimem_live_... "
+            "by shared SDKs. API-key scopes and delegation checks are unchanged."
+        ),
     },
     "mcpBearer": {
         "type": "http",
@@ -884,6 +892,7 @@ _TAGS = [
     ("Evidence", "UniMem signed aggregate contributions and model-based pooled estimates."),
     ("Incidents", "Legal holds, frozen evidence and signed regulator-evidence exports."),
     ("Memory", "Versioned, tenant-scoped memory records and erasure."),
+    ("Learning", "Measured, principal-scoped adaptive memory selection."),
     (
         "MCP",
         "The MCP streamable-HTTP endpoint (path HUB_STREAMABLE_HTTP_PATH, default /mcp). Tools are "
@@ -1031,6 +1040,30 @@ def _console_post(
     body = _form_body(fields, required) if fields else None
     return _op(
         operation_id, "Console", summary, security=CONSOLE, body=body, description=description, responses=responses
+    )
+
+
+def _console_learning_post(operation_id: str, summary: str, *, fields: dict, required: tuple) -> dict:
+    return _op(
+        operation_id,
+        "Console",
+        summary,
+        security=CONSOLE,
+        body=_form_body(fields, required),
+        description=(
+            "Requires a live console session whose API key has read and admin scopes. "
+            "Cross-origin requests are refused. Rechecks key scopes and delegation enrollment on every request. "
+            "Uses the canonical measured-learning transaction, including its audit record. "
+            "Repeated or unknown fields are refused. Errors render an escaped HTML page."
+        ),
+        responses={
+            "303": _see_other("To /app/learning?done=configure|run|rollback after success, or /app/signin."),
+            "400": _html("Invalid or malformed form; no change accepted."),
+            "403": _html("Admin permission is required, or the request was cross-origin."),
+            "404": _html("The pinned experiment or policy revision does not exist in this organisation."),
+            "409": _html("Learning evidence or the requested operation conflicts with current state."),
+            "503": _html("Learning is temporarily unavailable; retry shortly."),
+        },
     )
 
 
@@ -1820,6 +1853,46 @@ def _operations() -> dict[tuple[str, str], dict]:
             },
         ),
         ("GET", "/app"): _console_page("consoleOverview", "Fleet overview"),
+        ("GET", "/app/learning"): _console_page(
+            "consoleLearning",
+            "Measured learning evidence and policy controls",
+            parameters=(_query("done", _string(enum=["configure", "run", "rollback"]), "Allowlisted result message."),),
+            description=(
+                "Shows active configuration, this key's scoped counts, evidence readiness and current delivery policy. "
+                "Admin sessions see organisation-wide evaluation; read sessions receive only their visible cohorts. "
+                "An unconfigured organisation receives onboarding rather than invented metrics."
+            ),
+        ),
+        ("POST", "/app/learning/configure"): _console_learning_post(
+            "consoleLearningConfigure",
+            "Start a measured learning experiment (admin keys)",
+            fields={
+                "mode": _string(enum=["off", "observe", "adaptive"]),
+                "holdout_rate": _number("Fraction withheld.", minimum=0.05, maximum=0.95),
+                "min_arm": _integer("Minimum observations per arm.", minimum=10, maximum=10000),
+                "utility": _string("Optional utility JSON, or blank for success/reward outcomes.", maxLength=32768),
+                "confirm": _string("Explicit acknowledgement that saving creates a new experiment.", enum=["yes"]),
+            },
+            required=("mode", "holdout_rate", "min_arm", "confirm"),
+        ),
+        ("POST", "/app/learning/run"): _console_learning_post(
+            "consoleLearningRun",
+            "Evaluate accepted learning evidence (admin keys)",
+            fields={"experiment_id": _string("Pinned experiment ID.", minLength=1, maxLength=256)},
+            required=("experiment_id",),
+        ),
+        ("POST", "/app/learning/rollback"): _console_learning_post(
+            "consoleLearningRollback",
+            "Restore a delivery policy as a new revision (admin keys)",
+            fields={
+                "experiment_id": _string("Pinned experiment ID.", minLength=1, maxLength=256),
+                "reason": _string("Operator reason.", minLength=1, maxLength=256),
+                "decision_revision": _integer(
+                    "Revision to restore; blank defaults to the previous revision.", minimum=0
+                ),
+            },
+            required=("experiment_id", "reason"),
+        ),
         ("GET", "/app/proof"): _console_page(
             "consoleProof",
             "Proof of value",
@@ -2308,12 +2381,14 @@ def _operations() -> dict[tuple[str, str], dict]:
             ),
             "400": _error("Invalid record or version conflict."),
             "413": _error("Payload exceeds 100 kB."),
+            "501": _error("Operation is not supported by the hosted record backend; use its record operations."),
         },
     )
     ops[("POST", "/v1/memory/{operation}")] = _api(
         "memoryRecordSDKOperation",
         "Memory",
-        "Local SDK record-put, record-search, record-forget and record-reap-due wire parity",
+        "Shared SDK turn/profile and record-* operations; "
+        "legacy fact and action-policy operations require a local gateway",
         body=_json_body(
             _free_object("Scoped record SDK data"),
             "Record envelope, query, context labels, erasure reason, or expiration batch limit.",
@@ -2325,8 +2400,40 @@ def _operations() -> dict[tuple[str, str], dict]:
             ),
             "400": _error("Invalid record or version conflict."),
             "413": _error("Payload exceeds 100 kB."),
+            "501": _error("Legacy fact or action-policy operation requires the local gateway."),
         },
     )
+    from unimem import learning_contract
+
+    for operation in learning_contract.OPERATIONS:
+        method = "GET" if operation in ("capabilities", "status") else "POST"
+        body_schema = learning_contract.request_schema(operation)
+        utility_schema = body_schema["properties"].get("utility")
+        if utility_schema is not None and utility_schema.pop("nullable", False):
+            body_schema["properties"]["utility"] = {"anyOf": [utility_schema, {"type": "null"}]}
+        body_schema["properties"]["context"] = {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1, "maxLength": 256},
+            "maxItems": 128,
+        }
+        ops[(method, "/v1/learning/" + operation)] = _api(
+            "learning" + operation.title(),
+            "Learning",
+            "Measured learning: " + operation,
+            body=_json_body(body_schema) if method == "POST" else None,
+            parameters=(
+                (
+                    (_query("experiment_id", _string(), "Pinned experiment identifier."),)
+                    if operation == "status"
+                    else ()
+                )
+                + (_query("context", _array(_string()), "Requested context labels within authenticated scope."),)
+            )
+            if method == "GET"
+            else (),
+            ok={"200": _json("Versioned learning response.", _free_object("unimem.learning.v1"))},
+            errors=("400", "401", "403", "404", "409", "429", "503"),
+        )
     return ops
 
 

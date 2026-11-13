@@ -20,6 +20,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -318,7 +319,7 @@ def _agent(req: dict) -> str:
     value = req.get("agent_id")
     if value is None:
         return ""
-    if not isinstance(value, str) or not _AGENT_RE.match(value):
+    if not isinstance(value, str) or not _AGENT_RE.fullmatch(value):
         raise _bad("agent_id must be 1-64 characters of letters, digits and . _ : -")
     return value
 
@@ -351,12 +352,23 @@ def _items(value) -> list[dict]:
         meta = raw.get("meta")
         if meta is not None and (not isinstance(meta, dict) or len(json.dumps(meta)) > 4096):
             raise _bad(f"items[{n}].meta must be a small object")
+        emb = None
+        if raw.get("embedding") is not None or raw.get("embedding_model") is not None:
+            from unimem import memory_signatures
+
+            try:
+                emb = memory_signatures.embedding(raw.get("embedding"), raw.get("embedding_model"))
+            except ValueError as exc:
+                raise _bad(f"items[{n}]: {exc}") from None
+            if emb is None:
+                raise _bad(f"items[{n}].embedding_model needs an embedding")
         out.append(
             {
                 "id": item_id,
                 "text": _text(raw.get("text"), f"items[{n}].text", limit=MAX_TEXT_CHARS, required=False),
                 "protected": protected,
                 **({"meta": meta} if meta else {}),
+                **({"embedding": list(emb[1]), "embedding_model": emb[0]} if emb else {}),
             }
         )
     return out
@@ -434,22 +446,38 @@ class Response:
         """Bind deferred egress to the authorization context that created it."""
         context = contextvars.copy_context()
 
-        def bounded() -> Iterator[bytes]:
-            size = count = 0
-            while True:
+        class Bounded(Iterator[bytes]):
+            def __init__(self) -> None:
+                self.size = self.count = 0
+                self.closed = False
+
+            def __next__(self) -> bytes:
+                if self.closed:
+                    raise StopIteration
                 try:
                     chunk = context.run(next, chunks)
-                except StopIteration:
-                    return
-                count += 1
-                if not isinstance(chunk, bytes):
-                    raise ValueError("UniMem stream chunks must be bytes")
-                size += len(chunk)
-                if count > 4096 or len(chunk) > 256 * 1024 or size > 32 * 1024 * 1024:
-                    raise ValueError("UniMem stream exceeds its bounded transfer budget")
-                yield chunk
+                    self.count += 1
+                    if not isinstance(chunk, bytes):
+                        raise ValueError("UniMem stream chunks must be bytes")
+                    self.size += len(chunk)
+                    if self.count > 4096 or len(chunk) > 256 * 1024 or self.size > 32 * 1024 * 1024:
+                        raise ValueError("UniMem stream exceeds its bounded transfer budget")
+                    return chunk
+                except BaseException:
+                    self.close()
+                    raise
 
-        return cls(status, b"", content_type, headers or {}, bounded())
+            def close(self) -> None:
+                # A generator's close() before first next() skips its finally.
+                # Explicit ownership also releases an already-open file source.
+                if self.closed:
+                    return
+                self.closed = True
+                close = getattr(chunks, "close", None)
+                if close is not None:
+                    context.run(close)
+
+        return cls(status, b"", content_type, headers or {}, Bounded())
 
 
 def _json(status: int, payload) -> Response:
@@ -543,6 +571,15 @@ class Gateway:
                 "/v1/memory/" + operation,
                 lambda body, query, op=operation: self._memory_operation(op, body),
                 summary="Scoped memory " + operation + ".",
+            )
+        from unimem.learning_contract import OPERATIONS as learning_operations
+
+        for operation in learning_operations:
+            self._route(
+                "GET" if operation in ("capabilities", "status") else "POST",
+                "/v1/learning/" + operation,
+                lambda body, query, op=operation: self._learning_operation(op, body, query),
+                summary="Measured learning " + operation + ".",
             )
         self._route("GET", "/v1/palace", self._palace, summary="Overview, attention and memory suggestions.")
         for operation in ("directive", "question", "refresh", "reject-proposal", "review-foresight", "skill-review"):
@@ -646,7 +683,9 @@ class Gateway:
             request={
                 "occasion_id": "string",
                 "succeeded": "boolean, or",
-                "signals": "list of {detector, args} evaluated three-valued; with `combine`: all|any",
+                "signals": "list of {detector, args} evaluated three-valued; with `combine`: all|any, or",
+                "reward": "graded outcome in [0, 1], realized by audited randomized rounding, or",
+                "metrics": "{name: number} scored by the configured utility (unimem reward configure)",
                 "agent_id": "optional string",
             },
             summary="How the occasion went. Records nothing while the signals are undecided.",
@@ -890,18 +929,22 @@ class Gateway:
             path = split.path
             if not trusted and not self._host_ok(headers):
                 raise ApiError(403, "bad_host", "the Host header is not allowed")
-            if not trusted and method == "POST" and path.startswith(("/v1/agent/", "/v1/memory/", "/v1/control/")):
+            if (
+                not trusted
+                and method == "POST"
+                and path.startswith(("/v1/agent/", "/v1/memory/", "/v1/control/", "/v1/learning/"))
+            ):
                 lowered = {k.lower(): v for k, v in headers.items()}
                 request_origin = lowered.get("origin")
                 host = lowered.get("host", "").lower()
-                if (
-                    lowered.get("sec-fetch-site") == "cross-site"
-                    or request_origin
-                    and (
-                        urlsplit(request_origin).scheme not in ("http", "https")
-                        or urlsplit(request_origin).netloc.lower() != host
-                    )
-                ):
+                origin_ok = True
+                if request_origin:
+                    try:
+                        origin = urlsplit(request_origin)
+                        origin_ok = origin.scheme in ("http", "https") and origin.netloc.lower() == host
+                    except ValueError:
+                        origin_ok = False
+                if lowered.get("sec-fetch-site") == "cross-site" or not origin_ok:
                     raise ApiError(403, "bad_origin", "cross-origin memory operations are refused")
             if method == "GET" and path in (
                 "/benchmarks",
@@ -927,6 +970,7 @@ class Gateway:
             handler, spec = entry
             if self._request_scope() and (
                 path.startswith("/v1/memory/")
+                or path.startswith("/v1/learning/")
                 or path.startswith("/v1/control/")
                 or path.startswith("/v1/agent/")
                 or path == "/v1/palace"
@@ -982,7 +1026,10 @@ class Gateway:
                         )
                     raise ApiError(401, "unauthorized", "a valid Authorization: Bearer token is required")
                 if principal is not None:
-                    if not (path.startswith("/v1/memory/") or path in ("/v1/agent/plugin", "/v1/agent/heartbeat")):
+                    if not (
+                        path.startswith(("/v1/memory/", "/v1/learning/"))
+                        or path in ("/v1/agent/plugin", "/v1/agent/heartbeat")
+                    ):
                         raise ApiError(403, "agent_scope", "agent credential does not grant this operation")
                     if not principal.get("oauth"):
                         try:
@@ -1009,6 +1056,8 @@ class Gateway:
                 payload.pop("_principal", None)
                 if principal is not None:
                     payload["_principal"] = principal
+            elif principal is not None and path.startswith("/v1/learning/"):
+                payload["_principal"] = principal
             if path == "/v1/stream":
                 payload["_stream_cursor"] = next((v for k, v in headers.items() if k.lower() == "last-event-id"), "")
             from unimem import telemetry
@@ -1174,7 +1223,15 @@ class Gateway:
             def reject_constant(_value):
                 raise ValueError("non-finite JSON number")
 
-            payload = json.loads(body, object_pairs_hook=unique_object, parse_constant=reject_constant)
+            def finite_float(value):
+                number = float(value)
+                if not math.isfinite(number):
+                    raise ValueError("non-finite JSON number")
+                return number
+
+            payload = json.loads(
+                body, object_pairs_hook=unique_object, parse_constant=reject_constant, parse_float=finite_float
+            )
         except (ValueError, UnicodeDecodeError, RecursionError):
             raise _bad("body is not valid JSON") from None
         if not isinstance(payload, dict):
@@ -1319,6 +1376,42 @@ class Gateway:
         except ValueError as exc:
             raise _bad(str(exc)) from exc
 
+    def _learning_operation(self, operation: str, body: dict, query: dict) -> dict:
+        from unimem import learning, memory_authority, memory_control
+
+        principal = body.get("_principal")
+        payload = {key: value for key, value in body.items() if key != "_principal"}
+        if operation in ("capabilities", "status"):
+            if set(query) - ({"context", "experiment_id"} if operation == "status" else {"context"}):
+                raise _bad("learning query contains undocumented fields")
+            payload["context"] = query.get("context", [])
+            if "experiment_id" in query:
+                if len(query["experiment_id"]) != 1:
+                    raise _bad("experiment_id must appear once")
+                payload["experiment_id"] = query["experiment_id"][0]
+        context = principal["scopes"] if principal else payload.get("context", [])
+        if (
+            not isinstance(context, list)
+            or len(context) > 128
+            or any(not isinstance(label, str) or not label or len(label) > 256 for label in context)
+        ):
+            raise _bad("context must contain at most 128 nonempty scope labels of at most 256 characters")
+        if principal:
+            context = [label for label in context if not label.startswith("agent:")] + ["agent:" + principal["id"]]
+        payload.pop("context", None)
+        actor = principal["id"] if principal else "gateway-owner"
+        token = memory_control.REQUIRED_PRINCIPAL_SCOPE.set("agent:" + actor if principal else "")
+        try:
+            with memory_authority.writer(actor, "agent" if principal else "operator"):
+                return learning.operate(self.root, operation, payload, context=context, untrusted=bool(principal))
+        except PermissionError as exc:
+            raise ApiError(403, "forbidden", str(exc)) from exc
+        except (ValueError, TypeError) as exc:
+            status = getattr(exc, "status_code", 400)
+            raise ApiError(status if status in (400, 404, 409) else 400, "learning_refused", str(exc)) from exc
+        finally:
+            memory_control.REQUIRED_PRINCIPAL_SCOPE.reset(token)
+
     def _memory_operation(self, operation: str, body: dict) -> dict:
         from unimem import memory_authority, memory_control, subject_policy, team_io, team_isolation
 
@@ -1435,22 +1528,41 @@ class Gateway:
                     if ":" in occasion_id:
                         raise ApiError(403, "agent_scope", "occasion belongs to another principal")
                     occasion_id = memory_control.occasion(occasion_id, principal=principal["id"])
-                if not isinstance(body.get("succeeded"), bool):
-                    raise _bad("succeeded must be boolean")
+                if sum(body.get(k) is not None for k in ("succeeded", "reward", "metrics")) != 1:
+                    raise _bad("give exactly one of succeeded, reward or metrics")
                 from unimem import causal_policy, policy
 
-                if body.get("secondary_metrics") is not None:
-                    from unimem import sycophancy_io
+                if body.get("succeeded") is None:
+                    from unimem import rewards
 
-                    sycophancy_io.record_metrics(self.root, occasion_id, body["secondary_metrics"])
+                    graded = rewards.record(
+                        self.root,
+                        occasion_id,
+                        reward=body.get("reward"),
+                        metrics=body.get("metrics"),
+                        durable=self.durable,
+                        secondary_metrics=body.get("secondary_metrics"),
+                    )
+                    policy.outcome(self.root, occasion_id, graded["reward"])
+                    explored = causal_policy.record_outcome(self.root, occasion_id, graded["reward"])
+                    return {
+                        "recorded": bool(graded["recorded"]) or explored,
+                        "succeeded": graded["succeeded"],
+                        "reward": graded["reward"],
+                        **({"repaired": True} if graded.get("repaired") else {}),
+                    }
+                if type(body["succeeded"]) is not bool:
+                    raise _bad("succeeded must be boolean")
+                written = holdout_io.record_outcome(
+                    self.root,
+                    occasion_id,
+                    body["succeeded"],
+                    self.durable,
+                    secondary_metrics=body.get("secondary_metrics"),
+                )
                 policy.outcome(self.root, occasion_id, float(body["succeeded"]))
                 explored = causal_policy.record_outcome(self.root, occasion_id, float(body["succeeded"]))
-                return {
-                    "recorded": holdout_io.record_outcome(
-                        self.root, occasion_id, body["succeeded"], secondary_metrics=body.get("secondary_metrics")
-                    )
-                    or explored
-                }
+                return {"recorded": written or explored, "succeeded": body["succeeded"]}
             if operation == "search":
                 return {
                     "results": REGISTRY.retrieve(
@@ -1478,6 +1590,8 @@ class Gateway:
                 return memory_control.proposal(
                     self.root, body.get("text", ""), sources=body.get("sources", []), context=context
                 )
+        except holdout_io.ConflictingOutcome as exc:
+            raise ApiError(409, "conflicting_outcome", str(exc)) from None
         except (ValueError, TypeError) as exc:
             from unimem import team_isolation
 
@@ -2360,6 +2474,9 @@ class Gateway:
         out_ids = {i["id"] for i in delivered}
         from unimem import memory_ifc
 
+        for item in delivered:  # the caller has its vectors; echoing them back only costs bandwidth
+            item.pop("embedding", None)
+            item.pop("embedding_model", None)
         delivered = [memory_ifc.safe_label(self.root, item) for item in delivered]
         withheld = [i["id"] for i in clean if i["id"] not in out_ids and i["id"] not in withdrawn]
         response = {
@@ -2461,8 +2578,11 @@ class Gateway:
         occasion = _ident(req.get("occasion_id"), "occasion_id")
         agent = _agent(req)
         self._check_env(req)
-        if "succeeded" in req and "signals" in req:
-            raise _bad("give `succeeded` or `signals`, not both")
+        given = [k for k in ("succeeded", "signals", "reward", "metrics") if k in req]
+        if len(given) > 1:
+            raise _bad("give one of `succeeded`, `signals`, `reward` or `metrics`")
+        if given and given[0] in ("reward", "metrics"):
+            return self._graded_outcome(req, occasion, agent)
         if "succeeded" in req:
             succeeded = req["succeeded"]
             if not isinstance(succeeded, bool):
@@ -2478,7 +2598,7 @@ class Gateway:
                     "reason": "the signals do not settle this occasion yet; nothing was recorded",
                 }
         else:
-            raise _bad("give `succeeded` (a boolean) or `signals`")
+            raise _bad("give `succeeded` (a boolean), `signals`, `reward` (0..1) or `metrics`")
         try:
             written = holdout_io.record_outcome(
                 self.root, occasion, succeeded, self.durable, secondary_metrics=req.get("secondary_metrics")
@@ -2491,6 +2611,39 @@ class Gateway:
             "recorded": written,
             "succeeded": succeeded,
             **({} if written else {"note": "the same answer was already on record"}),
+        }
+
+    def _graded_outcome(self, req: dict, occasion: str, agent) -> dict:
+        from unimem import rewards
+
+        metrics = req.get("metrics")
+        if metrics is not None and not isinstance(metrics, dict):
+            raise _bad("metrics must be an object of numbers")
+        try:
+            out = rewards.record(
+                self.root,
+                occasion,
+                reward=req.get("reward"),
+                metrics=metrics,
+                durable=self.durable,
+                secondary_metrics=req.get("secondary_metrics"),
+            )
+        except holdout_io.ConflictingOutcome as exc:
+            raise ApiError(409, "conflicting_outcome", str(exc)) from None
+        except (TypeError, ValueError) as exc:
+            raise _bad(str(exc)) from None
+        self._log_event(
+            {
+                "kind": "outcome",
+                "occasion_id": occasion,
+                "agent_id": agent,
+                "succeeded": out["succeeded"],
+                "reward": out["reward"],
+            }
+        )
+        return {
+            **out,
+            **({} if out["recorded"] else {"note": "the same reward was already on record"}),
         }
 
     def _data_key(self) -> tuple:
@@ -2955,7 +3108,12 @@ class Gateway:
         paths_doc: dict = {}
         for (method, path), (_h, spec) in sorted(self.routes.items()):
             memory = path.startswith("/v1/memory/")
-            entry = contract.memory_operation(path.rsplit("/", 1)[1]) if memory else contract.OPERATIONS[(method, path)]
+            if memory:
+                entry = contract.memory_operation(path.rsplit("/", 1)[1])
+            elif path.startswith("/v1/learning/"):
+                entry = contract.learning_operation(path.rsplit("/", 1)[1], method)
+            else:
+                entry = contract.OPERATIONS[(method, path)]
             op: dict = {
                 "operationId": entry.operation_id,
                 "tags": [entry.tag],
@@ -3021,7 +3179,9 @@ class Gateway:
                 "version": API_VERSION,
                 "description": "Did the memory change how the occasion went? Language-neutral.",
             },
-            "tags": [{"name": t} for t in sorted({e.tag for e in contract.OPERATIONS.values()} | {"Memory"})],
+            "tags": [
+                {"name": t} for t in sorted({e.tag for e in contract.OPERATIONS.values()} | {"Memory", "Learning"})
+            ],
             "paths": paths_doc,
             "components": {
                 "securitySchemes": {

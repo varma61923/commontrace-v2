@@ -11,6 +11,7 @@ finished run.
 from __future__ import annotations
 
 import json
+import random
 
 import pytest
 import yaml
@@ -37,6 +38,57 @@ def _borderline():
     # Fixed-sample significant (z=2.24, p=0.025) but the anytime interval at
     # this n still spans zero: exactly where the two readings must disagree.
     return _obs("l", 60, True, 0.70) + _obs("l", 60, False, 0.50)
+
+
+@pytest.mark.parametrize("helps", [True, False])
+def test_adaptive_verdict_direction_follows_the_confidence_sequence(helps):
+    rows = [
+        ex.HoldoutObservation("m", f"early-{i}", i % 2 == 0, (i % 2 == 0 or i % 5 == 0) == helps, rate=0.5)
+        for i in range(80)
+    ]
+    rows += [ex.HoldoutObservation("m", f"late-{i}", False, helps, rate=0.05) for i in range(5)]
+    [result] = ex.analyze(rows, sequential=True)
+    assert result.significant
+    from unimem import eprocess
+
+    assert result.e_value == pytest.approx(eprocess.report(rows, strict=False)["m"]["helps" if helps else "hurts"])
+    assert "opposite sign" in result.note
+    if helps:
+        assert result.effect < 0 < result.ci_low
+        assert result.verdict == ex.VERDICT_HELPS
+    else:
+        assert result.ci_high < 0 < result.effect
+        assert result.verdict == ex.VERDICT_HURTS
+
+
+@pytest.mark.parametrize("sequential", [False, True])
+def test_adaptive_neutral_schedule_cannot_claim_absence_with_a_wide_interval(sequential):
+    rng = random.Random(2)
+    rows = []
+    for i in range(2000):
+        rate = 0.05 if i < 1000 else 0.95
+        rows.append(
+            ex.HoldoutObservation(
+                "adaptive", str(i), rng.random() >= rate, rng.random() < 0.5, rate=rate, scheduled=True
+            )
+        )
+    result = ex.analyze(rows, sequential=sequential)[0]
+    injected = sum(row.injected for row in rows)
+    assert ex.minimum_detectable_effect(min(injected, len(rows) - injected), 0.5) < 0.1
+    assert result.ci_low < 0 < result.ci_high
+    assert result.ci_low < -0.1 or result.ci_high > 0.1
+    assert result.verdict == ex.VERDICT_UNDERPOWERED
+    assert result.min_detectable_effect is None
+
+
+def test_precise_adaptive_interval_can_rule_out_practical_effects():
+    rows = [
+        ex.HoldoutObservation("adaptive", str(i), i % 2 == 0, False, rate=0.5, scheduled=True) for i in range(20000)
+    ]
+    result = ex.analyze(rows, sequential=True)[0]
+    assert -0.1 < result.ci_low <= result.ci_high < 0.1
+    assert result.verdict == ex.VERDICT_NO_EFFECT
+    assert result.min_detectable_effect is None
 
 
 class TestUnifiedSequentialRule:

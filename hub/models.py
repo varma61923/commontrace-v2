@@ -453,6 +453,8 @@ class HoldoutObservation(Base):
     salt: Mapped[str] = mapped_column(String(64), default="", nullable=False)
 
     trace_revision: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    assignment_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    assignment_context: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -1059,3 +1061,60 @@ class MemoryEmbeddingCache(Base):
             name="ck_memory_embedding_numeric",
         ),
     )
+
+
+class LearningExperiment(Base):
+    """Immutable experiment configuration; active pointer changes under the org lock."""
+
+    __tablename__ = "learning_experiments"
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True
+    )
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    config: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    checkpoint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    report: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    __table_args__ = (Index("uq_learning_active_org", "org_id", unique=True, postgresql_where=text("active")),)
+
+
+class LearningOccasion(Base):
+    """Principal-bound immutable assignment with first-write delivery and outcome."""
+
+    __tablename__ = "learning_occasions"
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True
+    )
+    experiment_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    principal: Mapped[str] = mapped_column(String(256), primary_key=True)
+    occasion_id: Mapped[str] = mapped_column(String(256), primary_key=True)
+    evidence: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+
+class LearningDecision(Base):
+    __tablename__ = "learning_decisions"
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True
+    )
+    experiment_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    revision: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    decision: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+
+class LearningWork(Base):
+    """Transactionally enqueued work; fencing token survives a worker crash."""
+
+    __tablename__ = "learning_work"
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True
+    )
+    experiment_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    pending: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    generation: Mapped[int] = mapped_column(BigInteger, default=1, nullable=False)
+    lease_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    failure: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    __table_args__ = (Index("ix_learning_work_pending", "org_id", "experiment_id", postgresql_where=text("pending")),)

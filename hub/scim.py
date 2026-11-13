@@ -147,7 +147,11 @@ async def list_users(
     if user_name is not None:
         query = query.where(User.email == user_name)
     total = await session.scalar(select(func.count()).select_from(query.subquery()))
-    rows = (await session.execute(query.order_by(User.created_at).offset(start_index - 1).limit(count))).scalars().all()
+    rows = (
+        (await session.execute(query.order_by(User.created_at, User.id).offset(start_index - 1).limit(count)))
+        .scalars()
+        .all()
+    )
     return int(total or 0), list(rows)
 
 
@@ -259,7 +263,7 @@ async def _member_ids(session: AsyncSession, group_id: str) -> list[str]:
             await session.execute(
                 select(ScimGroupMembership.user_id)
                 .where(ScimGroupMembership.group_id == group_id)
-                .order_by(ScimGroupMembership.created_at)
+                .order_by(ScimGroupMembership.created_at, ScimGroupMembership.user_id)
             )
         )
         .scalars()
@@ -269,21 +273,37 @@ async def _member_ids(session: AsyncSession, group_id: str) -> list[str]:
 
 
 async def group_to_scim(session: AsyncSession, group: ScimGroup) -> dict:
-    member_ids = await _member_ids(session, group.id)
-    members = []
-    if member_ids:
-        users = (await session.execute(select(User).where(User.id.in_(member_ids)))).scalars().all()
-        by_id = {u.id: u for u in users}
-        for user_id in member_ids:
-            user = by_id.get(user_id)
-            members.append({"value": user_id, "display": user.email if user else ""})
-    return {
-        "schemas": [SCIM_GROUP_SCHEMA],
-        "id": group.id,
-        "displayName": group.display_name,
-        "members": members,
-        "meta": {"resourceType": "Group", "created": group.created_at.isoformat()},
-    }
+    return (await _groups_to_scim(session, [group]))[0]
+
+
+async def _groups_to_scim(session: AsyncSession, groups: list[ScimGroup]) -> list[dict]:
+    """Hydrate one page in one query, retaining canonical tenant boundaries."""
+    if not groups:
+        return []
+    rows = await session.execute(
+        select(ScimGroupMembership.group_id, User.id, User.email)
+        .join(User, User.id == ScimGroupMembership.user_id)
+        .join(ScimGroup, ScimGroup.id == ScimGroupMembership.group_id)
+        .where(
+            ScimGroupMembership.group_id.in_([group.id for group in groups]),
+            ScimGroupMembership.org_id == ScimGroup.org_id,
+            User.org_id == ScimGroup.org_id,
+        )
+        .order_by(ScimGroupMembership.created_at, ScimGroupMembership.user_id)
+    )
+    members: dict[str, list[dict]] = {}
+    for group_id, user_id, email in rows:
+        members.setdefault(group_id, []).append({"value": user_id, "display": email})
+    return [
+        {
+            "schemas": [SCIM_GROUP_SCHEMA],
+            "id": group.id,
+            "displayName": group.display_name,
+            "members": members.get(group.id, []),
+            "meta": {"resourceType": "Group", "created": group.created_at.isoformat()},
+        }
+        for group in groups
+    ]
 
 
 async def _existing_org_user_ids(session: AsyncSession, org_id: str, candidate_ids: set[str]) -> set[str]:
@@ -405,7 +425,7 @@ async def list_groups(
         query = query.where(ScimGroup.display_name == display_name)
     total = await session.scalar(select(func.count()).select_from(query.subquery()))
     rows = (
-        (await session.execute(query.order_by(ScimGroup.created_at).offset(start_index - 1).limit(count)))
+        (await session.execute(query.order_by(ScimGroup.created_at, ScimGroup.id).offset(start_index - 1).limit(count)))
         .scalars()
         .all()
     )
@@ -617,7 +637,7 @@ async def _authenticate(
     if not header.lower().startswith("bearer "):
         return _scim_error_response("missing or malformed Authorization: Bearer <token> header", status=401)
     raw_token = header[len("bearer ") :].strip()
-    async with session_scope(session_factory) as session:
+    async with session_scope(session_factory, operator=True) as session:
         key = await auth.verify_api_key(session, raw_token)
     if key is None or not scopes.satisfies(key.scopes, scopes.SCOPE_SCIM):
         return _scim_error_response("invalid, expired, revoked, or insufficiently-scoped token", status=401)
@@ -654,7 +674,7 @@ def add_scim_routes(
                 return _scim_error_response("request body is not valid JSON")
             if not isinstance(body, dict):
                 return _scim_error_response("request body must be a JSON object")
-            async with session_scope(session_factory) as session:
+            async with session_scope(session_factory, org_id=org_id) as session:
                 try:
                     user = await create_user(session, org_id, body, actor=actor)
                 except ScimError as exc:
@@ -682,7 +702,7 @@ def add_scim_routes(
             count = int(query.get("count", str(DEFAULT_PAGE_SIZE)))
         except ValueError:
             return _scim_error_response("startIndex and count must be integers")
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             total, rows = await list_users(
                 session,
                 org_id,
@@ -709,14 +729,14 @@ def add_scim_routes(
         user_id = request.path_params["user_id"]
 
         if request.method == "GET":
-            async with session_scope(session_factory) as session:
+            async with session_scope(session_factory, org_id=org_id) as session:
                 user = await get_user(session, org_id, user_id)
             if user is None:
                 return _scim_error_response(f"no such user: {user_id}", status=404)
             return _response(user_to_scim(user))
 
         if request.method == "DELETE":
-            async with session_scope(session_factory) as session:
+            async with session_scope(session_factory, org_id=org_id) as session:
                 user = await deactivate_user(session, org_id, user_id, actor=actor)
             if user is None:
                 return _scim_error_response(f"no such user: {user_id}", status=404)
@@ -729,7 +749,7 @@ def add_scim_routes(
         if not isinstance(body, dict):
             return _scim_error_response("request body must be a JSON object")
 
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             try:
                 if request.method == "PUT":
                     user = await replace_user(session, org_id, user_id, body, actor=actor)
@@ -756,7 +776,7 @@ def add_scim_routes(
                 return _scim_error_response("request body is not valid JSON")
             if not isinstance(body, dict):
                 return _scim_error_response("request body must be a JSON object")
-            async with session_scope(session_factory) as session:
+            async with session_scope(session_factory, org_id=org_id) as session:
                 try:
                     group = await create_group(session, org_id, body, actor=actor)
                 except ScimError as exc:
@@ -784,7 +804,7 @@ def add_scim_routes(
             count = int(query.get("count", str(DEFAULT_PAGE_SIZE)))
         except ValueError:
             return _scim_error_response("startIndex and count must be integers")
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             total, rows = await list_groups(
                 session,
                 org_id,
@@ -792,7 +812,7 @@ def add_scim_routes(
                 start_index=start_index,
                 count=count,
             )
-            resources = [await group_to_scim(session, g) for g in rows]
+            resources = await _groups_to_scim(session, rows)
         return _response(
             {
                 "schemas": [SCIM_LIST_RESPONSE_SCHEMA],
@@ -811,7 +831,7 @@ def add_scim_routes(
         group_id = request.path_params["group_id"]
 
         if request.method == "GET":
-            async with session_scope(session_factory) as session:
+            async with session_scope(session_factory, org_id=org_id) as session:
                 group = await get_group(session, org_id, group_id)
                 if group is None:
                     return _scim_error_response(f"no such group: {group_id}", status=404)
@@ -819,7 +839,7 @@ def add_scim_routes(
             return _response(scim_group)
 
         if request.method == "DELETE":
-            async with session_scope(session_factory) as session:
+            async with session_scope(session_factory, org_id=org_id) as session:
                 deleted = await delete_group(session, org_id, group_id, actor=actor)
             if not deleted:
                 return _scim_error_response(f"no such group: {group_id}", status=404)
@@ -832,7 +852,7 @@ def add_scim_routes(
         if not isinstance(body, dict):
             return _scim_error_response("request body must be a JSON object")
 
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             try:
                 if request.method == "PUT":
                     group = await replace_group(session, org_id, group_id, body, actor=actor)

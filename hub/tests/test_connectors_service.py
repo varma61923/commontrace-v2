@@ -433,7 +433,7 @@ class TestManagement:
         async with session_scope(session_factory) as session:
             stored = (await session.get(Connector, cid)).secret
             dump = json.dumps([str(e.summary) for e in (await session.execute(select(AuditLogEntry))).scalars()])
-        assert ZD_SECRET not in stored and stored.startswith("ctenc:v1:")
+        assert ZD_SECRET not in stored and stored.startswith("ctenc:v2:")
         assert ZD_SECRET not in dump
 
     async def test_a_connector_cannot_be_created_without_encryption_configured(self, session_factory):

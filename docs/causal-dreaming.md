@@ -26,3 +26,21 @@ an overlay only when experiment and integrity evidence support HELPS; a stale
 original or loss of support returns no overlay. A HURTS result rolls subsequent
 trial choices back to the original. Keep an explicit randomized monitoring slice;
 no new outcome information can appear without continued measurement.
+
+Rewrite files use unique owner-only staging files and atomic replacement.
+Proposal creation and erasure share a store fence, so concurrent duplicate
+proposals cannot create ambiguous trial identities. Current source admission
+is checked again before a trial or winning overlay can serve text; an old review
+cannot override a withdrawn source.
+
+Proposal ownership is committed before plaintext files are written. Identical
+retries finish an interrupted write without appending another proposal; a review
+requires both text blobs to pass integrity checks. Erasure can remove partially
+materialized proposals too.
+
+Erasure appends a proposal tombstone before deleting text. Shared blobs remain
+while another live proposal owns them, and the erased proposal stays unusable
+even when its bytes are shared. Erasing historical inline proposals rotates
+their plaintext out of the active signed journal while retaining hash evidence.
+Backup and externally retained copies remain subject to the deployment's erasure
+procedure.

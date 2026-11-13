@@ -14,10 +14,23 @@ spec:
         job: migrate
     spec:
       restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: migrate
           image: REPLACE_ME/unimem-hub:REPLACE_ME
           command: ["python", "-m", "alembic", "-c", "hub/alembic.ini", "upgrade", "head"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
           envFrom:
             - secretRef:
                 name: unimem-hub-secrets
@@ -28,3 +41,6 @@ spec:
             limits:
               cpu: "500m"
               memory: "256Mi"
+      volumes:
+        - name: tmp
+          emptyDir: {}

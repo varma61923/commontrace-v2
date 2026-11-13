@@ -97,10 +97,22 @@ FIELDS: dict[str, tuple[dict[str, dict], list[str]]] = {
     "outcome": (
         {
             "occasion_id": {"type": "string", "minLength": 1, "maxLength": 256},
-            "succeeded": {"type": "boolean"},
+            "succeeded": {"type": "boolean", "description": "give exactly one of succeeded, reward or metrics"},
+            "reward": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "description": "graded outcome, realized by audited randomized rounding (unimem.rewards)",
+            },
+            "metrics": {
+                "type": "object",
+                "additionalProperties": {"type": "number"},
+                "maxProperties": 64,
+                "description": "named measurements scored into a reward by the store's configured utility",
+            },
             "secondary_metrics": SECONDARY_METRICS,
         },
-        ["occasion_id", "succeeded"],
+        ["occasion_id"],
     ),
     "check-action": ({"tool": {**TEXT, "minLength": 1}, "tags": CONTEXT}, ["tool"]),
     "propose": ({"text": {**TEXT, "minLength": 1}, "sources": {**CONTEXT, "minItems": 1}}, ["text", "sources"]),
@@ -250,6 +262,9 @@ def openapi_schema(schema: dict) -> dict:
     return value
 
 
+OPTIONAL_RESPONSE_FIELDS = {"outcome": ("reward", "repaired")}  # present on graded outcomes only
+
+
 def model_name(operation: str) -> str:
     return "".join(word.title() for word in operation.split("-"))
 
@@ -361,7 +376,12 @@ def components() -> dict:
             "exploration": {"type": "array", "items": obj},
             "authority_sources": string_array,
         },
-        "outcome": {"recorded": {"type": "boolean"}},
+        "outcome": {
+            "recorded": {"type": "boolean"},
+            "succeeded": {"type": "boolean"},
+            "reward": {"type": "number"},
+            "repaired": {"type": "boolean"},
+        },
         "check-action": {"allowed": {"type": "boolean"}},
     }
     schemas: dict[str, dict] = {
@@ -392,7 +412,7 @@ def components() -> dict:
             schemas[name + "Response"] = {
                 "type": "object",
                 "properties": properties,
-                "required": list(properties),
+                "required": [p for p in properties if p not in OPTIONAL_RESPONSE_FIELDS.get(operation, ())],
                 "additionalProperties": True,
             }
     return schemas

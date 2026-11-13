@@ -338,30 +338,41 @@ class PostgresJournal:
                     decode(MemoryRecord(**row.record))
         return _HostedEvidenceResolver("", facts), invalid
 
-    async def _cap_allowed_ids(self, session, context, reference, kinds):
+    async def _cap_allowed_ids(self, session, context, reference, kinds, *, identities=None):
         from hub import policies
         from unimem import frontier_protocol as fp
         from unimem.capability_io import runtime_descriptor
 
         policy = await policies.active(session, self.org_id)
 
-        rows = (
-            (
-                await session.execute(
-                    select(MemoryRecordProjection)
-                    .where(
-                        MemoryRecordProjection.org_id == self.org_id,
-                        delegation.record_predicate(),
-                        MemoryRecordProjection.scope.op("<@")(context),
-                        MemoryRecordProjection.record.contains({"status": "active", "is_latest": True}),
-                    )
-                    .order_by(MemoryRecordProjection.id)
-                    .limit(2001)
-                )
-            )
-            .scalars()
-            .all()
+        base = select(MemoryRecordProjection).where(
+            MemoryRecordProjection.org_id == self.org_id,
+            delegation.record_predicate(),
+            MemoryRecordProjection.scope.op("<@")(context),
+            MemoryRecordProjection.record.contains({"status": "active", "is_latest": True}),
         )
+        if identities is None:
+            rows = list((await session.execute(base.order_by(MemoryRecordProjection.id).limit(2001))).scalars().all())
+        else:
+            # Resolve only the requested grounding closure for direct source lookup.
+            rows, seen, pending = [], set(), set(identities)
+            for _depth in range(65):
+                pending -= seen
+                if not pending:
+                    break
+                seen.update(pending)
+                fp.count(len(seen), 0, 2000, "UniMem scoped Hub grounding closure")
+                batch = list(
+                    (await session.execute(base.where(MemoryRecordProjection.id.in_(sorted(pending))))).scalars().all()
+                )
+                rows.extend(batch)
+                pending = set()
+                for row in batch:
+                    relations = row.record.get("relations", {})
+                    pending.update(relations.get("derives", []))
+                    pending.update(relations.get("caused_by", []))
+            else:
+                raise PermissionError("memory grounding depth exceeds the admission budget")
         fp.count(len(rows), 0, 2000, "UniMem scoped Hub capability namespace")
         records = {row.id: MemoryRecord(**row.record) for row in rows}
         grounding = GroundingState()
@@ -822,7 +833,7 @@ class PostgresJournal:
                     capability_io.runtime_descriptor(MemoryRecord(**current.record)),
                     namespace="records",
                 )
-            if await retention.active_holds(session, self.org_id):
+            if await retention.active_holds(session, self.org_id, lock=True):
                 raise PermissionError("an active legal hold blocks record erasure; release it explicitly")
             if expected_version is not None or _expected_digest is not None:
                 from unimem.frontier_protocol import digest
@@ -975,6 +986,26 @@ def add_memory_routes(app, session_factory, *, authenticate, require_scope):
             denied = require_scope(authenticated, scopes.SCOPE_READ)
         if denied is not None:
             return denied
+        if action in {"add", "batch", "reflect", "outcome", "check-action", "propose"}:
+            return JSONResponse(
+                {
+                    "error": "unsupported_memory_operation",
+                    "detail": (
+                        "This Hub serves versioned records, turn/profile and measured learning. "
+                        "Legacy fact ingestion, reflection and action-policy operations require the local gateway."
+                    ),
+                    "backend": "hub",
+                    "supported_operations": [
+                        "turn",
+                        "profile",
+                        "record-put",
+                        "record-search",
+                        "record-forget",
+                        "record-reap-due",
+                    ],
+                },
+                status_code=501,
+            )
         raw = await request.body()
         if len(raw) > 100000:
             return JSONResponse({"error": "payload_too_large"}, status_code=413)

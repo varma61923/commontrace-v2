@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import json
 import secrets as _secrets
 from dataclasses import dataclass
 
@@ -14,11 +15,17 @@ except ModuleNotFoundError:  # pragma: no cover - exercised when cryptography is
     AESGCM = None  # type: ignore[assignment,misc]
 
 _PREFIX = "ctenc:v1:"
+_BOUND_PREFIX = "ctenc:v2:"
 _KEY_BYTES = 32
 _NONCE_BYTES = 12
 
 
 class EncryptionError(ValueError): ...
+
+
+def field_aad(org_id: str, table: str, record_id: str, column: str) -> bytes:
+    """Unambiguous authentication context; none of these identifiers is secret."""
+    return json.dumps(["unimem-field-v2", str(org_id), table, str(record_id), column], separators=(",", ":")).encode()
 
 
 def generate_key() -> str:
@@ -72,12 +79,14 @@ class EnvelopeCipher:
         )
         return cls(current=current, previous=previous)
 
-    def encrypt(self, plaintext: str) -> str:
+    def encrypt(self, plaintext: str, *, aad: bytes | None = None) -> str:
         if self.current is None:
             return plaintext
         nonce = _secrets.token_bytes(_NONCE_BYTES)
-        ciphertext = AESGCM(self.current).encrypt(nonce, plaintext.encode("utf-8"), None)
-        return _PREFIX + base64.urlsafe_b64encode(nonce + ciphertext).decode("ascii")
+        ciphertext = AESGCM(self.current).encrypt(nonce, plaintext.encode("utf-8"), aad)
+        return (_BOUND_PREFIX if aad is not None else _PREFIX) + base64.urlsafe_b64encode(nonce + ciphertext).decode(
+            "ascii"
+        )
 
     def encrypt_subject(self, vault, subject: str, record_id: str, plaintext: str) -> dict:
         """Wrap a subject data key under both the envelope cipher and external vault.
@@ -92,8 +101,18 @@ class EnvelopeCipher:
     def decrypt_subject(self, vault, subject: str, envelope: dict) -> str:
         return vault.open(subject, envelope, key_unwrapper=self.decrypt)
 
-    def decrypt(self, value: str) -> str:
-        if not value.startswith(_PREFIX):
+    def decrypt(self, value: str, *, aad: bytes | None = None, allow_legacy: bool = False) -> str:
+        bound = value.startswith(_BOUND_PREFIX)
+        if bound and aad is None:
+            raise EncryptionError("context-bound encryption requires the owning row and field")
+        if aad is not None and self.enabled and not bound and not allow_legacy:
+            raise EncryptionError(
+                "unbound stored field requires `hub.manage bind-encrypted-fields` before serving traffic"
+            )
+        prefix = _BOUND_PREFIX if bound else _PREFIX
+        if not value.startswith(prefix):
+            if value.startswith("ctenc:"):
+                raise EncryptionError("unsupported encryption envelope version")
             return value
         if AESGCM is None:
             raise EncryptionError(
@@ -101,7 +120,7 @@ class EnvelopeCipher:
                 "package is not installed to decrypt it -- see hub/requirements.txt."
             )
         try:
-            raw = base64.b64decode(value[len(_PREFIX) :].encode("ascii"), altchars=b"-_", validate=True)
+            raw = base64.b64decode(value[len(prefix) :].encode("ascii"), altchars=b"-_", validate=True)
         except (ValueError, UnicodeError, binascii.Error):
             raise EncryptionError("stored encryption envelope is malformed") from None
         if len(raw) < _NONCE_BYTES + 16:
@@ -110,7 +129,7 @@ class EnvelopeCipher:
         candidates = ([self.current] if self.current is not None else []) + list(self.previous)
         for key in candidates:
             try:
-                return AESGCM(key).decrypt(nonce, ciphertext, None).decode("utf-8")
+                return AESGCM(key).decrypt(nonce, ciphertext, aad if bound else None).decode("utf-8")
             except (InvalidTag, UnicodeDecodeError):  # Try other keys only on authentication/decode failures
                 continue
         raise EncryptionError(
@@ -123,3 +142,20 @@ class EnvelopeCipher:
 
 
 NULL_CIPHER = EnvelopeCipher()
+
+
+async def ensure_bound_fields(session_factory, cipher: EnvelopeCipher) -> None:
+    """Refuse a partial secret-format upgrade before starting serving workers."""
+    if not cipher.enabled:
+        return
+    from sqlalchemy import select
+
+    from hub.db import operator_session_scope
+    from hub.models import Connector, WebhookEndpoint
+
+    async with operator_session_scope(session_factory) as session:
+        for model, field in ((WebhookEndpoint, WebhookEndpoint.url), (Connector, Connector.secret)):
+            if (await session.execute(select(model.id).where(~field.startswith(_BOUND_PREFIX)).limit(1))).first():
+                raise EncryptionError(
+                    "stored secret fields need `python -m hub.manage bind-encrypted-fields` before startup"
+                )

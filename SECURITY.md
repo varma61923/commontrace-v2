@@ -22,7 +22,9 @@ Out of scope: denial of service by volume against a deployment you do not operat
 
 ## Supported versions
 
-UniMem is pre-1.0. Security fixes land on `main`; pin a commit and update to receive them.
+UniMem 1.0 is the current release series. Security fixes land on `main`; use the
+latest 1.0 release or pin an updated commit to receive them. Older versions are
+not maintained as separate security branches.
 
 ## Safe harbour
 

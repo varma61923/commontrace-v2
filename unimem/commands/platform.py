@@ -649,7 +649,7 @@ def jobs_run_purge(args, root) -> int:
 def demo_add_parser(subparsers):
     p = subparsers.add_parser(
         "demo",
-        help="A 30-second offline tour of the memory loop: remember, measure, govern.",
+        help="An offline tour of the memory loop: remember, measure, govern, learn.",
     )
     p.add_argument(
         "--occasions",

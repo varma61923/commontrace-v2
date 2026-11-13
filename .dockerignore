@@ -89,6 +89,7 @@ hub/.env
 !unimem/distill.py
 !unimem/distillation_worker.py
 !unimem/dosage.py
+!unimem/effect_field.py
 !unimem/embeddings.py
 !unimem/entities.py
 !unimem/entity_store.py
@@ -134,6 +135,8 @@ hub/.env
 !unimem/interactions.py
 !unimem/interference.py
 !unimem/jobs.py
+!unimem/learning.py
+!unimem/learning_contract.py
 !unimem/kg_similarity.py
 !unimem/knowledge_pages.py
 !unimem/lesson_admission.py
@@ -154,6 +157,7 @@ hub/.env
 !unimem/memory_ifc.py
 !unimem/memory_journal.py
 !unimem/memory_record.py
+!unimem/memory_signatures.py
 !unimem/multihop.py
 !unimem/observations.py
 !unimem/offline.py
@@ -193,6 +197,7 @@ hub/.env
 !unimem/retrieval_io.py
 !unimem/retry.py
 !unimem/revision.py
+!unimem/rewards.py
 !unimem/runtime_cache.py
 !unimem/safety.py
 !unimem/schema_properties.py

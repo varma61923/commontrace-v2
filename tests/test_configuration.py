@@ -5,6 +5,131 @@ import pytest
 from unimem.configuration import apply, load
 
 
+@pytest.mark.parametrize("name", ["UNIMEM_CONVERSATION_EMBEDDER", "UNIMEM_CONSOLIDATE_EMBEDDER", "UNIMEM_FACT_STORE"])
+def test_public_settings_refuse_secret_references_before_resolution(tmp_path, monkeypatch, name):
+    from unimem import configuration, secrets_provider
+
+    (tmp_path / "unimem.yaml").write_text(f"secrets:\n  {name}: file:private-key\n")
+    calls = []
+    monkeypatch.setattr(secrets_provider, "env_secret", lambda *_a, **_k: calls.append(True) or "opaque-private-value")
+    with apply(load(str(tmp_path))), pytest.raises(ValueError, match="secret"):
+        configuration.setting(name, "public-default")
+    assert calls == []
+
+
+@pytest.mark.parametrize("name", ["UNIMEM_LLM_API_KEY", "UNIMEM_APPROVAL_KEY", "HUB_DATABASE_URL"])
+def test_public_settings_refuse_credential_names_even_from_the_environment(monkeypatch, name):
+    from unimem import configuration
+
+    monkeypatch.setenv(name, "opaque-private-value")
+    with pytest.raises(ValueError, match="secret") as caught:
+        configuration.setting(name)
+    assert "opaque-private-value" not in str(caught.value)
+
+
+def test_public_setting_precedence_and_profile_values_match_getenv(tmp_path, monkeypatch):
+    from unimem import configuration
+
+    name = "UNIMEM_CONVERSATION_EMBEDDER"
+    monkeypatch.delenv(name, raising=False)
+    (tmp_path / "unimem.yaml").write_text(
+        "profiles:\n  local:\n    embedding: minilm\nsettings:\n  llm:\n    max_tokens: 240\n"
+    )
+    with apply(load(str(tmp_path))):
+        assert configuration.setting(name) == configuration.getenv(name) == "minilm"
+        assert configuration.setting("UNIMEM_LLM_MAX_TOKENS") == "240"
+        assert configuration.setting("UNIMEM_UNSET_TEST_SETTING") is None
+        assert configuration.setting("UNIMEM_UNSET_TEST_SETTING", "fallback") == "fallback"
+        monkeypatch.setenv(name, "arctic-m")
+        assert configuration.setting(name) == configuration.getenv(name) == "arctic-m"
+
+
+@pytest.mark.parametrize("mode", ["init", "facts", "index-text", "index-json"])
+def test_cli_metadata_refuses_secret_backed_settings_before_reading_them(tmp_path, monkeypatch, capsys, mode):
+    from types import SimpleNamespace
+
+    from unimem import embeddings, secrets_provider
+    from unimem.cli import main
+    from unimem.conversation import Store, embed
+
+    names = {
+        "init": "UNIMEM_FACT_STORE",
+        "facts": "UNIMEM_CONSOLIDATE_EMBEDDER",
+        "index-text": "UNIMEM_CONVERSATION_EMBEDDER",
+        "index-json": "UNIMEM_CONVERSATION_EMBEDDER",
+    }
+    name = names[mode]
+    monkeypatch.delenv(name, raising=False)
+    value = "sqlite" if mode == "init" else "local:opaque-routing-value-8c04ae91"
+    (tmp_path / "key").write_text(value)
+    (tmp_path / "unimem.yaml").write_text(f"secrets:\n  {name}: file:key\n")
+    reads = []
+    original = secrets_provider._file_secret
+
+    def reading(*args):
+        reads.append(True)
+        return original(*args)
+
+    monkeypatch.setattr(secrets_provider, "_file_secret", reading)
+    monkeypatch.setattr(embeddings, "provider", lambda _tag: SimpleNamespace())
+    monkeypatch.setattr(embed, "available_for", lambda _tag: True)
+    monkeypatch.setattr(embed, "Embedder", lambda _root, tag: SimpleNamespace(tag=tag, close=lambda: None))
+    monkeypatch.setattr(
+        embed,
+        "prepare",
+        lambda _store, encoder, **_kwargs: {"units": 1, "model": encoder.tag, "elapsed_seconds": 0.01},
+    )
+    if mode.startswith("index"):
+        with Store(str(tmp_path), "ci"):
+            pass
+        command = ["conversation", "index", "ci"]
+    elif mode == "facts":
+        command = ["consolidate", "facts"]
+    else:
+        command = ["init"]
+    if mode in ("facts", "index-json"):
+        command.append("--json")
+    assert main([*command, "--dest", str(tmp_path)]) == 2
+    captured = capsys.readouterr()
+    assert value not in captured.out + captured.err
+    assert "secret" in captured.err.lower()
+    assert reads == []
+
+
+@pytest.mark.parametrize("payload", [b"x" * 65537, b" " * 65536 + b"x", b"\xffprivate-test-value"])
+def test_getenv_secret_references_reject_oversize_or_invalid_files(tmp_path, monkeypatch, payload):
+    from unimem.configuration import getenv
+
+    monkeypatch.delenv("UNIMEM_LLM_API_KEY", raising=False)
+    (tmp_path / "key").write_bytes(payload)
+    (tmp_path / "unimem.yaml").write_text("secrets:\n  UNIMEM_LLM_API_KEY: file:key\n")
+    with apply(load(str(tmp_path))), pytest.raises(RuntimeError, match="secret file") as caught:
+        getenv("UNIMEM_LLM_API_KEY", "stale-default")
+    assert "private-test-value" not in str(caught.value)
+
+
+def test_getenv_secret_sources_fail_closed_and_preserve_valid_rotation(tmp_path, monkeypatch):
+    from unimem.configuration import getenv
+
+    name = "UNIMEM_LLM_API_KEY"
+    monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("OWNER_MODEL_KEY", raising=False)
+    (tmp_path / "unimem.yaml").write_text("secrets:\n  UNIMEM_LLM_API_KEY: env:OWNER_MODEL_KEY\n")
+    with apply(load(str(tmp_path))), pytest.raises(RuntimeError, match="environment source"):
+        getenv(name, "stale-default")
+    (tmp_path / "unimem.yaml").write_text("secrets:\n  UNIMEM_LLM_API_KEY: file:key\n")
+    with apply(load(str(tmp_path))):
+        with pytest.raises(RuntimeError, match="secret file"):
+            getenv(name, "stale-default")
+        path = tmp_path / "key"
+        path.write_bytes(b"x" * 65536)
+        assert getenv(name) == "x" * 65536
+        path.write_bytes(b"first\r\nsecond\rthird\n")
+        assert getenv(name) == "first\nsecond\nthird"
+        path.write_bytes(b" \n")
+        assert getenv(name, "stale-default") == ""
+
+
 def test_profiles_environment_precedence_and_validation(tmp_path, monkeypatch):
     (tmp_path / "unimem.yaml").write_text(
         "profile: local\nprofiles:\n  local:\n    embedding: bge-small\n    redact_pii: true\n    telemetry: false\n"

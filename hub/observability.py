@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import json
 import logging
@@ -75,7 +76,7 @@ _VALID_CLIENT_REQUEST_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,%d}$" % _MAX_CLIENT_R
 
 
 def _resolve_request_id(client_supplied: str | None) -> str:
-    if client_supplied and _VALID_CLIENT_REQUEST_ID.match(client_supplied):
+    if client_supplied and _VALID_CLIENT_REQUEST_ID.fullmatch(client_supplied):
         return client_supplied
     return str(uuid.uuid4())
 
@@ -202,13 +203,20 @@ def add_health_routes(
     readyz_rate_limiter: RateLimiterBackend | None = None,
     trusted_proxy_hops: int = 0,
     metrics_token: str = "",
+    readiness_timeout_seconds: float = 2.0,
+    worker_health: Callable[[], dict | None] | None = None,
 ) -> None:
+    if not math.isfinite(readiness_timeout_seconds) or readiness_timeout_seconds <= 0:
+        raise ValueError("readiness timeout must be finite and positive")
     limiter = readyz_rate_limiter or make_named_limiter(None, 120, 30, "readyz")
+    # Scrapes are process-local and must not exhaust the readiness allowance or
+    # depend on PostgreSQL to report a database outage.
+    metrics_limiter = make_named_limiter(None, 120, 30, "metrics")
 
     async def healthz(request: Request) -> JSONResponse:
         return JSONResponse({"status": "ok"})
 
-    async def readyz(request: Request) -> JSONResponse:
+    async def database_ready(request: Request) -> JSONResponse:
         client_key = rate_limit_key(request, trusted_proxy_hops) if request is not None else "unknown"
         allowed, retry_after = await limiter.check(client_key)
         if not allowed:
@@ -218,24 +226,21 @@ def add_health_routes(
                 status_code=429,
                 headers={"Retry-After": seconds},
             )
-        try:
-            async with session_factory() as session:
-                await session.execute(text("SELECT 1"))
-        except Exception as exc:  # noqa: BLE001 - any failure means "not ready"
-            logging.getLogger("unimem.hub").warning("readiness check failed", extra={"error": str(exc)})
-            return JSONResponse({"status": "not_ready", "database": "unreachable"}, status_code=503)
+        async with session_factory() as session:
+            await session.execute(text("SELECT 1"))
+        worker = worker_health() if worker_health is not None else None
+        if worker is not None and not (worker.get("running") and worker.get("healthy")):
+            return JSONResponse({"status": "not_ready", "learning_worker": "unavailable"}, status_code=503)
         return JSONResponse({"status": "ready", "database": "ok"})
 
+    async def readyz(request: Request) -> JSONResponse:
+        try:
+            return await asyncio.wait_for(database_ready(request), timeout=readiness_timeout_seconds)
+        except Exception as exc:  # noqa: BLE001 - any failure means "not ready"
+            logging.getLogger("unimem.hub").warning("readiness check failed", extra={"error_type": type(exc).__name__})
+            return JSONResponse({"status": "not_ready", "database": "unreachable"}, status_code=503)
+
     async def metrics(request: Request) -> Response:
-        client_key = rate_limit_key(request, trusted_proxy_hops) if request is not None else "unknown"
-        allowed, retry_after = await limiter.check(client_key)
-        if not allowed:
-            seconds = str(max(1, math.ceil(retry_after)))
-            return JSONResponse(
-                {"status": "rate_limited", "retry_after": int(seconds)},
-                status_code=429,
-                headers={"Retry-After": seconds},
-            )
         if metrics_token:
             import hmac
 
@@ -249,7 +254,29 @@ def add_health_routes(
                     status_code=401,
                     headers={"WWW-Authenticate": 'Bearer realm="metrics"'},
                 )
-        return Response(METRICS.render(), media_type="text/plain; version=0.0.4; charset=utf-8")
+        client_key = rate_limit_key(request, trusted_proxy_hops) if request is not None else "unknown"
+        allowed, retry_after = await metrics_limiter.check(client_key)
+        if not allowed:
+            seconds = str(max(1, math.ceil(retry_after)))
+            return JSONResponse(
+                {"status": "rate_limited", "retry_after": int(seconds)},
+                status_code=429,
+                headers={"Retry-After": seconds},
+            )
+        rendered = METRICS.render()
+        worker = worker_health() if worker_health is not None else None
+        if worker is not None:
+            up = int(bool(worker.get("running") and worker.get("healthy")))
+            rendered += (
+                "# HELP unimem_learning_worker_up Whether the supervised learning worker is healthy.\n"
+                "# TYPE unimem_learning_worker_up gauge\n"
+                f"unimem_learning_worker_up {up}\n"
+                "# TYPE unimem_learning_worker_restarts_total counter\n"
+                f"unimem_learning_worker_restarts_total {worker.get('restarts', 0)}\n"
+                "# TYPE unimem_learning_worker_failures_total counter\n"
+                f"unimem_learning_worker_failures_total {worker.get('failures', 0)}\n"
+            )
+        return Response(rendered, media_type="text/plain; version=0.0.4; charset=utf-8")
 
     app.add_route("/healthz", healthz, methods=["GET"])
     app.add_route("/readyz", readyz, methods=["GET"])

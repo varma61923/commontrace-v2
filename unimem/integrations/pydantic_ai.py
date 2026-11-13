@@ -37,8 +37,19 @@ def memory_tool(memory: Any, *, occasion: str = "conversation_id", name: str = "
     return Tool(recall_memory, name=name, takes_ctx=True)
 
 
-def record_outcome(memory: Any, result: Any, *, succeeded: bool, occasion: str = "conversation_id") -> bool:
-    """Report the run's outcome under the same id the tool used."""
+def record_outcome(
+    memory: Any,
+    result: Any,
+    *,
+    succeeded: bool | None = None,
+    reward: float | None = None,
+    occasion: str = "conversation_id",
+) -> bool:
+    """Report the run's outcome (binary, or a graded `reward` in [0, 1]) under the same id the tool used."""
+    if (succeeded is None) == (reward is None):
+        raise ValueError("give exactly one of succeeded or reward")
+    if reward is not None:
+        return memory.record_outcome(_occasion(result, occasion), reward=reward)
     return memory.record_outcome(_occasion(result, occasion), succeeded=succeeded)
 
 

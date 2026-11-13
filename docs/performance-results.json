@@ -1,0 +1,1757 @@
+{
+  "method": "isolated workload per fresh process; alternating AB/BA order; no profiler",
+  "threads": 1,
+  "rounds": 3,
+  "trials_per_round": 11,
+  "results": [
+    {
+      "case": "effect-fit",
+      "output_parity": true,
+      "baseline_median_ms": 225.979596,
+      "candidate_median_ms": 28.695829,
+      "speedup_median": 8.408447373483076,
+      "speedup_min": 7.8749980005805025,
+      "speedup_max": 8.828353002519867
+    },
+    {
+      "case": "context-fit",
+      "output_parity": true,
+      "baseline_median_ms": 675.80355,
+      "candidate_median_ms": 58.349462,
+      "speedup_median": 11.51976738437907,
+      "speedup_min": 10.919556867849966,
+      "speedup_max": 11.582001390175627
+    },
+    {
+      "case": "vector-random",
+      "output_parity": true,
+      "baseline_median_ms": 38.783219,
+      "candidate_median_ms": 4.186392,
+      "speedup_median": 8.374509601585327,
+      "speedup_min": 7.6190812873567735,
+      "speedup_max": 9.556849010059821
+    },
+    {
+      "case": "vector-duplicates",
+      "output_parity": true,
+      "baseline_median_ms": 96.684733,
+      "candidate_median_ms": 2.393125,
+      "speedup_median": 40.40103755549752,
+      "speedup_min": 37.880905120625094,
+      "speedup_max": 43.11459223713597
+    },
+    {
+      "case": "vector-sqlite-random",
+      "output_parity": true,
+      "baseline_median_ms": 45.26387,
+      "candidate_median_ms": 10.57695,
+      "speedup_median": 4.27231346516789,
+      "speedup_min": 3.8157173854466553,
+      "speedup_max": 4.857327923266361
+    },
+    {
+      "case": "vector-sqlite-duplicates",
+      "output_parity": true,
+      "baseline_median_ms": 100.349852,
+      "candidate_median_ms": 8.955772,
+      "speedup_median": 11.205047649716853,
+      "speedup_min": 10.014039387113051,
+      "speedup_max": 12.277044399576885
+    },
+    {
+      "case": "fact-selective",
+      "output_parity": true,
+      "baseline_median_ms": 0.750466,
+      "candidate_median_ms": 0.830847,
+      "speedup_median": 0.9032541490791927,
+      "speedup_min": 0.8559893850738477,
+      "speedup_max": 1.00701365271261
+    },
+    {
+      "case": "fact-broad",
+      "output_parity": true,
+      "baseline_median_ms": 10.737017,
+      "candidate_median_ms": 10.640822,
+      "speedup_median": 1.0090401850533728,
+      "speedup_min": 0.9519094762201569,
+      "speedup_max": 1.0241317053352732
+    },
+    {
+      "case": "fact-write",
+      "output_parity": true,
+      "baseline_median_ms": 519.493126,
+      "candidate_median_ms": 476.538956,
+      "speedup_median": 1.1005415621662673,
+      "speedup_min": 1.0888728244916035,
+      "speedup_max": 1.1464895457563267
+    },
+    {
+      "case": "conversation-read",
+      "output_parity": true,
+      "baseline_median_ms": 3.70161,
+      "candidate_median_ms": 3.758288,
+      "speedup_median": 0.9994079058740435,
+      "speedup_min": 0.911503914755896,
+      "speedup_max": 1.0155307416568395
+    },
+    {
+      "case": "conversation-write",
+      "output_parity": true,
+      "baseline_median_ms": 8.118852,
+      "candidate_median_ms": 8.456098,
+      "speedup_median": 0.9601180118773458,
+      "speedup_min": 0.9513915477075551,
+      "speedup_max": 0.9876988034276918
+    },
+    {
+      "case": "signed-write",
+      "output_parity": true,
+      "baseline_median_ms": 1.062048,
+      "candidate_median_ms": 1.064898,
+      "speedup_median": 0.9135833903938726,
+      "speedup_min": 0.8061316670704612,
+      "speedup_max": 1.127404712464176
+    },
+    {
+      "case": "gateway-cycle",
+      "output_parity": true,
+      "baseline_median_ms": 6.307054,
+      "candidate_median_ms": 5.114102,
+      "speedup_median": 1.1808187401649985,
+      "speedup_min": 1.0115231009630332,
+      "speedup_max": 1.4390878398592755
+    }
+  ],
+  "raw": {
+    "baseline": [
+      {
+        "python": "3.12.14",
+        "source": "/workspace/unimem-performance-base",
+        "implementation_sha256": "5444cc0ad5e967f824e44fe7d9e804a35985b211d5030c44b9adfadb7c3fff76",
+        "harness_sha256": "beffed69171bd3df5e6cef610fb9d076f9b7ed70d6fec6736910a08d86f33304",
+        "machine": "x86_64",
+        "trials": 11,
+        "profiled": false,
+        "results": [
+          {
+            "case": "effect-fit",
+            "samples_ms": [
+              233.14279,
+              231.590286,
+              239.141107,
+              237.598494,
+              219.56042,
+              217.569808,
+              224.493572,
+              224.84507,
+              223.418107,
+              225.979596,
+              228.07891
+            ],
+            "median_ms": 225.979596,
+            "p95_ms": 237.598494,
+            "first_operation_ms": 251.322111,
+            "output_sha256": "2d85344b5b3e8275dbdd71b248a833a831e633bbb6723c9e1524787d1ec203d4"
+          },
+          {
+            "case": "context-fit",
+            "samples_ms": [
+              659.050972,
+              705.710385,
+              675.80355,
+              707.564509,
+              695.673719,
+              676.988384,
+              684.559756,
+              665.023513,
+              653.027054,
+              634.746566,
+              638.641717
+            ],
+            "median_ms": 675.80355,
+            "p95_ms": 705.710385,
+            "first_operation_ms": 670.849073,
+            "output_sha256": "e273e259d3cf2d8c7570046f924b3796019d20d6fbd43458f5c81d0e39c6d5be"
+          },
+          {
+            "case": "vector-random",
+            "samples_ms": [
+              40.816118,
+              43.801567,
+              41.47253,
+              39.616981,
+              38.060917,
+              38.943371,
+              39.110981,
+              42.196991,
+              36.567962,
+              35.333962,
+              40.435317
+            ],
+            "median_ms": 39.616981,
+            "p95_ms": 42.196991,
+            "first_operation_ms": 41.01853,
+            "output_sha256": "cfa4c460ebb038d6845acb8ba98393c08230711d5556ccfd412cd9b77040fbfe"
+          },
+          {
+            "case": "vector-duplicates",
+            "samples_ms": [
+              90.134296,
+              89.992523,
+              90.990499,
+              89.645273,
+              90.114517,
+              91.241295,
+              90.691631,
+              104.06362,
+              93.088662,
+              88.724913,
+              91.733492
+            ],
+            "median_ms": 90.691631,
+            "p95_ms": 93.088662,
+            "first_operation_ms": 91.21814,
+            "output_sha256": "6df6fd1014fe200982c00bd911b4493adb0f7cbdc97ab77d79050e15ba52475a"
+          },
+          {
+            "case": "vector-sqlite-random",
+            "samples_ms": [
+              40.218081,
+              42.431078,
+              43.623805,
+              40.168396,
+              40.116689,
+              40.358652,
+              39.883068,
+              40.886103,
+              40.156239,
+              40.429979,
+              41.744299
+            ],
+            "median_ms": 40.358652,
+            "p95_ms": 42.431078,
+            "first_operation_ms": 40.824,
+            "output_sha256": "f558ebefcb9c4a1774bc303b05741502fd0429582aaee94f1b3f0a0f088e4c34"
+          },
+          {
+            "case": "vector-sqlite-duplicates",
+            "samples_ms": [
+              102.379636,
+              99.121815,
+              100.993599,
+              102.078414,
+              104.762447,
+              104.978742,
+              101.340064,
+              99.668545,
+              106.052514,
+              102.541575,
+              102.777029
+            ],
+            "median_ms": 102.379636,
+            "p95_ms": 104.978742,
+            "first_operation_ms": 103.189991,
+            "output_sha256": "6df6fd1014fe200982c00bd911b4493adb0f7cbdc97ab77d79050e15ba52475a"
+          },
+          {
+            "case": "fact-selective",
+            "samples_ms": [
+              0.769695,
+              0.736334,
+              0.776755,
+              0.633971,
+              0.612028,
+              0.917086,
+              0.685158,
+              0.764828,
+              0.792638,
+              0.654892,
+              0.750466
+            ],
+            "median_ms": 0.750466,
+            "p95_ms": 0.792638,
+            "first_operation_ms": 0.744316,
+            "output_sha256": "8c0025516464523328c4ea035543b873f79e4d913b119fed70c39401653ff5a8"
+          },
+          {
+            "case": "fact-broad",
+            "samples_ms": [
+              9.973309,
+              10.596956,
+              10.521853,
+              11.053771,
+              13.270357,
+              11.171027,
+              10.737017,
+              10.754452,
+              10.075274,
+              10.204567,
+              12.840963
+            ],
+            "median_ms": 10.737017,
+            "p95_ms": 12.840963,
+            "first_operation_ms": 10.494973,
+            "output_sha256": "9670be559cf45d2ee55ff4a6c4b2668cb954c538dd249da5c741d250d84d4776"
+          },
+          {
+            "case": "fact-write",
+            "samples_ms": [
+              613.154265,
+              548.022908,
+              464.287439,
+              538.343829,
+              501.213435,
+              491.075535,
+              524.480159,
+              500.340598,
+              518.890319,
+              515.145258,
+              545.074407
+            ],
+            "median_ms": 518.890319,
+            "p95_ms": 548.022908,
+            "first_operation_ms": 645.294878,
+            "output_sha256": "119ddcd87e06c6cf49510333b30681c06628720a66b74358a7247dd00363a8ac"
+          },
+          {
+            "case": "conversation-read",
+            "samples_ms": [
+              3.966718,
+              3.70161,
+              3.505454,
+              3.457803,
+              3.477111,
+              3.578544,
+              4.28719,
+              3.637263,
+              3.816763,
+              3.937815,
+              3.804584
+            ],
+            "median_ms": 3.70161,
+            "p95_ms": 3.966718,
+            "first_operation_ms": 22.44462,
+            "output_sha256": "1c6dd19d2c706dd31019a34ffb8f5493d124b605ac23dd592d0f666768ab71ea"
+          },
+          {
+            "case": "conversation-write",
+            "samples_ms": [
+              9.560325,
+              10.928953,
+              10.26842,
+              9.412712,
+              16.832817,
+              9.052781,
+              10.72064,
+              8.653169,
+              11.589358,
+              8.966221,
+              9.839494
+            ],
+            "median_ms": 9.839494,
+            "p95_ms": 11.589358,
+            "first_operation_ms": 8.9462,
+            "output_sha256": "342ff33cdde64b96a3b4c9ec376ee8c3e8e2fa98b8a77c2db2fe581854b596ee"
+          },
+          {
+            "case": "signed-write",
+            "samples_ms": [
+              1.013801,
+              1.160932,
+              1.047001,
+              1.262154,
+              1.667562,
+              1.316876,
+              0.984107,
+              1.062048,
+              1.03335,
+              1.228694,
+              1.018698
+            ],
+            "median_ms": 1.062048,
+            "p95_ms": 1.316876,
+            "first_operation_ms": 3.195344,
+            "output_sha256": "cb179d11945ec9e884d61dc332d3f46a4e7fcf8c6f4fef72ab53ef0cbabbebdd"
+          },
+          {
+            "case": "gateway-cycle",
+            "samples_ms": [
+              6.459931,
+              5.469416,
+              5.522245,
+              5.734814,
+              5.656596,
+              8.611505,
+              17.248488,
+              13.224691,
+              12.159543,
+              7.359642,
+              15.19675
+            ],
+            "median_ms": 7.359642,
+            "p95_ms": 15.19675,
+            "first_operation_ms": 38.525779,
+            "output_sha256": "3633af5297d62c141708ba9d3d3e1746775deed9acb0413b628fe90b1d6b5aba"
+          }
+        ]
+      },
+      {
+        "python": "3.12.14",
+        "source": "/workspace/unimem-performance-base",
+        "implementation_sha256": "5444cc0ad5e967f824e44fe7d9e804a35985b211d5030c44b9adfadb7c3fff76",
+        "harness_sha256": "beffed69171bd3df5e6cef610fb9d076f9b7ed70d6fec6736910a08d86f33304",
+        "machine": "x86_64",
+        "trials": 11,
+        "profiled": false,
+        "results": [
+          {
+            "case": "effect-fit",
+            "samples_ms": [
+              239.061344,
+              285.482054,
+              276.506744,
+              244.549214,
+              250.917608,
+              278.309664,
+              287.613392,
+              309.087088,
+              288.974705,
+              249.885249,
+              239.919898
+            ],
+            "median_ms": 276.506744,
+            "p95_ms": 288.974705,
+            "first_operation_ms": 252.262396,
+            "output_sha256": "2d85344b5b3e8275dbdd71b248a833a831e633bbb6723c9e1524787d1ec203d4"
+          },
+          {
+            "case": "context-fit",
+            "samples_ms": [
+              832.056235,
+              858.824085,
+              733.428824,
+              769.997708,
+              778.025791,
+              697.522522,
+              656.312884,
+              668.835622,
+              673.900712,
+              659.065087,
+              633.11558
+            ],
+            "median_ms": 697.522522,
+            "p95_ms": 832.056235,
+            "first_operation_ms": 781.599049,
+            "output_sha256": "e273e259d3cf2d8c7570046f924b3796019d20d6fbd43458f5c81d0e39c6d5be"
+          },
+          {
+            "case": "vector-random",
+            "samples_ms": [
+              37.71562,
+              39.499129,
+              38.98013,
+              39.329403,
+              38.086136,
+              40.348655,
+              36.805453,
+              40.237208,
+              36.761107,
+              38.783219,
+              36.954357
+            ],
+            "median_ms": 38.783219,
+            "p95_ms": 40.237208,
+            "first_operation_ms": 37.764384,
+            "output_sha256": "cfa4c460ebb038d6845acb8ba98393c08230711d5556ccfd412cd9b77040fbfe"
+          },
+          {
+            "case": "vector-duplicates",
+            "samples_ms": [
+              90.323409,
+              94.462415,
+              89.767194,
+              103.268743,
+              96.613918,
+              96.684733,
+              99.363027,
+              98.10723,
+              98.937918,
+              100.963481,
+              95.343379
+            ],
+            "median_ms": 96.684733,
+            "p95_ms": 100.963481,
+            "first_operation_ms": 92.516282,
+            "output_sha256": "6df6fd1014fe200982c00bd911b4493adb0f7cbdc97ab77d79050e15ba52475a"
+          },
+          {
+            "case": "vector-sqlite-random",
+            "samples_ms": [
+              40.331076,
+              41.142063,
+              44.360855,
+              45.403449,
+              47.069029,
+              44.767965,
+              43.395486,
+              47.61509,
+              45.26387,
+              50.617186,
+              51.269905
+            ],
+            "median_ms": 45.26387,
+            "p95_ms": 50.617186,
+            "first_operation_ms": 39.772042,
+            "output_sha256": "f558ebefcb9c4a1774bc303b05741502fd0429582aaee94f1b3f0a0f088e4c34"
+          },
+          {
+            "case": "vector-sqlite-duplicates",
+            "samples_ms": [
+              100.954801,
+              104.035466,
+              99.431451,
+              99.352984,
+              100.349852,
+              99.585573,
+              100.052154,
+              96.393659,
+              114.634153,
+              107.131096,
+              103.147973
+            ],
+            "median_ms": 100.349852,
+            "p95_ms": 107.131096,
+            "first_operation_ms": 99.32875,
+            "output_sha256": "6df6fd1014fe200982c00bd911b4493adb0f7cbdc97ab77d79050e15ba52475a"
+          },
+          {
+            "case": "fact-selective",
+            "samples_ms": [
+              0.587362,
+              0.614032,
+              0.600301,
+              0.571138,
+              0.59291,
+              0.614503,
+              0.566511,
+              0.589976,
+              0.639431,
+              0.567813,
+              0.590286
+            ],
+            "median_ms": 0.590286,
+            "p95_ms": 0.614503,
+            "first_operation_ms": 0.776616,
+            "output_sha256": "8c0025516464523328c4ea035543b873f79e4d913b119fed70c39401653ff5a8"
+          },
+          {
+            "case": "fact-broad",
+            "samples_ms": [
+              12.460994,
+              12.740383,
+              12.190326,
+              12.374854,
+              11.637967,
+              11.633511,
+              12.232881,
+              11.628363,
+              10.537565,
+              10.629434,
+              12.836868
+            ],
+            "median_ms": 12.190326,
+            "p95_ms": 12.740383,
+            "first_operation_ms": 12.471479,
+            "output_sha256": "9670be559cf45d2ee55ff4a6c4b2668cb954c538dd249da5c741d250d84d4776"
+          },
+          {
+            "case": "fact-write",
+            "samples_ms": [
+              516.280804,
+              487.660027,
+              558.733164,
+              621.025876,
+              532.836528,
+              568.272428,
+              560.992579,
+              518.492005,
+              518.291104,
+              571.927768,
+              561.834341
+            ],
+            "median_ms": 558.733164,
+            "p95_ms": 571.927768,
+            "first_operation_ms": 630.190099,
+            "output_sha256": "119ddcd87e06c6cf49510333b30681c06628720a66b74358a7247dd00363a8ac"
+          },
+          {
+            "case": "conversation-read",
+            "samples_ms": [
+              3.886632,
+              3.721294,
+              3.783387,
+              3.637628,
+              3.547934,
+              3.764419,
+              3.61929,
+              3.531058,
+              3.915916,
+              3.586281,
+              3.596396
+            ],
+            "median_ms": 3.637628,
+            "p95_ms": 3.886632,
+            "first_operation_ms": 21.573041,
+            "output_sha256": "1c6dd19d2c706dd31019a34ffb8f5493d124b605ac23dd592d0f666768ab71ea"
+          },
+          {
+            "case": "conversation-write",
+            "samples_ms": [
+              7.518682,
+              7.79726,
+              7.794085,
+              9.477171,
+              13.482951,
+              8.160946,
+              8.118852,
+              8.011912,
+              7.655617,
+              8.246765,
+              8.516759
+            ],
+            "median_ms": 8.118852,
+            "p95_ms": 9.477171,
+            "first_operation_ms": 8.044401,
+            "output_sha256": "342ff33cdde64b96a3b4c9ec376ee8c3e8e2fa98b8a77c2db2fe581854b596ee"
+          },
+          {
+            "case": "signed-write",
+            "samples_ms": [
+              1.165749,
+              0.845989,
+              1.341934,
+              1.091878,
+              1.438268,
+              0.944858,
+              1.438058,
+              0.927492,
+              0.778649,
+              1.18613,
+              1.116815
+            ],
+            "median_ms": 1.116815,
+            "p95_ms": 1.438058,
+            "first_operation_ms": 2.928485,
+            "output_sha256": "cb179d11945ec9e884d61dc332d3f46a4e7fcf8c6f4fef72ab53ef0cbabbebdd"
+          },
+          {
+            "case": "gateway-cycle",
+            "samples_ms": [
+              9.419724,
+              13.160203,
+              6.307054,
+              9.064277,
+              5.785802,
+              5.438781,
+              7.11045,
+              4.921405,
+              6.638181,
+              5.552982,
+              5.183968
+            ],
+            "median_ms": 6.307054,
+            "p95_ms": 9.419724,
+            "first_operation_ms": 39.211683,
+            "output_sha256": "3633af5297d62c141708ba9d3d3e1746775deed9acb0413b628fe90b1d6b5aba"
+          }
+        ]
+      },
+      {
+        "python": "3.12.14",
+        "source": "/workspace/unimem-performance-base",
+        "implementation_sha256": "5444cc0ad5e967f824e44fe7d9e804a35985b211d5030c44b9adfadb7c3fff76",
+        "harness_sha256": "beffed69171bd3df5e6cef610fb9d076f9b7ed70d6fec6736910a08d86f33304",
+        "machine": "x86_64",
+        "trials": 11,
+        "profiled": false,
+        "results": [
+          {
+            "case": "effect-fit",
+            "samples_ms": [
+              260.961564,
+              216.420792,
+              222.760153,
+              216.477597,
+              215.284076,
+              215.853751,
+              216.604358,
+              226.8752,
+              243.461594,
+              238.367873,
+              238.330026
+            ],
+            "median_ms": 222.760153,
+            "p95_ms": 243.461594,
+            "first_operation_ms": 252.880325,
+            "output_sha256": "2d85344b5b3e8275dbdd71b248a833a831e633bbb6723c9e1524787d1ec203d4"
+          },
+          {
+            "case": "context-fit",
+            "samples_ms": [
+              658.485224,
+              658.663189,
+              624.509383,
+              666.114433,
+              757.005244,
+              663.122307,
+              617.039961,
+              643.171883,
+              639.786382,
+              628.746743,
+              624.40727
+            ],
+            "median_ms": 643.171883,
+            "p95_ms": 666.114433,
+            "first_operation_ms": 654.167984,
+            "output_sha256": "e273e259d3cf2d8c7570046f924b3796019d20d6fbd43458f5c81d0e39c6d5be"
+          },
+          {
+            "case": "vector-random",
+            "samples_ms": [
+              34.639781,
+              33.778688,
+              36.139922,
+              35.05898,
+              35.789466,
+              35.08584,
+              34.69955,
+              35.666321,
+              34.709635,
+              35.331388,
+              34.901623
+            ],
+            "median_ms": 35.05898,
+            "p95_ms": 35.789466,
+            "first_operation_ms": 36.223958,
+            "output_sha256": "cfa4c460ebb038d6845acb8ba98393c08230711d5556ccfd412cd9b77040fbfe"
+          },
+          {
+            "case": "vector-duplicates",
+            "samples_ms": [
+              94.820567,
+              99.218841,
+              101.547862,
+              99.439168,
+              103.043726,
+              98.278596,
+              100.005227,
+              99.793278,
+              96.92192,
+              95.586005,
+              96.25585
+            ],
+            "median_ms": 99.218841,
+            "p95_ms": 101.547862,
+            "first_operation_ms": 129.741723,
+            "output_sha256": "6df6fd1014fe200982c00bd911b4493adb0f7cbdc97ab77d79050e15ba52475a"
+          },
+          {
+            "case": "vector-sqlite-random",
+            "samples_ms": [
+              51.874247,
+              56.290188,
+              47.279347,
+              54.157093,
+              54.546762,
+              62.872887,
+              67.135387,
+              44.896426,
+              48.440334,
+              52.03307,
+              55.379503
+            ],
+            "median_ms": 54.157093,
+            "p95_ms": 62.872887,
+            "first_operation_ms": 41.678037,
+            "output_sha256": "f558ebefcb9c4a1774bc303b05741502fd0429582aaee94f1b3f0a0f088e4c34"
+          },
+          {
+            "case": "vector-sqlite-duplicates",
+            "samples_ms": [
+              104.012504,
+              100.564916,
+              112.496588,
+              93.494093,
+              91.836077,
+              92.454414,
+              98.219439,
+              102.549622,
+              98.464947,
+              102.92829,
+              98.642594
+            ],
+            "median_ms": 98.642594,
+            "p95_ms": 104.012504,
+            "first_operation_ms": 116.24089,
+            "output_sha256": "6df6fd1014fe200982c00bd911b4493adb0f7cbdc97ab77d79050e15ba52475a"
+          },
+          {
+            "case": "fact-selective",
+            "samples_ms": [
+              1.345728,
+              0.697536,
+              1.099789,
+              0.947691,
+              0.880059,
+              0.703145,
+              0.815222,
+              0.890375,
+              0.730555,
+              1.156134,
+              0.884447
+            ],
+            "median_ms": 0.884447,
+            "p95_ms": 1.156134,
+            "first_operation_ms": 0.781983,
+            "output_sha256": "8c0025516464523328c4ea035543b873f79e4d913b119fed70c39401653ff5a8"
+          },
+          {
+            "case": "fact-broad",
+            "samples_ms": [
+              10.901016,
+              10.002989,
+              10.327806,
+              11.514797,
+              10.152903,
+              10.128307,
+              10.147075,
+              10.141936,
+              11.299815,
+              10.966494,
+              11.224391
+            ],
+            "median_ms": 10.327806,
+            "p95_ms": 11.299815,
+            "first_operation_ms": 12.502269,
+            "output_sha256": "9670be559cf45d2ee55ff4a6c4b2668cb954c538dd249da5c741d250d84d4776"
+          },
+          {
+            "case": "fact-write",
+            "samples_ms": [
+              519.493126,
+              459.690883,
+              561.495335,
+              540.80594,
+              502.236486,
+              527.698058,
+              539.43905,
+              495.997917,
+              504.802695,
+              516.415344,
+              583.849331
+            ],
+            "median_ms": 519.493126,
+            "p95_ms": 561.495335,
+            "first_operation_ms": 608.302482,
+            "output_sha256": "119ddcd87e06c6cf49510333b30681c06628720a66b74358a7247dd00363a8ac"
+          },
+          {
+            "case": "conversation-read",
+            "samples_ms": [
+              3.816657,
+              3.624909,
+              5.408715,
+              5.900062,
+              3.804448,
+              3.657848,
+              3.967973,
+              3.951819,
+              3.819801,
+              3.763146,
+              3.641724
+            ],
+            "median_ms": 3.816657,
+            "p95_ms": 5.408715,
+            "first_operation_ms": 21.992566,
+            "output_sha256": "1c6dd19d2c706dd31019a34ffb8f5493d124b605ac23dd592d0f666768ab71ea"
+          },
+          {
+            "case": "conversation-write",
+            "samples_ms": [
+              7.560233,
+              6.780143,
+              7.023297,
+              7.778389,
+              12.255622,
+              8.99189,
+              7.303107,
+              6.900042,
+              7.179372,
+              7.728806,
+              7.146262
+            ],
+            "median_ms": 7.303107,
+            "p95_ms": 8.99189,
+            "first_operation_ms": 7.212762,
+            "output_sha256": "342ff33cdde64b96a3b4c9ec376ee8c3e8e2fa98b8a77c2db2fe581854b596ee"
+          },
+          {
+            "case": "signed-write",
+            "samples_ms": [
+              1.068022,
+              0.950045,
+              0.846991,
+              0.795914,
+              0.952269,
+              0.741332,
+              0.913201,
+              0.810616,
+              0.810696,
+              0.997637,
+              0.858448
+            ],
+            "median_ms": 0.858448,
+            "p95_ms": 0.997637,
+            "first_operation_ms": 2.841402,
+            "output_sha256": "cb179d11945ec9e884d61dc332d3f46a4e7fcf8c6f4fef72ab53ef0cbabbebdd"
+          },
+          {
+            "case": "gateway-cycle",
+            "samples_ms": [
+              5.271213,
+              4.928905,
+              4.994543,
+              5.431349,
+              5.436346,
+              5.155895,
+              5.042736,
+              4.683953,
+              5.352711,
+              4.618059,
+              5.006451
+            ],
+            "median_ms": 5.042736,
+            "p95_ms": 5.431349,
+            "first_operation_ms": 36.381864,
+            "output_sha256": "3633af5297d62c141708ba9d3d3e1746775deed9acb0413b628fe90b1d6b5aba"
+          }
+        ]
+      }
+    ],
+    "candidate": [
+      {
+        "python": "3.12.14",
+        "source": "/workspace/unimem",
+        "implementation_sha256": "ba87eacd6a12611f9c63a69bec7c3db5c26d17141f36c9a5c1e43b8a44a2e7f2",
+        "harness_sha256": "beffed69171bd3df5e6cef610fb9d076f9b7ed70d6fec6736910a08d86f33304",
+        "machine": "x86_64",
+        "trials": 11,
+        "profiled": false,
+        "results": [
+          {
+            "case": "effect-fit",
+            "samples_ms": [
+              30.357587,
+              30.291698,
+              28.695829,
+              28.891403,
+              29.843363,
+              28.216039,
+              27.519822,
+              33.083372,
+              26.630106,
+              28.422678,
+              28.17716
+            ],
+            "median_ms": 28.695829,
+            "p95_ms": 30.357587,
+            "first_operation_ms": 69.536818,
+            "output_sha256": "2d85344b5b3e8275dbdd71b248a833a831e633bbb6723c9e1524787d1ec203d4"
+          },
+          {
+            "case": "context-fit",
+            "samples_ms": [
+              58.010903,
+              58.349462,
+              59.337499,
+              56.396305,
+              54.887395,
+              65.007536,
+              68.955502,
+              67.183101,
+              64.038228,
+              53.431042,
+              51.542441
+            ],
+            "median_ms": 58.349462,
+            "p95_ms": 67.183101,
+            "first_operation_ms": 60.25266,
+            "output_sha256": "e273e259d3cf2d8c7570046f924b3796019d20d6fbd43458f5c81d0e39c6d5be"
+          },
+          {
+            "case": "vector-random",
+            "samples_ms": [
+              4.33661,
+              4.041847,
+              4.561856,
+              4.087616,
+              4.145402,
+              4.426354,
+              3.88339,
+              3.745513,
+              4.296639,
+              4.36362,
+              3.898272
+            ],
+            "median_ms": 4.145402,
+            "p95_ms": 4.426354,
+            "first_operation_ms": 39.362999,
+            "output_sha256": "cfa4c460ebb038d6845acb8ba98393c08230711d5556ccfd412cd9b77040fbfe"
+          },
+          {
+            "case": "vector-duplicates",
+            "samples_ms": [
+              2.230153,
+              2.144133,
+              2.124453,
+              2.123553,
+              2.103502,
+              2.097053,
+              2.094129,
+              2.056813,
+              2.227559,
+              2.098945,
+              2.091494
+            ],
+            "median_ms": 2.103502,
+            "p95_ms": 2.227559,
+            "first_operation_ms": 33.269178,
+            "output_sha256": "6df6fd1014fe200982c00bd911b4493adb0f7cbdc97ab77d79050e15ba52475a"
+          },
+          {
+            "case": "vector-sqlite-random",
+            "samples_ms": [
+              10.467156,
+              10.57695,
+              10.994255,
+              11.461446,
+              11.314186,
+              11.472383,
+              13.281383,
+              10.076962,
+              9.271575,
+              10.047467,
+              10.487306
+            ],
+            "median_ms": 10.57695,
+            "p95_ms": 11.472383,
+            "first_operation_ms": 50.014522,
+            "output_sha256": "f558ebefcb9c4a1774bc303b05741502fd0429582aaee94f1b3f0a0f088e4c34"
+          },
+          {
+            "case": "vector-sqlite-duplicates",
+            "samples_ms": [
+              8.339111,
+              8.620023,
+              7.318671,
+              7.806603,
+              7.873653,
+              8.13186,
+              8.043719,
+              8.472532,
+              9.235136,
+              10.522968,
+              9.609177
+            ],
+            "median_ms": 8.339111,
+            "p95_ms": 9.609177,
+            "first_operation_ms": 42.038141,
+            "output_sha256": "6df6fd1014fe200982c00bd911b4493adb0f7cbdc97ab77d79050e15ba52475a"
+          },
+          {
+            "case": "fact-selective",
+            "samples_ms": [
+              1.138227,
+              0.987412,
+              0.677757,
+              0.829063,
+              0.731618,
+              0.659349,
+              1.055644,
+              0.761993,
+              0.830847,
+              0.835093,
+              0.847371
+            ],
+            "median_ms": 0.830847,
+            "p95_ms": 1.055644,
+            "first_operation_ms": 0.69311,
+            "output_sha256": "8c0025516464523328c4ea035543b873f79e4d913b119fed70c39401653ff5a8"
+          },
+          {
+            "case": "fact-broad",
+            "samples_ms": [
+              10.762435,
+              11.774141,
+              11.722576,
+              11.57935,
+              10.074883,
+              9.810666,
+              10.020011,
+              9.699679,
+              10.610988,
+              10.640822,
+              11.326581
+            ],
+            "median_ms": 10.640822,
+            "p95_ms": 11.722576,
+            "first_operation_ms": 12.688123,
+            "output_sha256": "9670be559cf45d2ee55ff4a6c4b2668cb954c538dd249da5c741d250d84d4776"
+          },
+          {
+            "case": "fact-write",
+            "samples_ms": [
+              498.601359,
+              464.444853,
+              489.349727,
+              605.06361,
+              481.055431,
+              439.433245,
+              476.538956,
+              447.962907,
+              436.667101,
+              474.241052,
+              492.672013
+            ],
+            "median_ms": 476.538956,
+            "p95_ms": 498.601359,
+            "first_operation_ms": 593.78938,
+            "output_sha256": "119ddcd87e06c6cf49510333b30681c06628720a66b74358a7247dd00363a8ac"
+          },
+          {
+            "case": "conversation-read",
+            "samples_ms": [
+              3.784784,
+              3.54953,
+              3.496771,
+              3.747318,
+              3.771945,
+              3.703803,
+              3.762681,
+              4.328753,
+              3.615891,
+              3.431653,
+              3.654148
+            ],
+            "median_ms": 3.703803,
+            "p95_ms": 3.784784,
+            "first_operation_ms": 22.665623,
+            "output_sha256": "1c6dd19d2c706dd31019a34ffb8f5493d124b605ac23dd592d0f666768ab71ea"
+          },
+          {
+            "case": "conversation-write",
+            "samples_ms": [
+              7.933687,
+              8.663014,
+              7.861588,
+              9.007262,
+              13.929388,
+              17.318377,
+              14.633298,
+              15.259629,
+              9.962039,
+              13.783388,
+              9.173452
+            ],
+            "median_ms": 9.962039,
+            "p95_ms": 15.259629,
+            "first_operation_ms": 8.335201,
+            "output_sha256": "342ff33cdde64b96a3b4c9ec376ee8c3e8e2fa98b8a77c2db2fe581854b596ee"
+          },
+          {
+            "case": "signed-write",
+            "samples_ms": [
+              1.162508,
+              1.289054,
+              1.030616,
+              1.255574,
+              1.045068,
+              1.243215,
+              1.056195,
+              1.225899,
+              1.222784,
+              1.081593,
+              0.976365
+            ],
+            "median_ms": 1.162508,
+            "p95_ms": 1.255574,
+            "first_operation_ms": 2.716646,
+            "output_sha256": "cb179d11945ec9e884d61dc332d3f46a4e7fcf8c6f4fef72ab53ef0cbabbebdd"
+          },
+          {
+            "case": "gateway-cycle",
+            "samples_ms": [
+              5.246512,
+              5.114102,
+              5.522716,
+              5.002666,
+              5.350998,
+              4.791309,
+              5.39898,
+              5.110958,
+              5.515345,
+              4.627032,
+              4.836867
+            ],
+            "median_ms": 5.114102,
+            "p95_ms": 5.515345,
+            "first_operation_ms": 40.297122,
+            "output_sha256": "3633af5297d62c141708ba9d3d3e1746775deed9acb0413b628fe90b1d6b5aba"
+          }
+        ]
+      },
+      {
+        "python": "3.12.14",
+        "source": "/workspace/unimem",
+        "implementation_sha256": "ba87eacd6a12611f9c63a69bec7c3db5c26d17141f36c9a5c1e43b8a44a2e7f2",
+        "harness_sha256": "beffed69171bd3df5e6cef610fb9d076f9b7ed70d6fec6736910a08d86f33304",
+        "machine": "x86_64",
+        "trials": 11,
+        "profiled": false,
+        "results": [
+          {
+            "case": "effect-fit",
+            "samples_ms": [
+              24.407798,
+              25.260448,
+              24.753097,
+              24.82889,
+              29.171516,
+              37.679049,
+              38.213691,
+              35.107552,
+              34.601242,
+              31.320309,
+              33.896664
+            ],
+            "median_ms": 31.320309,
+            "p95_ms": 37.679049,
+            "first_operation_ms": 63.869803,
+            "output_sha256": "2d85344b5b3e8275dbdd71b248a833a831e633bbb6723c9e1524787d1ec203d4"
+          },
+          {
+            "case": "context-fit",
+            "samples_ms": [
+              87.045382,
+              67.380404,
+              68.18963,
+              60.433284,
+              58.628188,
+              63.878281,
+              64.196684,
+              60.835337,
+              61.6279,
+              68.209339,
+              62.207022
+            ],
+            "median_ms": 63.878281,
+            "p95_ms": 68.209339,
+            "first_operation_ms": 61.382742,
+            "output_sha256": "e273e259d3cf2d8c7570046f924b3796019d20d6fbd43458f5c81d0e39c6d5be"
+          },
+          {
+            "case": "vector-random",
+            "samples_ms": [
+              5.161608,
+              4.719198,
+              4.439458,
+              4.749594,
+              4.326459,
+              5.168493,
+              5.568313,
+              5.373321,
+              5.604558,
+              5.090275,
+              4.776455
+            ],
+            "median_ms": 5.090275,
+            "p95_ms": 5.568313,
+            "first_operation_ms": 44.076403,
+            "output_sha256": "cfa4c460ebb038d6845acb8ba98393c08230711d5556ccfd412cd9b77040fbfe"
+          },
+          {
+            "case": "vector-duplicates",
+            "samples_ms": [
+              2.441347,
+              2.435508,
+              2.870962,
+              2.858083,
+              2.372503,
+              2.142679,
+              2.213294,
+              2.075838,
+              2.879325,
+              2.393125,
+              2.079073
+            ],
+            "median_ms": 2.393125,
+            "p95_ms": 2.870962,
+            "first_operation_ms": 41.183489,
+            "output_sha256": "6df6fd1014fe200982c00bd911b4493adb0f7cbdc97ab77d79050e15ba52475a"
+          },
+          {
+            "case": "vector-sqlite-random",
+            "samples_ms": [
+              9.445017,
+              9.815803,
+              9.318677,
+              9.346209,
+              8.799407,
+              9.01429,
+              8.833518,
+              8.690259,
+              9.422072,
+              9.402052,
+              9.156804
+            ],
+            "median_ms": 9.318677,
+            "p95_ms": 9.445017,
+            "first_operation_ms": 48.335651,
+            "output_sha256": "f558ebefcb9c4a1774bc303b05741502fd0429582aaee94f1b3f0a0f088e4c34"
+          },
+          {
+            "case": "vector-sqlite-duplicates",
+            "samples_ms": [
+              9.692408,
+              9.841391,
+              8.996154,
+              9.598907,
+              8.649323,
+              8.955772,
+              8.438186,
+              8.925617,
+              8.165576,
+              7.958997,
+              8.997214
+            ],
+            "median_ms": 8.955772,
+            "p95_ms": 9.692408,
+            "first_operation_ms": 51.390866,
+            "output_sha256": "6df6fd1014fe200982c00bd911b4493adb0f7cbdc97ab77d79050e15ba52475a"
+          },
+          {
+            "case": "fact-selective",
+            "samples_ms": [
+              0.689595,
+              0.641674,
+              0.71289,
+              0.810237,
+              1.034333,
+              0.647773,
+              0.581493,
+              0.580312,
+              0.705179,
+              0.650827,
+              0.949746
+            ],
+            "median_ms": 0.689595,
+            "p95_ms": 0.949746,
+            "first_operation_ms": 1.022896,
+            "output_sha256": "8c0025516464523328c4ea035543b873f79e4d913b119fed70c39401653ff5a8"
+          },
+          {
+            "case": "fact-broad",
+            "samples_ms": [
+              12.806182,
+              12.901855,
+              12.02592,
+              13.025071,
+              12.450217,
+              12.981235,
+              11.539649,
+              12.793283,
+              12.182555,
+              12.897128,
+              13.62362
+            ],
+            "median_ms": 12.806182,
+            "p95_ms": 13.025071,
+            "first_operation_ms": 14.461878,
+            "output_sha256": "9670be559cf45d2ee55ff4a6c4b2668cb954c538dd249da5c741d250d84d4776"
+          },
+          {
+            "case": "fact-write",
+            "samples_ms": [
+              485.165552,
+              447.21893,
+              571.080533,
+              510.583298,
+              457.034225,
+              487.342572,
+              526.261524,
+              455.113854,
+              562.330811,
+              578.507344,
+              483.523731
+            ],
+            "median_ms": 487.342572,
+            "p95_ms": 571.080533,
+            "first_operation_ms": 638.158568,
+            "output_sha256": "119ddcd87e06c6cf49510333b30681c06628720a66b74358a7247dd00363a8ac"
+          },
+          {
+            "case": "conversation-read",
+            "samples_ms": [
+              3.990798,
+              3.723076,
+              3.811079,
+              3.535746,
+              4.198419,
+              4.028795,
+              3.88483,
+              4.00526,
+              3.656226,
+              4.092841,
+              4.088175
+            ],
+            "median_ms": 3.990798,
+            "p95_ms": 4.092841,
+            "first_operation_ms": 23.626153,
+            "output_sha256": "1c6dd19d2c706dd31019a34ffb8f5493d124b605ac23dd592d0f666768ab71ea"
+          },
+          {
+            "case": "conversation-write",
+            "samples_ms": [
+              10.293215,
+              8.108216,
+              8.456098,
+              11.290812,
+              17.197711,
+              8.739364,
+              7.83757,
+              6.912693,
+              8.345602,
+              8.754627,
+              8.055308
+            ],
+            "median_ms": 8.456098,
+            "p95_ms": 11.290812,
+            "first_operation_ms": 10.331803,
+            "output_sha256": "342ff33cdde64b96a3b4c9ec376ee8c3e8e2fa98b8a77c2db2fe581854b596ee"
+          },
+          {
+            "case": "signed-write",
+            "samples_ms": [
+              0.990607,
+              1.000101,
+              1.178058,
+              0.99351,
+              1.182825,
+              0.932829,
+              0.986651,
+              0.846711,
+              0.833641,
+              1.031438,
+              0.7929
+            ],
+            "median_ms": 0.990607,
+            "p95_ms": 1.178058,
+            "first_operation_ms": 2.946071,
+            "output_sha256": "cb179d11945ec9e884d61dc332d3f46a4e7fcf8c6f4fef72ab53ef0cbabbebdd"
+          },
+          {
+            "case": "gateway-cycle",
+            "samples_ms": [
+              6.464715,
+              4.837019,
+              5.527945,
+              5.388826,
+              4.792441,
+              4.979452,
+              5.112612,
+              5.341255,
+              8.695668,
+              6.781506,
+              5.126062
+            ],
+            "median_ms": 5.341255,
+            "p95_ms": 6.781506,
+            "first_operation_ms": 52.581881,
+            "output_sha256": "3633af5297d62c141708ba9d3d3e1746775deed9acb0413b628fe90b1d6b5aba"
+          }
+        ]
+      },
+      {
+        "python": "3.12.14",
+        "source": "/workspace/unimem",
+        "implementation_sha256": "ba87eacd6a12611f9c63a69bec7c3db5c26d17141f36c9a5c1e43b8a44a2e7f2",
+        "harness_sha256": "beffed69171bd3df5e6cef610fb9d076f9b7ed70d6fec6736910a08d86f33304",
+        "machine": "x86_64",
+        "trials": 11,
+        "profiled": false,
+        "results": [
+          {
+            "case": "effect-fit",
+            "samples_ms": [
+              26.157662,
+              25.971254,
+              26.273366,
+              26.492424,
+              25.331826,
+              30.128443,
+              26.632884,
+              27.158483,
+              27.608297,
+              27.56402,
+              26.165505
+            ],
+            "median_ms": 26.492424,
+            "p95_ms": 27.608297,
+            "first_operation_ms": 63.356494,
+            "output_sha256": "2d85344b5b3e8275dbdd71b248a833a831e633bbb6723c9e1524787d1ec203d4"
+          },
+          {
+            "case": "context-fit",
+            "samples_ms": [
+              51.94503,
+              51.378673,
+              51.764971,
+              53.367148,
+              55.83202,
+              53.22746,
+              67.201041,
+              77.204268,
+              74.517224,
+              73.703657,
+              67.305892
+            ],
+            "median_ms": 55.83202,
+            "p95_ms": 74.517224,
+            "first_operation_ms": 55.05774,
+            "output_sha256": "e273e259d3cf2d8c7570046f924b3796019d20d6fbd43458f5c81d0e39c6d5be"
+          },
+          {
+            "case": "vector-random",
+            "samples_ms": [
+              4.532241,
+              4.186392,
+              4.009987,
+              3.937859,
+              4.419081,
+              4.35806,
+              4.018591,
+              4.479772,
+              4.195236,
+              3.917919,
+              4.002876
+            ],
+            "median_ms": 4.186392,
+            "p95_ms": 4.479772,
+            "first_operation_ms": 37.973042,
+            "output_sha256": "cfa4c460ebb038d6845acb8ba98393c08230711d5556ccfd412cd9b77040fbfe"
+          },
+          {
+            "case": "vector-duplicates",
+            "samples_ms": [
+              2.570247,
+              2.422906,
+              2.380793,
+              3.621945,
+              3.200253,
+              2.619231,
+              2.180322,
+              2.528595,
+              4.094644,
+              4.701525,
+              2.79893
+            ],
+            "median_ms": 2.619231,
+            "p95_ms": 4.094644,
+            "first_operation_ms": 53.076356,
+            "output_sha256": "6df6fd1014fe200982c00bd911b4493adb0f7cbdc97ab77d79050e15ba52475a"
+          },
+          {
+            "case": "vector-sqlite-random",
+            "samples_ms": [
+              17.509374,
+              16.421738,
+              12.676292,
+              12.062586,
+              11.449191,
+              12.424379,
+              14.409563,
+              14.807469,
+              10.5256,
+              12.206087,
+              16.529864
+            ],
+            "median_ms": 12.676292,
+            "p95_ms": 16.529864,
+            "first_operation_ms": 67.557957,
+            "output_sha256": "f558ebefcb9c4a1774bc303b05741502fd0429582aaee94f1b3f0a0f088e4c34"
+          },
+          {
+            "case": "vector-sqlite-duplicates",
+            "samples_ms": [
+              12.373183,
+              9.790862,
+              8.166685,
+              9.187056,
+              9.304842,
+              8.904152,
+              9.85043,
+              10.19023,
+              15.062966,
+              12.651105,
+              12.629648
+            ],
+            "median_ms": 9.85043,
+            "p95_ms": 12.651105,
+            "first_operation_ms": 47.425775,
+            "output_sha256": "6df6fd1014fe200982c00bd911b4493adb0f7cbdc97ab77d79050e15ba52475a"
+          },
+          {
+            "case": "fact-selective",
+            "samples_ms": [
+              0.977266,
+              0.959249,
+              0.748333,
+              1.04026,
+              0.623986,
+              0.878287,
+              0.647912,
+              0.884066,
+              0.607031,
+              0.593331,
+              1.047361
+            ],
+            "median_ms": 0.878287,
+            "p95_ms": 1.04026,
+            "first_operation_ms": 0.708343,
+            "output_sha256": "8c0025516464523328c4ea035543b873f79e4d913b119fed70c39401653ff5a8"
+          },
+          {
+            "case": "fact-broad",
+            "samples_ms": [
+              10.669319,
+              12.134467,
+              12.154156,
+              11.252914,
+              10.084451,
+              9.433985,
+              9.730059,
+              9.21751,
+              10.453344,
+              9.766094,
+              9.779002
+            ],
+            "median_ms": 10.084451,
+            "p95_ms": 12.134467,
+            "first_operation_ms": 11.377921,
+            "output_sha256": "9670be559cf45d2ee55ff4a6c4b2668cb954c538dd249da5c741d250d84d4776"
+          },
+          {
+            "case": "fact-write",
+            "samples_ms": [
+              467.929031,
+              454.933819,
+              494.146301,
+              642.636508,
+              434.092359,
+              466.30354,
+              511.796928,
+              472.034082,
+              530.496604,
+              575.400733,
+              450.838232
+            ],
+            "median_ms": 472.034082,
+            "p95_ms": 575.400733,
+            "first_operation_ms": 595.850803,
+            "output_sha256": "119ddcd87e06c6cf49510333b30681c06628720a66b74358a7247dd00363a8ac"
+          },
+          {
+            "case": "conversation-read",
+            "samples_ms": [
+              4.640336,
+              4.96527,
+              5.813632,
+              4.082405,
+              3.493922,
+              3.758288,
+              3.726731,
+              3.520842,
+              3.733622,
+              3.753191,
+              3.836916
+            ],
+            "median_ms": 3.758288,
+            "p95_ms": 4.96527,
+            "first_operation_ms": 25.902612,
+            "output_sha256": "1c6dd19d2c706dd31019a34ffb8f5493d124b605ac23dd592d0f666768ab71ea"
+          },
+          {
+            "case": "conversation-write",
+            "samples_ms": [
+              7.634695,
+              7.672932,
+              7.312972,
+              8.008195,
+              12.582112,
+              9.148104,
+              7.550898,
+              7.000973,
+              7.676237,
+              8.152251,
+              8.393553
+            ],
+            "median_ms": 7.676237,
+            "p95_ms": 9.148104,
+            "first_operation_ms": 7.189196,
+            "output_sha256": "342ff33cdde64b96a3b4c9ec376ee8c3e8e2fa98b8a77c2db2fe581854b596ee"
+          },
+          {
+            "case": "signed-write",
+            "samples_ms": [
+              0.998508,
+              1.349655,
+              1.052609,
+              1.140241,
+              1.151838,
+              1.115012,
+              0.97343,
+              1.004907,
+              1.064898,
+              1.116255,
+              0.989009
+            ],
+            "median_ms": 1.064898,
+            "p95_ms": 1.151838,
+            "first_operation_ms": 3.033962,
+            "output_sha256": "cb179d11945ec9e884d61dc332d3f46a4e7fcf8c6f4fef72ab53ef0cbabbebdd"
+          },
+          {
+            "case": "gateway-cycle",
+            "samples_ms": [
+              5.637459,
+              4.98529,
+              4.807403,
+              4.903867,
+              4.522044,
+              4.470988,
+              5.032931,
+              5.095545,
+              4.95218,
+              5.66511,
+              5.438629
+            ],
+            "median_ms": 4.98529,
+            "p95_ms": 5.637459,
+            "first_operation_ms": 40.626963,
+            "output_sha256": "3633af5297d62c141708ba9d3d3e1746775deed9acb0413b628fe90b1d6b5aba"
+          }
+        ]
+      }
+    ]
+  }
+}

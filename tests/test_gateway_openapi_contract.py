@@ -90,6 +90,33 @@ def test_the_exported_documents_are_fresh():
     assert result.returncode == 0, result.stderr
 
 
+def test_hub_export_explains_missing_optional_dependencies_without_writing(tmp_path):
+    output = tmp_path / "openapi.json"
+    result = subprocess.run(
+        [sys.executable, "-I", "-S", os.path.join(REPO, "scripts", "export_hub_openapi.py"), "--out", str(output)],
+        capture_output=True,
+        text=True,
+        cwd=REPO,
+    )
+    assert result.returncode == 2
+    assert "missing 'starlette'" in result.stderr
+    assert "pip install -r hub/requirements.txt" in result.stderr
+    assert "PYTHON=/path/to/venv/bin/python" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert not output.exists()
+
+
+def test_hub_export_help_does_not_require_optional_dependencies():
+    result = subprocess.run(
+        [sys.executable, "-I", "-S", os.path.join(REPO, "scripts", "export_hub_openapi.py"), "--help"],
+        capture_output=True,
+        text=True,
+        cwd=REPO,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "--check" in result.stdout
+
+
 def test_live_responses_match_the_declared_schemas(tmp_path):
     jsonschema = pytest.importorskip("jsonschema")
     root = str(tmp_path)
@@ -302,6 +329,29 @@ def test_live_responses_match_the_declared_schemas(tmp_path):
         {"operation": "status", "request": {"namespace": "contract-tier", "region": "us"}},
         status=403,
     )
+
+    call("GET", "/v1/learning/capabilities")
+    call("POST", "/v1/learning/configure", {"mode": "observe"})
+    call(
+        "POST",
+        "/v1/memory/record-put",
+        {
+            "record": {
+                "id": "learning-source",
+                "kind": "fact",
+                "version": 1,
+                "payload": {"text": "Verify source citations."},
+            }
+        },
+    )
+    assigned = call(
+        "POST", "/v1/learning/assign", {"occasion_id": "learning-contract", "memory_ids": ["learning-source"]}
+    )
+    call("POST", "/v1/learning/delivery", {"occasion_id": "learning-contract", "memory_ids": assigned["inject"]})
+    call("POST", "/v1/learning/outcome", {"occasion_id": "learning-contract", "reward": 0.8})
+    call("POST", "/v1/learning/run", {})
+    call("POST", "/v1/learning/rollback", {"reason": "contract review"})
+    call("GET", "/v1/learning/status")
 
     routes = set(gw.routes)
     assert routes - checked == set(), sorted(routes - checked)

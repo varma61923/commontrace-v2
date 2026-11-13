@@ -123,3 +123,31 @@ def test_local_flag_keeps_an_explicit_provider(tmp_path, monkeypatch):
     _isolate(monkeypatch, provider="ollama")
     assert main(["--local", "fact", "list", "--dest", str(tmp_path)]) == 0
     assert offline.enabled() and os.environ["UNIMEM_LLM_PROVIDER"] == "ollama"
+
+
+@pytest.mark.parametrize("tag", ["arctic-m", "minilm"])
+@pytest.mark.parametrize("policy", ["environment", "task"])
+def test_legacy_conversation_model_cache_miss_never_downloads_offline(monkeypatch, tag, policy):
+    import sys
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    from unimem.conversation import embed
+
+    attempts = []
+
+    def model(_name, **kwargs):
+        attempts.append(kwargs)
+        if kwargs.get("local_files_only"):
+            raise OSError("not cached")
+        return SimpleNamespace()
+
+    monkeypatch.setitem(sys.modules, "sentence_transformers", SimpleNamespace(SentenceTransformer=model))
+    monkeypatch.setattr(embed, "_MODELS", {})
+    _isolate(monkeypatch)
+    if policy == "environment":
+        monkeypatch.setenv(offline.ENV, "1")
+    with offline.without_network() if policy == "task" else nullcontext():
+        with pytest.raises(offline.OfflineError, match="cache"):
+            embed._model(tag)
+    assert attempts == [{"device": "cpu", "local_files_only": True}]

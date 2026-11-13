@@ -7,6 +7,7 @@ import pytest_asyncio
 from sqlalchemy import text
 
 from hub import auth
+from hub.alembic.versions import ff7adce4f618_explicit_operator_scope as explicit_scope
 from hub.alembic.versions.a7c3e91d4b20_outcome_connectors import (  # noqa: E402
     _NEW_TABLES as _CONNECTOR_TABLES,
 )
@@ -26,11 +27,77 @@ from hub.models import Organization, Trace
 
 pytestmark = pytest.mark.asyncio
 
+
+@pytest_asyncio.fixture
+async def explicit_scope_factory(session_factory, enforcing_factory):
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    def migrate(connection):
+        with Operations.context(MigrationContext.configure(connection)):
+            explicit_scope.upgrade()
+
+    async with session_scope(session_factory) as session:
+        connection = await session.connection()
+        await connection.run_sync(migrate)
+        await session.execute(
+            text(f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {_RLS_ROLE}")
+        )
+    try:
+        yield enforcing_factory
+    finally:
+        async with session_scope(session_factory) as session:
+            for table in (*explicit_scope.TABLES, "api_keys", "trace_relations", "learning_work"):
+                for policy in ("org_isolation", "commons_read", "tenant_isolation"):
+                    await session.execute(text(f"DROP POLICY IF EXISTS {policy} ON {table}"))
+                await session.execute(text(f"ALTER TABLE {table} NO FORCE ROW LEVEL SECURITY"))
+                await session.execute(text(f"ALTER TABLE {table} DISABLE ROW LEVEL SECURITY"))
+
+
+async def test_unscoped_sessions_default_deny_and_operator_access_is_transaction_local(
+    session_factory, explicit_scope_factory
+):
+    from sqlalchemy import select
+
+    from hub.models import ApiKey, Connector, User
+
+    async with session_scope(session_factory) as session:
+        organizations = [Organization(name=f"strict-{i}") for i in range(2)]
+        session.add_all(organizations)
+        await session.flush()
+        identities = [org.id for org in organizations]
+        for org in organizations:
+            session.add(
+                Trace(org_id=org.id, title="private", context_text="c", solution_text="s", tags=[], agent_type="code")
+            )
+            session.add(User(org_id=org.id, email=f"{org.id}@example.test", role="analyst"))
+            session.add(Connector(org_id=org.id, provider="github", secret="test-only"))
+            await auth.issue_api_key(session, org.id)
+    async with session_scope(explicit_scope_factory) as session:
+        for model in (Trace, User, Connector, ApiKey):
+            assert list((await session.execute(select(model))).scalars()) == []
+    async with session_scope(explicit_scope_factory, operator=True) as session:
+        assert len(list((await session.execute(select(User))).scalars())) == 2
+    async with session_scope(explicit_scope_factory, org_id=identities[0], operator=True) as session:
+        assert [row.org_id for row in (await session.execute(select(User))).scalars()] == [identities[0]]
+    async with session_scope(explicit_scope_factory) as session:
+        assert list((await session.execute(select(User))).scalars()) == []
+
+
+async def test_sdk_lifecycle_with_the_actual_fail_closed_policies(explicit_scope_factory, config, monkeypatch):
+    from hub.tests.test_rest import test_real_memory_and_learning_sdk_requests_authenticate_against_hub
+
+    await test_real_memory_and_learning_sdk_requests_authenticate_against_hub(
+        explicit_scope_factory, config, monkeypatch
+    )
+
+
 _UNSAFE_QUERY = text("SELECT title FROM traces WHERE title LIKE :pat ORDER BY title")
 
 
 @pytest_asyncio.fixture
 async def rls(session_factory):
+    """Historical migration policies; current default-deny policies are tested above."""
     async with session_scope(session_factory) as session:
         for table in (*_SCOPED_TABLES, *_CONNECTOR_TABLES):
             await session.execute(text(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY"))
@@ -226,7 +293,9 @@ class TestAForgottenPredicateIsNotABreach:
 
 
 class TestOperatorPathsAreUnaffected:
-    async def test_an_unscoped_connection_still_sees_every_org(self, rls, enforcing_factory, two_orgs):
+    async def test_legacy_policy_allowed_an_unscoped_connection_to_see_every_org(
+        self, rls, enforcing_factory, two_orgs
+    ):
         _a_id, _b_id, pattern = two_orgs
         assert len(await _titles(enforcing_factory, pattern)) == 2
 

@@ -16,6 +16,7 @@ import argparse
 import hashlib
 import os
 import sys
+import tempfile
 import urllib.request
 
 _HF = "https://huggingface.co/datasets/{repo}/resolve/{revision}/{path}"
@@ -97,15 +98,17 @@ def fetch(name: str, dest: str, *, opener=urllib.request.urlopen) -> str:
     token = os.environ.get("HF_TOKEN", "").strip()
     if token and url.startswith("https://huggingface.co/"):
         headers["Authorization"] = f"Bearer {token}"
-    partial = target + ".partial"
-    with opener(urllib.request.Request(url, headers=headers), timeout=600) as response, open(partial, "wb") as sink:  # nosec B310 - fixed https URLs above
-        for block in iter(lambda: response.read(1 << 20), b""):
-            sink.write(block)
-    actual = _sha256(partial)
-    if actual != expected:
-        os.remove(partial)
-        raise RuntimeError(f"{name}: SHA-256 {actual} does not match the pinned {expected}")
-    os.replace(partial, target)
+    # Each invocation owns its private directory. Fixed partial names collide
+    # across concurrent downloads and can follow pre-created local symlinks.
+    with tempfile.TemporaryDirectory(prefix=f".{name}.", dir=dest) as directory:
+        partial = os.path.join(directory, "download")
+        with opener(urllib.request.Request(url, headers=headers), timeout=600) as response, open(partial, "wb") as sink:  # nosec B310 - fixed https URLs above
+            for block in iter(lambda: response.read(1 << 20), b""):
+                sink.write(block)
+        actual = _sha256(partial)
+        if actual != expected:
+            raise RuntimeError(f"{name}: SHA-256 {actual} does not match the pinned {expected}")
+        os.replace(partial, target)
     return target
 
 

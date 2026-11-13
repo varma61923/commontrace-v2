@@ -12,10 +12,12 @@ from pathlib import Path
 
 from unimem import holdout_io, memory_control
 from unimem.gateway import Gateway, make_http_server
+from unimem.memory_journal import Journal
+from unimem.memory_record import MemoryRecord
 
 SMOKE = r"""
 const assert = require('node:assert/strict');
-const {MemoryApi, ConversationsApi, HistoryApi, Configuration, ResponseError} =
+const {MemoryApi, LearningApi, ConversationsApi, HistoryApi, Configuration, ResponseError} =
     require(process.env.UNIMEM_GENERATED_SDK);
 const configuration = new Configuration({basePath: process.env.UNIMEM_SMOKE_URL,
     accessToken: process.env.UNIMEM_SMOKE_TOKEN});
@@ -56,6 +58,23 @@ const api = new MemoryApi(configuration);
     await assert.rejects(api.memoryCheckAction({checkActionRequest: {tool: 'deploy', context: ['user:smoke']}}),
         error => error instanceof ResponseError && error.response.status === 403);
     console.log('Generated TypeScript SDK: eight operations and directive rejection passed');
+    const learning = new LearningApi(configuration);
+    const context = ['user:smoke', 'agent:generated'];
+    assert.equal((await learning.learningCapabilities()).schema, 'unimem.learning.v1');
+    await learning.learningConfigure({learningConfigureRequest: {mode: 'observe', context}});
+    const assigned = await learning.learningAssign({learningAssignRequest: {
+        occasionId: 'sdk-learning', memoryIds: ['sdk-learning-source'], context}});
+    const pinned = {occasionId: 'sdk-learning', experimentId: assigned.experiment_id, context};
+    await learning.learningDelivery({learningDeliveryRequest: {...pinned, memoryIds: assigned.inject}});
+    await learning.learningOutcome({learningOutcomeRequest: {...pinned, reward: 0.8}});
+    await assert.rejects(learning.learningOutcome({learningOutcomeRequest: {...pinned, reward: 0.2}}),
+        error => error instanceof ResponseError && error.response.status === 409);
+    await learning.learningRun({learningRunRequest: {experimentId: assigned.experiment_id, context}});
+    const status = await learning.learningStatus({context, experimentId: assigned.experiment_id});
+    assert.equal(status.occasions, 1);
+    await learning.learningRollback({learningRollbackRequest: {
+        reason: 'SDK smoke review', decisionRevision: 0, experimentId: assigned.experiment_id, context}});
+    console.log('Generated TypeScript SDK: complete learning protocol, scoped GET and conflict passed');
     if (ConversationsApi) {
         const conversations = new ConversationsApi(configuration);
         const saved = await conversations.conversationAdd({conversationAddRequest: {
@@ -103,6 +122,15 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="unimem-generated-sdk-") as root:
         holdout_io.configure(root, rate=0, salt="generated-sdk-smoke")
         memory_control.directive(root, "Deployment prohibited", deny_tools=["deploy"])
+        Journal(root).put(
+            MemoryRecord(
+                "sdk-learning-source",
+                "fact",
+                1,
+                {"text": "Verify source revisions."},
+                scope={"user": "smoke", "agent": "generated"},
+            )
+        )
         token = secrets.token_urlsafe(32)
         server = make_http_server(Gateway(root, token=token), "127.0.0.1", 0)
         thread = threading.Thread(target=server.serve_forever, daemon=True)

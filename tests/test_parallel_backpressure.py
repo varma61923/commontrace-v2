@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 
 import pytest
 
-from unimem.parallel import bounded_map
+from unimem.parallel import bounded_imap, bounded_map
 
 
 def test_lazy_input_does_not_run_ahead_of_the_submission_budget():
@@ -60,3 +61,43 @@ def test_generator_error_is_propagated_after_workers_settle():
     with pytest.raises(ValueError, match="input failed"):
         bounded_map(lambda x: completed.append(x), source(), max_workers=2)
     assert completed == [1]
+
+
+def test_workers_preserve_and_isolate_the_callers_security_context():
+    from unimem import memory_authority, offline
+
+    def inspect(_):
+        writer = memory_authority.WRITER.get()
+        try:
+            offline.check_url("https://example.invalid", "worker test")
+        except offline.OfflineError:
+            blocked = True
+        else:
+            blocked = False
+        memory_authority.WRITER.set(("changed-in-worker", "operator"))
+        return writer, blocked
+
+    with memory_authority.writer("restricted-agent", "agent"), offline.without_network():
+        assert (
+            bounded_map(inspect, range(4), max_workers=2, max_pending=1) == [(("restricted-agent", "agent"), True)] * 4
+        )
+        assert memory_authority.WRITER.get() == ("restricted-agent", "agent")
+
+
+def test_closing_result_stream_stops_input_consumption_and_drains_accepted_work():
+    consumed, completed = [], []
+
+    def source():
+        for i in range(1000):
+            consumed.append(i)
+            yield i
+
+    def work(i):
+        completed.append(i)
+        return i * 2
+
+    with closing(bounded_imap(work, source(), max_workers=2, max_pending=3)) as results:
+        assert next(results) == 0
+        assert consumed == [0, 1, 2]
+    assert consumed == [0, 1, 2]
+    assert set(completed) <= {0, 1, 2} and 0 in completed

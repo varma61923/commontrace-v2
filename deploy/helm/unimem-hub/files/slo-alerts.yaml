@@ -2,28 +2,28 @@
   rules:
     - record: unimem_hub:error_ratio:rate5m
       expr: |
-        sum(rate(unimem_hub_requests_total{status=~"5.."}[5m]))
-        / clamp_min(sum(rate(unimem_hub_requests_total[5m])), 1e-9)
+        (sum(rate(unimem_hub_requests_total{status=~"5..",path!~"/healthz|/readyz|/metrics"}[5m])) or vector(0))
+        / clamp_min((sum(rate(unimem_hub_requests_total{path!~"/healthz|/readyz|/metrics"}[5m])) or vector(0)), 1e-9)
     - record: unimem_hub:error_ratio:rate1h
       expr: |
-        sum(rate(unimem_hub_requests_total{status=~"5.."}[1h]))
-        / clamp_min(sum(rate(unimem_hub_requests_total[1h])), 1e-9)
+        (sum(rate(unimem_hub_requests_total{status=~"5..",path!~"/healthz|/readyz|/metrics"}[1h])) or vector(0))
+        / clamp_min((sum(rate(unimem_hub_requests_total{path!~"/healthz|/readyz|/metrics"}[1h])) or vector(0)), 1e-9)
     - record: unimem_hub:error_ratio:rate30m
       expr: |
-        sum(rate(unimem_hub_requests_total{status=~"5.."}[30m]))
-        / clamp_min(sum(rate(unimem_hub_requests_total[30m])), 1e-9)
+        (sum(rate(unimem_hub_requests_total{status=~"5..",path!~"/healthz|/readyz|/metrics"}[30m])) or vector(0))
+        / clamp_min((sum(rate(unimem_hub_requests_total{path!~"/healthz|/readyz|/metrics"}[30m])) or vector(0)), 1e-9)
     - record: unimem_hub:error_ratio:rate6h
       expr: |
-        sum(rate(unimem_hub_requests_total{status=~"5.."}[6h]))
-        / clamp_min(sum(rate(unimem_hub_requests_total[6h])), 1e-9)
+        (sum(rate(unimem_hub_requests_total{status=~"5..",path!~"/healthz|/readyz|/metrics"}[6h])) or vector(0))
+        / clamp_min((sum(rate(unimem_hub_requests_total{path!~"/healthz|/readyz|/metrics"}[6h])) or vector(0)), 1e-9)
     - record: unimem_hub:slow_ratio:rate5m
       expr: |
-        1 - sum(rate(unimem_hub_request_duration_ms_bucket{le="250"}[5m]))
-        / clamp_min(sum(rate(unimem_hub_request_duration_ms_count[5m])), 1e-9)
+        clamp_min((sum(rate(unimem_hub_request_duration_ms_count{path!~"/healthz|/readyz|/metrics"}[5m])) or vector(0)) - (sum(rate(unimem_hub_request_duration_ms_bucket{le="250",path!~"/healthz|/readyz|/metrics"}[5m])) or vector(0)), 0)
+        / clamp_min((sum(rate(unimem_hub_request_duration_ms_count{path!~"/healthz|/readyz|/metrics"}[5m])) or vector(0)), 1e-9)
     - record: unimem_hub:slow_ratio:rate1h
       expr: |
-        1 - sum(rate(unimem_hub_request_duration_ms_bucket{le="250"}[1h]))
-        / clamp_min(sum(rate(unimem_hub_request_duration_ms_count[1h])), 1e-9)
+        clamp_min((sum(rate(unimem_hub_request_duration_ms_count{path!~"/healthz|/readyz|/metrics"}[1h])) or vector(0)) - (sum(rate(unimem_hub_request_duration_ms_bucket{le="250",path!~"/healthz|/readyz|/metrics"}[1h])) or vector(0)), 0)
+        / clamp_min((sum(rate(unimem_hub_request_duration_ms_count{path!~"/healthz|/readyz|/metrics"}[1h])) or vector(0)), 1e-9)
     - alert: HubAvailabilityFastBurn
       expr: unimem_hub:error_ratio:rate1h > (14.4 * 0.001) and unimem_hub:error_ratio:rate5m > (14.4 * 0.001)
       for: 2m
@@ -44,7 +44,7 @@
       annotations:
         summary: "More than 30% of requests are slower than 250 ms"
     - alert: HubNoTraffic
-      expr: sum(rate(unimem_hub_requests_total[10m])) == 0
+      expr: (sum(rate(unimem_hub_requests_total{path!~"/healthz|/readyz|/metrics"}[10m])) or vector(0)) == 0
       for: 15m
       labels: { severity: ticket, slo: availability-99.9 }
       annotations:

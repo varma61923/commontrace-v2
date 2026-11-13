@@ -19,7 +19,8 @@ from starlette.routing import Route
 from hub import auth
 from hub.abuse import PostgresRateLimiter, RateLimiter
 from hub.config import HubConfig
-from hub.db import make_engine, make_session_factory, session_scope
+from hub.db import make_engine, make_session_factory
+from hub.db import operator_session_scope as session_scope
 from hub.models import Organization
 from hub.server import ApiKeyAuthMiddleware
 
@@ -52,8 +53,10 @@ def verdict(speedup: float | None) -> str:
 
 
 async def _drive(app: Starlette, raw_key: str, clients: int, requests: int) -> dict:
+    if clients <= 0 or requests <= 0:
+        raise ValueError("client and request counts must be positive")
     headers = {"Authorization": f"Bearer {raw_key}"}
-    per_client = max(1, requests // clients)
+    per_client, remainder = divmod(requests, clients)
     latencies: list[float] = []
     failures = 0
 
@@ -64,9 +67,9 @@ async def _drive(app: Starlette, raw_key: str, clients: int, requests: int) -> d
             return_exceptions=True,
         )
 
-        async def one_client() -> None:
+        async def one_client(index: int) -> None:
             nonlocal failures
-            for _ in range(per_client):
+            for _ in range(per_client + (index < remainder)):
                 start = time.perf_counter()
                 try:
                     response = await client.get("/mcp", headers=headers)
@@ -80,7 +83,7 @@ async def _drive(app: Starlette, raw_key: str, clients: int, requests: int) -> d
                 latencies.append(elapsed)
 
         wall_start = time.perf_counter()
-        await asyncio.gather(*(one_client() for _ in range(clients)))
+        await asyncio.gather(*(one_client(index) for index in range(clients)))
         wall = time.perf_counter() - wall_start
 
     return {
@@ -95,7 +98,9 @@ async def _drive(app: Starlette, raw_key: str, clients: int, requests: int) -> d
     }
 
 
-def _build_app(session_factory, backend: str, database_url: str) -> Starlette:
+def _build_app(session_factory, backend: str, database_url: str, *, run_prefix: str | None = None) -> Starlette:
+    prefix = run_prefix or f"bench-{uuid.uuid4().hex}"
+
     async def _ok(request):  # noqa: ARG001 - Starlette hands it the request
         return PlainTextResponse("ok")
 
@@ -105,7 +110,7 @@ def _build_app(session_factory, backend: str, database_url: str) -> Starlette:
                 per_minute=_LIMIT_PER_MINUTE,
                 burst=_LIMIT_PER_MINUTE,
                 database_url=database_url,
-                limiter_name=f"bench-{name}-{uuid.uuid4().hex[:8]}",
+                limiter_name=f"{prefix}-{name}",
             )
         return RateLimiter(per_minute=_LIMIT_PER_MINUTE, burst=_LIMIT_PER_MINUTE)
 
@@ -125,18 +130,19 @@ async def run(clients: list[int], requests: int, backends: list[str], as_json: b
     engine = make_engine(config)
     session_factory = make_session_factory(engine)
 
-    async with session_scope(session_factory) as session:
-        org = Organization(name=f"bench-concurrency-{uuid.uuid4().hex[:8]}")
-        session.add(org)
-        await session.flush()
-        org_id = str(org.id)
-        issued = await auth.issue_api_key(session, org.id)
-    raw_key = issued.raw_key
-
+    org_id = None
+    prefix = f"bench-{uuid.uuid4().hex}"
     report: dict[str, list[dict]] = {}
     try:
+        async with session_scope(session_factory) as session:
+            org = Organization(name=f"bench-concurrency-{uuid.uuid4().hex[:8]}")
+            session.add(org)
+            await session.flush()
+            org_id = str(org.id)
+            issued = await auth.issue_api_key(session, org.id)
+        raw_key = issued.raw_key
         for backend in backends:
-            app = _build_app(session_factory, backend, config.database_url)
+            app = _build_app(session_factory, backend, config.database_url, run_prefix=prefix)
             rows = []
             for n in clients:
                 if not as_json:
@@ -144,12 +150,18 @@ async def run(clients: list[int], requests: int, backends: list[str], as_json: b
                 rows.append(await _drive(app, raw_key, n, requests))
             report[backend] = rows
     finally:
-        async with session_scope(session_factory) as session:
-            if (await session.execute(text("SELECT to_regclass('hub_rate_limit_buckets')"))).scalar():
-                await session.execute(text("DELETE FROM hub_rate_limit_buckets WHERE limiter_name LIKE 'bench-%'"))
-            await session.execute(text("DELETE FROM api_keys WHERE org_id = :o"), {"o": org_id})
-            await session.execute(text("DELETE FROM organizations WHERE id = :o"), {"o": org_id})
-        await engine.dispose()
+        try:
+            if org_id is not None:
+                async with session_scope(session_factory) as session:
+                    if (await session.execute(text("SELECT to_regclass('hub_rate_limit_buckets')"))).scalar():
+                        await session.execute(
+                            text("DELETE FROM hub_rate_limit_buckets WHERE limiter_name LIKE :prefix"),
+                            {"prefix": prefix + "-%"},
+                        )
+                    await session.execute(text("DELETE FROM api_keys WHERE org_id = :o"), {"o": org_id})
+                    await session.execute(text("DELETE FROM organizations WHERE id = :o"), {"o": org_id})
+        finally:
+            await engine.dispose()
 
     if as_json:
         print(json.dumps({"requests_per_level": requests, "backends": report}, indent=2))
@@ -223,6 +235,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if not clients:
         print("--clients must name at least one concurrency level", file=sys.stderr)
+        return 2
+    if min(clients) <= 0 or args.requests <= 0:
+        print("--clients and --requests must be positive", file=sys.stderr)
         return 2
 
     backends = ["memory", "postgres"] if args.backend == "both" else [args.backend]

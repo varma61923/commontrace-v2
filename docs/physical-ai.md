@@ -28,9 +28,24 @@ fits; labels must not contain `/`). `/v1/recall` and `/v1/outcome` retain the
 existing gateway contract and authentication. If an outcome request fails, the
 signed durable queue survives restart and retries with the same occasion id.
 Conflicting final outcomes are refused. Calling applications should flush
-`OutcomeQueue.flush(transport.post)` after reconnecting. Once every queued outcome
+`OutcomeQueue.flush(transport.post)` after reconnecting. Only outages are
+retried: a definitive refusal (HTTP 400, 409, 413 or 422) raises
+`GatewayRefused` from `finish`, is settled in the queue and listed by
+`OutcomeQueue.rejected()`, and never blocks the outcomes queued after it. Once every queued outcome
 is acknowledged the queue restarts its journal with a signed link to the retired
 chain, so a long-lived robot never fills the bounded journal.
+
+A task outcome does not have to be binary. `robot.finish("episode-42",
+reward=0.7)` reports task progress, and `robot.finish("episode-42",
+metrics={"progress": 0.7, "cycle_s": 41, "energy_wh": 12})` reports
+measurements scored by the store's utility (`unimem reward configure`). The
+offline queue keeps graded outcomes, and ROS `/task/end` envelopes accept
+`reward` or `metrics` in place of `succeeded`. See [graded outcomes](rewards.md).
+Memories sent to `start(items=...)` may carry an `embedding` from the robot's
+own encoder (a VLA or vision-language model) with an `embedding_model` label. In
+`thompson-field` mode this lets measured evidence move between similar skills
+and keyframes, and between contexts that share an embodiment, site or skill
+([effect field](effect-field.md)).
 
 After recall, send every proposed memory-derived action through
 `RobotBridge.authorize_action(occasion, action, spec_id=..., trace=..., monitor=...)`.

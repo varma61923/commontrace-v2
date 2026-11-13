@@ -7,6 +7,15 @@ import pytest
 from unimem import retry, telemetry
 
 
+def test_zero_retry_after_is_honored_without_adding_unrequested_backoff():
+    assert retry.retry_after_seconds("0", 1) == 0
+    assert retry.retry_after_seconds("0.0", 3) == 0
+
+
+def test_long_retry_sequences_keep_the_cap_without_overflowing():
+    assert retry.retry_after_seconds(None, 100_000) == retry.MAX_WAIT_SECONDS
+
+
 @pytest.mark.parametrize(
     "error",
     [

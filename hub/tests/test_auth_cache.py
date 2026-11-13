@@ -76,6 +76,40 @@ async def test_revoking_through_this_process_forgets_the_key_at_once(session_fac
     assert await _verify(session_factory, raw) is None
 
 
+async def test_inflight_verification_cannot_refill_a_cache_cleared_by_revocation(session_factory, config, monkeypatch):
+    import asyncio
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select, update
+
+    from hub.models import ApiKey
+
+    _, raw, _ = await _key(session_factory)
+    async with session_scope(session_factory) as session:
+        key_id = (await session.execute(select(ApiKey.id))).scalar_one()
+        await session.execute(update(ApiKey).where(ApiKey.id == key_id).values(last_used_at=datetime.now(timezone.utc)))
+    auth.configure_auth_cache(30)
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def delayed_region_check(session, org_id):
+        started.set()
+        await release.wait()
+        return True
+
+    monkeypatch.setattr(auth, "_region_ok", delayed_region_check)
+    task = asyncio.create_task(_verify(session_factory, raw))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        async with session_scope(session_factory) as session:
+            await auth.revoke_api_key(session, key_id)
+    finally:
+        release.set()
+        await task
+
+    assert auth.cached_key(raw) is None
+    assert await _verify(session_factory, raw) is None
+
+
 async def test_rotation_forgets_the_old_key(session_factory, config):
     _, raw, _ = await _key(session_factory)
     auth.configure_auth_cache(30)
@@ -243,6 +277,45 @@ async def test_an_unreachable_database_leaves_the_listener_off_and_retrying(_lis
     stop.set()
     await task
     assert len(attempts) >= 2 and auth._AUTH_CACHE_LISTENER_LIVE is False
+
+
+async def test_a_dead_connections_late_termination_does_not_drop_its_successor(_listener_off_afterwards):
+    import asyncio
+
+    from hub import auth_invalidation
+
+    class Conn:
+        def __init__(self):
+            self.on_lost = None
+
+        def add_termination_listener(self, callback):
+            self.on_lost = callback
+
+        async def add_listener(self, _channel, _callback):
+            return None
+
+        async def close(self):
+            return None
+
+    conns = []
+
+    async def connect(_dsn):
+        conns.append(Conn())
+        return conns[-1]
+
+    auth.configure_auth_cache(30, require_listener=True)
+    stop = asyncio.Event()
+    task = asyncio.create_task(auth_invalidation.listen("postgresql+asyncpg://x/y", stop, connect=connect))
+    try:
+        assert await _until(lambda: len(conns) == 1 and auth._AUTH_CACHE_LISTENER_LIVE)
+        conns[0].on_lost(conns[0])
+        assert await _until(lambda: len(conns) == 2 and auth._AUTH_CACHE_LISTENER_LIVE)
+        conns[0].on_lost(conns[0])  # the first connection's listener fires again, late
+        await asyncio.sleep(0.1)
+        assert len(conns) == 2 and auth._AUTH_CACHE_LISTENER_LIVE
+    finally:
+        stop.set()
+        await task
 
 
 async def test_a_key_is_never_served_past_its_own_expiry(session_factory, config, _listener_off_afterwards):

@@ -8,8 +8,13 @@ Adapted from Cognee session ledger architecture (#3 L):
 
 from __future__ import annotations
 
+import contextlib
+import math
 import os
+import re
 import uuid
+from collections import deque
+from collections.abc import Generator
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -49,11 +54,16 @@ def _lock_file(root: str) -> str:
 def estimate_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float:
     """Calculate estimated cost in USD based on model identifier and token counts."""
     m_clean = str(model or "").lower().strip()
+    # Provider paths and dated aliases identify the same model. Match the full
+    # family identifier so gpt-4o cannot shadow gpt-4o-mini, and arbitrary partial
+    # names such as "gpt" or "mini" do not silently acquire another model's rate.
+    m_clean = m_clean.rsplit("/", 1)[-1]
+    m_clean = re.sub(r"^(?:(?:us|eu|apac)\.)?(?:openai|anthropic|google)[:.]", "", m_clean)
     rate = DEFAULT_PRICING_PER_MILLION["default"]
 
-    for key, (in_rate, out_rate) in DEFAULT_PRICING_PER_MILLION.items():
-        if key in m_clean or m_clean in key:
-            rate = (in_rate, out_rate)
+    for key in sorted(DEFAULT_PRICING_PER_MILLION, key=len, reverse=True):
+        if m_clean == key or re.fullmatch(re.escape(key) + r"-(?:\d[\w.:-]*|latest|preview)", m_clean):
+            rate = DEFAULT_PRICING_PER_MILLION[key]
             break
 
     in_rate, out_rate = rate
@@ -79,6 +89,39 @@ class LedgerEntry:
         return asdict(self)
 
 
+def _finite_cost(value: object, field_name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (float, int)):
+        raise ValueError(f"{field_name} must be a finite nonnegative number")
+    try:
+        cost = float(value)
+    except OverflowError:
+        raise ValueError(f"{field_name} must be a finite nonnegative number") from None
+    if not math.isfinite(cost) or cost < 0:
+        raise ValueError(f"{field_name} must be a finite nonnegative number")
+    return cost
+
+
+def _validate_entry(entry: LedgerEntry) -> None:
+    for name in ("id", "session_id", "timestamp", "model", "provider", "occasion"):
+        if not isinstance(getattr(entry, name), str):
+            raise ValueError(f"{name} must be a string")
+    if not isinstance(entry.metadata, dict):
+        raise ValueError("metadata must be an object")
+    for name in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        value = getattr(entry, name)
+        if type(value) is not int or value < 0:
+            raise ValueError(f"{name} must be a nonnegative integer")
+    if entry.total_tokens != entry.prompt_tokens + entry.completion_tokens:
+        raise ValueError("total_tokens does not match prompt_tokens + completion_tokens")
+    _finite_cost(entry.cost_usd, "cost_usd")
+    metadata = entry.metadata
+    if (
+        metadata.get("cache_hit") is True
+        and metadata.get("historical_cost_known", metadata.get("cost_known", True)) is not False
+    ):
+        _finite_cost(metadata.get("historical_cost_usd", entry.cost_usd), "historical_cost_usd")
+
+
 def record_usage(
     root: str,
     session_id: str,
@@ -96,7 +139,12 @@ def record_usage(
     tot_toks = p_toks + c_toks
 
     m_str = str(model or "unknown").strip()
-    c_usd = cost_usd if cost_usd is not None else estimate_cost(m_str, p_toks, c_toks)
+    try:
+        c_usd = float(cost_usd) if cost_usd is not None else estimate_cost(m_str, p_toks, c_toks)
+    except (OverflowError, TypeError, ValueError):
+        raise ValueError("cost must be a finite nonnegative number") from None
+    if isinstance(cost_usd, bool) or not math.isfinite(c_usd) or c_usd < 0:
+        raise ValueError("cost must be a finite nonnegative number")
 
     entry = LedgerEntry(
         id=f"leg_{uuid.uuid4().hex[:12]}",
@@ -111,6 +159,7 @@ def record_usage(
         occasion=str(occasion or "").strip().lower(),
         metadata=dict(metadata or {}),
     )
+    _validate_entry(entry)
 
     path = _ledger_file(root)
     with _jsonl.locked(_lock_file(root)):
@@ -135,7 +184,7 @@ def _new_usage_stat() -> dict[str, Any]:
 
 
 def _add_usage(stat: dict[str, Any], entry: LedgerEntry) -> None:
-    metadata = entry.metadata if isinstance(entry.metadata, dict) else {}
+    metadata = entry.metadata
     cache_hit = metadata.get("cache_hit") is True
     stat["calls"] += 1
     stat["prompt_tokens"] += entry.prompt_tokens
@@ -144,15 +193,16 @@ def _add_usage(stat: dict[str, Any], entry: LedgerEntry) -> None:
     if metadata.get("cost_known", True) is False:
         stat["unpriced_calls"] += 1
     else:
-        stat["known_cost_usd"] = round(stat["known_cost_usd"] + entry.cost_usd, 6)
+        stat["known_cost_usd"] = round(_finite_cost(stat["known_cost_usd"] + entry.cost_usd, "total cost"), 6)
     if cache_hit:
         stat["cache_hit_calls"] += 1
         stat["cached_tokens"] += entry.total_tokens
         history_known = metadata.get("historical_cost_known", metadata.get("cost_known", True)) is not False
         if history_known:
             history_cost = metadata.get("historical_cost_usd", entry.cost_usd)
-            if isinstance(history_cost, (float, int)) and not isinstance(history_cost, bool):
-                stat["historical_cached_cost_usd"] = round(stat["historical_cached_cost_usd"] + float(history_cost), 6)
+            stat["historical_cached_cost_usd"] = round(
+                _finite_cost(stat["historical_cached_cost_usd"] + float(history_cost), "historical total cost"), 6
+            )
         else:
             stat["cached_unpriced_calls"] += 1
 
@@ -167,7 +217,6 @@ def _finish_usage_stat(stat: dict[str, Any]) -> dict[str, Any]:
 def session_summary(root: str, session_id: str) -> dict[str, Any]:
     """Aggregate token usage and costs for a given session with per-model attribution."""
     clean_session = str(session_id or "").strip()
-    entries = list_session_entries(root, session_id=clean_session, limit=10_000)
 
     total_prompt = 0
     total_completion = 0
@@ -175,17 +224,14 @@ def session_summary(root: str, session_id: str) -> dict[str, Any]:
     by_model: dict[str, dict[str, Any]] = {}
     by_occasion: dict[str, dict[str, Any]] = {}
 
-    for e in entries:
-        total_prompt += e.prompt_tokens
-        total_completion += e.completion_tokens
-        _add_usage(overall, e)
-
-        # By model
-        _add_usage(by_model.setdefault(e.model, _new_usage_stat()), e)
-
-        # By occasion
-        occ = e.occasion or "unspecified"
-        _add_usage(by_occasion.setdefault(occ, _new_usage_stat()), e)
+    with contextlib.closing(_entries(root, clean_session)) as entries:
+        for e in entries:
+            total_prompt += e.prompt_tokens
+            total_completion += e.completion_tokens
+            _add_usage(overall, e)
+            _add_usage(by_model.setdefault(e.model, _new_usage_stat()), e)
+            occ = e.occasion or "unspecified"
+            _add_usage(by_occasion.setdefault(occ, _new_usage_stat()), e)
 
     for stat in by_model.values():
         _finish_usage_stat(stat)
@@ -195,7 +241,7 @@ def session_summary(root: str, session_id: str) -> dict[str, Any]:
 
     return {
         "session_id": clean_session,
-        "call_count": len(entries),
+        "call_count": overall["calls"],
         "prompt_tokens": total_prompt,
         "completion_tokens": total_completion,
         "total_tokens": total_prompt + total_completion,
@@ -217,8 +263,6 @@ def overall_ledger_summary(
     until: str = "",
 ) -> dict[str, Any]:
     """Aggregate token usage and costs across all sessions, optionally bounded by date."""
-    entries = list_session_entries(root, limit=100_000)
-
     total_prompt = 0
     total_completion = 0
     overall = _new_usage_stat()
@@ -226,18 +270,19 @@ def overall_ledger_summary(
     by_model: dict[str, dict[str, Any]] = {}
     filtered_count = 0
 
-    for e in entries:
-        if since and e.timestamp < since:
-            continue
-        if until and e.timestamp > until:
-            continue
+    with contextlib.closing(_entries(root)) as entries:
+        for e in entries:
+            if since and e.timestamp < since:
+                continue
+            if until and e.timestamp > until:
+                continue
 
-        sessions_seen.add(e.session_id)
-        filtered_count += 1
-        total_prompt += e.prompt_tokens
-        total_completion += e.completion_tokens
-        _add_usage(overall, e)
-        _add_usage(by_model.setdefault(e.model, _new_usage_stat()), e)
+            sessions_seen.add(e.session_id)
+            filtered_count += 1
+            total_prompt += e.prompt_tokens
+            total_completion += e.completion_tokens
+            _add_usage(overall, e)
+            _add_usage(by_model.setdefault(e.model, _new_usage_stat()), e)
 
     for stat in by_model.values():
         _finish_usage_stat(stat)
@@ -260,27 +305,31 @@ def overall_ledger_summary(
     }
 
 
+def _entry(row: dict[str, Any]) -> LedgerEntry:
+    try:
+        entry = LedgerEntry(**row)
+        _validate_entry(entry)
+        return entry
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"corrupt session ledger entry: {exc}") from None
+
+
+def _entries(root: str, session_id: str = "") -> Generator[LedgerEntry, None, None]:
+    with contextlib.closing(_jsonl.iter_rows(_ledger_file(root))) as rows:
+        for row in rows:
+            if not session_id or row.get("session_id") == session_id:
+                yield _entry(row)
+
+
 def list_session_entries(
     root: str,
     session_id: str = "",
     limit: int = 100,
 ) -> list[LedgerEntry]:
     """List ledger entries, optionally filtered by session ID."""
-    path = _ledger_file(root)
-    rows = _jsonl.read_rows(path)
+    if limit <= 0:
+        return []
     clean_session = session_id.strip() if session_id else ""
-
-    entries: list[LedgerEntry] = []
-    for r in reversed(rows):
-        if not isinstance(r, dict) or not r.get("id"):
-            continue
-        if clean_session and r.get("session_id") != clean_session:
-            continue
-        try:
-            entries.append(LedgerEntry(**r))
-        except TypeError:
-            continue
-        if len(entries) >= limit:
-            break
-
-    return entries
+    with contextlib.closing(_jsonl.iter_rows(_ledger_file(root))) as rows:
+        recent = deque((r for r in rows if not clean_session or r.get("session_id") == clean_session), maxlen=limit)
+    return [_entry(row) for row in reversed(recent)]

@@ -67,7 +67,8 @@ from sqlalchemy import text
 
 from hub import crud
 from hub.config import HubConfig
-from hub.db import make_engine, make_session_factory, session_scope
+from hub.db import make_engine, make_session_factory
+from hub.db import operator_session_scope as session_scope
 from hub.models import Base, Organization
 
 DEFAULT_SIZES = (1_000, 4_000, 16_000, 64_000)

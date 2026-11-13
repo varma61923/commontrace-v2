@@ -48,3 +48,62 @@ def test_delete_never_replays_ambiguous_transport_and_empty_batch_skips_wire():
 def test_invalid_envelopes_are_not_silently_accepted(response):
     with pytest.raises(HubToolError, match="invalid batch result"):
         asyncio.run(RecordingSession(response).get_traces_batch(["first"]))
+
+
+def test_native_contribution_fields_and_legacy_convenience_map_to_real_hub_tool():
+    session = RecordingSession(response={"id": "created"})
+    asyncio.run(session.contribute_trace("legacy evidence", rationale="legacy solution", tags=["retry"]))
+    name, arguments, retry = session.calls[0]
+    assert name == "contribute_trace" and retry
+    assert arguments == {
+        "title": "legacy evidence",
+        "context_text": "legacy evidence",
+        "solution_text": "legacy solution",
+        "agent_type": "agent",
+        "tags": ["retry"],
+        "idempotency_key": arguments["idempotency_key"],
+    }
+    assert arguments["idempotency_key"].startswith("trace:")
+    asyncio.run(
+        session.contribute_trace(
+            title="native title",
+            context_text="native context",
+            solution_text="native solution",
+            idempotency_key="stable",
+        )
+    )
+    assert session.calls[1][1] == {
+        "title": "native title",
+        "context_text": "native context",
+        "solution_text": "native solution",
+        "agent_type": "agent",
+        "idempotency_key": "stable",
+    }
+
+
+def test_subject_purge_uses_the_registered_tool_and_non_idempotent_comments_do_not_replay():
+    session = RecordingSession(response={})
+    asyncio.run(session.purge_subject_traces("subject-one"))
+    asyncio.run(session.add_comment("trace-one", "review"))
+    assert session.calls == [
+        ("purge_traces_by_subject", {"subject_id": "subject-one"}, False),
+        ("add_comment", {"trace_id": "trace-one", "body": "review"}, False),
+    ]
+
+
+def test_typed_helper_arguments_match_the_registered_mcp_schemas():
+    schema = pytest.importorskip("jsonschema")
+    server_module = pytest.importorskip("hub.server", exc_type=ImportError)
+    from hub.config import HubConfig
+
+    server = server_module.build_mcp_server(HubConfig(database_url="postgresql+asyncpg://localhost/audit"), None, None)
+    tools = {tool.name: tool.input_schema for tool in asyncio.run(server.list_tools())}
+    session = RecordingSession(response={})
+    asyncio.run(session.contribute_trace("evidence", rationale="solution"))
+    asyncio.run(session.contribute_trace(title="native", context_text="context", solution_text="solution"))
+    asyncio.run(session.purge_subject_traces("subject-one"))
+    asyncio.run(session.add_comment("trace-one", "review"))
+    for name, arguments, _retry in session.calls:
+        assert name in tools
+        schema.validate(arguments, tools[name])
+        assert set(arguments) <= set(tools[name]["properties"])

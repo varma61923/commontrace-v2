@@ -16,12 +16,12 @@ from datetime import datetime, timezone
 from types import MappingProxyType
 from urllib.parse import quote as _url_quote
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
-from hub import alerts, audit, auth, commons, crud, events, manage, plans, rbac, scopes, ui_kit
+from hub import alerts, audit, auth, commons, crud, events, learning, manage, plans, rbac, scopes, ui_kit
 from hub.abuse import RateLimited, TraceRejected, make_named_limiter, make_rate_limiter, rate_limit_key
 from hub.admin import (
     _FORM_GUARD_SCRIPT,
@@ -39,7 +39,9 @@ from hub.config import HubConfig
 from hub.db import session_scope
 from hub.encryption import NULL_CIPHER, EnvelopeCipher
 from hub.models import AlertRule, ApiKey, AuditLogEntry, Organization, User, WebhookEndpoint
+from unimem import learning_contract as learning_contract
 from unimem import raw_export
+from unimem.async_workers import WorkerCapacityError
 
 logger = logging.getLogger("unimem.hub.console")
 
@@ -157,6 +159,7 @@ _NAV_GROUPS = (
         (
             ("", "Overview", "Your fleet", "overview", "g o"),
             ("/proof", "Proof", "Proof", "proof", "g p"),
+            ("/learning", "Learning", "Learning", "learning", "g e"),
             ("/memory", "Memory", "Memory", "memory", "g m"),
             ("/kb", "Knowledge Base", "Knowledge Base", "kb", "g k"),
         ),
@@ -224,8 +227,10 @@ def _topbar(title: str, badge: str) -> str:
         '<header class="top">'
         f'<div class="crumbs">{crumbs}<b>{h(title)}</b></div>'
         f'<div class="top-actions">{badge}'
-        '<button type="button" class="search-btn" data-palette data-js hidden aria-label="Open the command palette">'
-        f"{ui_kit.icon('search')}<span>Search or jump to…</span><kbd data-mod-key>Ctrl K</kbd></button>"
+        '<button type="button" class="search-btn" data-palette data-js hidden '
+        'aria-labelledby="palette-label palette-shortcut">'
+        f'{ui_kit.icon("search")}<span id="palette-label">Search or jump to…</span>'
+        '<kbd id="palette-shortcut" data-mod-key>Ctrl K</kbd></button>'
         '<button type="button" class="icon-btn" data-theme-toggle data-js hidden aria-label="Change colour theme">'
         f"{theme_icons}</button>"
         "</div></header>"
@@ -1740,6 +1745,296 @@ _SIGNIN = (
 )
 
 
+_LEARNING_BLOCKERS = {
+    "incomplete_delivery": "Delivery receipts are missing or differ from the assigned memories.",
+    "pending_outcomes": "Some assigned occasions are still waiting for outcomes.",
+    "stale_sources": "Source memories changed or access was revoked. These cohorts cannot change policy.",
+    "integrity_weakened": "Assignment integrity needs review before a policy can be changed.",
+    "integrity_compromised": "Assignment integrity failed. The affected cohorts cannot change policy.",
+    "evidence_budget_exceeded": "The experiment exceeds the evaluation budget. Start a new experiment.",
+    "status_budget_exceeded": "This scope exceeds the status budget. Ask an administrator to inspect it.",
+}
+_LEARNING_FLASH = {
+    "configure": "New experiment started. Earlier evidence remains in its original experiment.",
+    "run": "Evaluation completed. Review the evidence and current delivery policy below.",
+    "rollback": "Policy restored as a new revision. Recorded evidence was preserved.",
+}
+
+
+def _render_learning(
+    data: dict | None,
+    is_admin: bool,
+    *,
+    error: str = "",
+    flash: str = "",
+    draft: dict | None = None,
+    draft_operation: str = "configure",
+    worker_available: bool | None = None,
+) -> str:
+    """Render measured evidence without confusing per-key counts with org-wide evaluation."""
+    data = data or {}
+    config = data.get("config") or {}
+    report = data.get("report") or {}
+    mode = str(config.get("mode") or "not configured")
+    body = [
+        '<div class="page-head"><div>'
+        '<h1>Learning</h1><p class="sub">Turn experience into better memory decisions. '
+        "Measure outcomes, inspect the evidence, and stay in control.</p></div>"
+        f'<a class="btn secondary" href="{CONSOLE_PATH}/learning">{ui_kit.icon("refresh")}Refresh evidence</a></div>',
+    ]
+    if error:
+        body.append(f'<p class="err" role="alert">{h(error)}</p>')
+    if flash:
+        body.append(f'<p class="flash" role="status">{h(flash)}</p>')
+    if worker_available is not None:
+        if worker_available:
+            body.append('<p class="muted" role="status">Background learning worker is available.</p>')
+        else:
+            body.append(
+                '<p class="err" role="alert">Background learning worker is unavailable. '
+                "Automatic evaluation may be delayed. Refresh evidence or contact your operator.</p>"
+            )
+    description = {
+        "off": "Memories are delivered without randomized holdouts. Automatic policy changes are off.",
+        "observe": "Randomized holdouts collect evidence. Delivery policy changes require adaptive mode.",
+        "adaptive": (
+            "Valid evidence can adjust delivery by source revision and task context. Harmful cohorts are disabled."
+        ),
+    }.get(mode, "Start in observe mode to measure memory before enabling automatic delivery changes.")
+    lifecycle = (
+        '<ol class="learning-flow" aria-label="Learning lifecycle">'
+        "<li><b>01</b><span>Assign<small>Freeze source and context</small></span></li>"
+        "<li><b>02</b><span>Deliver<small>Confirm what was used</small></span></li>"
+        "<li><b>03</b><span>Measure<small>Record task outcomes</small></span></li>"
+        "<li><b>04</b><span>Adapt<small>Apply valid evidence</small></span></li></ol>"
+    )
+    protection = "Protected memories stay protected. Every outcome stays attached to its original experiment."
+    if data:
+        body.append(
+            '<section class="learning-status" aria-labelledby="learning-state">'
+            '<div class="learning-status-head">'
+            f'<h2 id="learning-state">{h(mode.capitalize())}</h2><span class="badge">Measured learning</span></div>'
+            f'<p>{h(description)}</p><details class="learning-method"><summary>How measured learning works</summary>'
+            f'<p class="muted">{h(protection)}</p>{lifecycle}</details></section>'
+        )
+    else:
+        body.append(
+            '<section class="learning-hero" aria-labelledby="learning-state"><div>'
+            '<span class="badge">Measured learning</span>'
+            f'<h2 id="learning-state">{h(mode.capitalize())}</h2><p>{h(description)}</p>'
+            f'<p class="muted">{h(protection)}</p></div>{lifecycle}</section>'
+        )
+    if data:
+        evidence_label = "Organisation evidence" if is_admin else "Visible evidence"
+        body.append(
+            _tiles(
+                [
+                    ("This key’s occasions", _num(data.get("occasions", 0))),
+                    ("This key’s outcomes", _num(data.get("outcomes", 0))),
+                    (evidence_label, _num(report["evidence"]) if "evidence" in report else "—"),
+                    ("Policy revision", _num(data.get("decision_revision", 0))),
+                ]
+            )
+        )
+        body.append(
+            '<p class="muted learning-scope">Key counts cover this key’s default tenant scope. '
+            + (
+                "Evaluation evidence is organisation-wide for administrators."
+                if is_admin
+                else "Visible evidence is restricted to this key and scope."
+            )
+            + "</p>"
+        )
+        body.append(
+            '<div class="learning-context"><span>Experiment '
+            f"<code>{h(data.get('experiment_id'))}</code></span><span>Configuration "
+            f"{h(data.get('config_revision'))}</span>"
+            f"<span "
+            f'class="badge">{"Evaluation queued" if data.get("pending_work") else "No queued evaluation"}</span></div>'
+        )
+        body.append(
+            '<section class="panel"><div class="panel-head"><div><h2>Evidence readiness</h2>'
+            '<p class="muted">Each source revision and task context is evaluated as a separate cohort.</p></div></div>'
+        )
+        blocked = report.get("blocked") or []
+        if blocked:
+            body.append(
+                '<ul class="learning-blockers">'
+                + "".join(
+                    f"<li>{h(_LEARNING_BLOCKERS.get(reason, str(reason).replace('_', ' ').capitalize()))}</li>"
+                    for reason in blocked
+                )
+                + '</ul><p class="muted">Pending receipts or outcomes defer the incomplete chronological tail; '
+                "complete earlier evidence may still be evaluated. Delivery mismatches and integrity failures "
+                "continue to block affected cohorts.</p>"
+            )
+        elif report:
+            body.append(
+                "<p>No evaluation blockers were reported. A policy decision still requires enough evidence in "
+                "both arms.</p>"
+            )
+        else:
+            body.append(
+                "<p>No evaluation yet. Agents must record assignments, exact delivery receipts, and outcomes "
+                "before memory can be evaluated.</p>"
+            )
+        if data.get("failures"):
+            # Worker diagnostics can contain backend details. Expose the failure state,
+            # while keeping raw diagnostic content out of the customer document.
+            failure_help = (
+                _LEARNING_BLOCKERS["evidence_budget_exceeded"]
+                if "evidence_budget_exceeded" in data["failures"]
+                else (
+                    "The last background evaluation failed. Retry evaluation or ask your operator to inspect "
+                    "the worker logs."
+                )
+            )
+            body.append(f'<p class="err" role="alert">{h(failure_help)}</p>')
+        stale = report.get("stale_sources") or []
+        if stale:
+            body.append(f'<p class="muted">{_num(len(stale))} source memories are stale or unavailable.</p>')
+        body.append("</section>")
+        body.append(
+            '<section class="panel"><h2>Memory decisions</h2>'
+            f'<p class="muted">{"Organisation-wide" if is_admin else "Your visible"} evaluation results. '
+            "Current delivery reflects the active policy, including any rollback.</p>"
+        )
+        decisions = report.get("decisions") or []
+        if not is_admin:
+            body.append("<p>Pooled outcome statistics are available to organisation administrators.</p>")
+        elif decisions:
+            rows = []
+            policy = data.get("policy") or {}
+            for entry in decisions:
+                current = policy.get(entry["key"], {})
+                delivery = (
+                    "Disabled"
+                    if current.get("disabled")
+                    else (
+                        f"{float(current['rate']):.0%} monitoring holdout"
+                        if "rate" in current
+                        else "Experiment holdout"
+                    )
+                )
+                effect = entry.get("effect")
+                interval = (
+                    f"{entry['ci_low']:+.1%} to {entry['ci_high']:+.1%}"
+                    if entry.get("ci_low") is not None and entry.get("ci_high") is not None
+                    else "Unavailable"
+                )
+                rationale = (
+                    f"<details><summary>Why this verdict</summary><p>{h(entry['note'])}</p></details>"
+                    if entry.get("note")
+                    else ""
+                )
+                rows.append(
+                    f'<tr><th scope="row"><code>{h(entry.get("id"))}</code><small>Revision '
+                    f"{h(entry.get('revision'))}</small></th>"
+                    f"<td>{h(entry.get('task_context') or 'Default context')}</td>"
+                    f"<td>{h(str(entry.get('verdict', 'Unknown')).replace('_', ' ').capitalize())}{rationale}</td>"
+                    f"<td>{h(f'{effect:+.1%}' if effect is not None else 'Unavailable')}"
+                    f"<small>{h(interval)}</small></td>"
+                    f"<td>{h(delivery)}</td></tr>"
+                )
+            body.append(
+                '<p class="learning-table-hint muted">Scroll horizontally to compare evidence and delivery.</p>'
+                '<div class="scroll" role="region" aria-label="Memory decision comparisons" tabindex="0">'
+                '<table class="learning-decisions"><caption class="sr-only">Memory '
+                "effects and current delivery policy</caption>"
+                '<thead><tr><th scope="col">Memory / revision</th><th scope="col">Task context</th>'
+                '<th scope="col">Evidence</th><th scope="col">Effect / 95% interval</th><th '
+                'scope="col">Current delivery</th>'
+                "</tr></thead><tbody>" + "".join(rows) + "</tbody></table></div>"
+            )
+        else:
+            body.append(
+                '<div class="learning-empty">' + ui_kit.icon("learning") + "<b>Evidence is still building</b>"
+                "<p>Decisions appear here after eligible cohorts have enough measured outcomes. No effect is "
+                "assumed from missing data.</p></div>"
+            )
+        body.append("</section>")
+    if is_admin:
+        config_draft = draft if draft_operation == "configure" else None
+        rollback_draft = draft if draft_operation == "rollback" else None
+        fields = config_draft if config_draft is not None else config
+        utility = (
+            fields.get("utility", "")
+            if config_draft is not None
+            else (json.dumps(config["utility"], indent=2) if config.get("utility") is not None else "")
+        )
+        options = "".join(
+            f'<option value="{value}"{" selected" if fields.get("mode", "observe") == value else ""}>{label}</option>'
+            for value, label in (
+                ("observe", "Observe · measure first"),
+                ("adaptive", "Adaptive · apply evidence"),
+                ("off", "Off · no randomized holdouts"),
+            )
+        )
+        config_open = " open" if config_draft is not None else ""
+        config_start = (
+            f'<details class="panel learning-settings"{config_open}><summary>Experiment configuration</summary>'
+            if data
+            else '<section class="panel"><h2>Experiment configuration</h2>'
+        )
+        config_end = "</details>" if data else "</section>"
+        body.append(
+            '<div class="grid-2">'
+            + config_start
+            + '<p class="muted">Saving starts a new experiment. Existing assignments and late outcomes keep '
+            "their original configuration.</p>"
+            f'<form class="stack" method="post" action="{CONSOLE_PATH}/learning/configure">'
+            f'<div><label for="learning-mode">Mode</label><select id="learning-mode" '
+            f'name="mode">{options}</select></div>'
+            '<div class="form-grid"><div><label for="learning-rate">Holdout rate</label>'
+            f'<input id="learning-rate" name="holdout_rate" type="number" min="0.05" max="0.95" step="any" '
+            f'value="{h(fields.get("holdout_rate", 0.5))}" required></div>'
+            '<div><label for="learning-min">Minimum per arm</label>'
+            f'<input id="learning-min" name="min_arm" type="number" min="10" max="10000" step="1" '
+            f'value="{h(fields.get("min_arm", 10))}" required></div></div>'
+            '<div><label for="learning-utility">Metrics utility (JSON, optional)</label>'
+            f'<textarea id="learning-utility" name="utility" rows="5" maxlength="32768" spellcheck="false" '
+            f'aria-describedby="learning-utility-help">{h(utility)}</textarea>'
+            '<p id="learning-utility-help" class="muted">Leave blank for success or reward outcomes. Metrics '
+            "require named terms with weight, low, high, and better (higher or lower).</p></div>"
+            '<label class="learning-confirm"><input name="confirm" type="checkbox" value="yes" required> I '
+            "understand this starts a new experiment.</label>"
+            '<button type="submit">Start new experiment</button></form>' + config_end
+        )
+        if data:
+            pinned = f'<input type="hidden" name="experiment_id" value="{h(data.get("experiment_id"))}">'
+            rollback_open = " open" if rollback_draft is not None else ""
+            rollback_fields = rollback_draft or {}
+            rollback_pinned = (
+                '<input type="hidden" name="experiment_id" '
+                f'value="{h(rollback_fields.get("experiment_id", data.get("experiment_id")))}">'
+            )
+            body.append(
+                '<section class="panel"><h2>Policy controls</h2>'
+                '<p class="muted">Evaluation uses accepted evidence and the same integrity checks as the '
+                "runtime. Adaptive mode can change delivery.</p>"
+                f'<form class="stack" method="post" action="{CONSOLE_PATH}/learning/run">{pinned}'
+                '<button type="submit">Evaluate evidence</button></form>'
+                f'<details class="learning-restore"{rollback_open}><summary>Restore an earlier policy</summary>'
+                '<p class="muted">Rollback creates a new policy revision and preserves evidence. '
+                "It cannot restore revoked access.</p>"
+                f'<form class="stack" method="post" action="{CONSOLE_PATH}/learning/rollback">{rollback_pinned}'
+                '<div><label for="learning-revision">Revision to restore (optional)</label>'
+                '<input id="learning-revision" name="decision_revision" type="number" min="0" step="1" '
+                f'placeholder="Previous revision" value="{h(rollback_fields.get("decision_revision", ""))}"></div>'
+                '<div><label for="learning-reason">Reason for rollback</label>'
+                '<input id="learning-reason" name="reason" type="text" maxlength="256" '
+                f'value="{h(rollback_fields.get("reason", ""))}" required></div>'
+                '<button class="secondary" type="submit">Restore policy</button></form></details></section>'
+            )
+        body.append("</div>")
+    else:
+        body.append(
+            '<p class="note">Read access · An administrator can configure experiments, evaluate evidence, and '
+            "restore policy revisions.</p>"
+        )
+    return "".join(body)
+
+
 _KB_FLASH = {
     "proposed": "Proposal sent for operator review.",
     "auto_on": "Automatic contribution is on. New traces will also be proposed.",
@@ -1802,22 +2097,39 @@ def add_console_routes(
         if not prefix:
             return None
         now = datetime.now(timezone.utc)
-        async with session_scope(session_factory) as session:
-            row = (
+        async with session_scope(session_factory, org_id=str(claims["org"])) as session:
+            rows = (
                 await session.execute(
-                    select(ApiKey.id, ApiKey.scopes, Organization.name, Organization.plan)
+                    select(
+                        ApiKey.id,
+                        ApiKey.scopes,
+                        Organization.name,
+                        Organization.plan,
+                        ApiKey.revoked_at,
+                        ApiKey.expires_at,
+                    )
                     .join(Organization, Organization.id == ApiKey.org_id)
                     .where(
                         ApiKey.org_id == str(claims["org"]),
                         ApiKey.key_prefix == prefix,
                         *((ApiKey.id == str(claims["kid"]),) if claims.get("kid") else ()),
-                        ApiKey.revoked_at.is_(None),
-                        or_(ApiKey.expires_at.is_(None), ApiKey.expires_at > now),
                     )
-                    .limit(1)
+                    .limit(2)
                 )
-            ).first()
-        if row is None or not scopes.satisfies(row[1], scopes.SCOPE_READ):
+            ).all()
+        # Old cookies carry only the displayed prefix, which is not unique.
+        # Count historical matches too: filtering revoked/expired keys first
+        # could rebind their old cookie to a live sibling. Exact-kid sessions
+        # still select their one original key, regardless of prefix collisions.
+        if len(rows) != 1:
+            return None
+        row = rows[0]
+        if (
+            row[4] is not None
+            or row[5] is not None
+            and row[5] <= now
+            or not scopes.satisfies(row[1], scopes.SCOPE_READ)
+        ):
             return None
         # Enrollment can change after sign-in. Recheck on every read and
         # mutation so an older cookie cannot bypass a delegate's narrowing.
@@ -1827,6 +2139,9 @@ def add_console_routes(
         if await _requires_capability(authenticated):
             return None
         claims["scopes"] = row[1]
+        # Resolve legacy sessions to the exact live key as well. Learning uses
+        # the same stable principal as REST, never an ambiguous key prefix.
+        claims["kid"] = str(row[0])
         _VIEW.set(
             {
                 "org_name": row[2],
@@ -1861,7 +2176,7 @@ def add_console_routes(
             )
         form = await request.form()
         raw_key = str(form.get("api_key") or "")
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, operator=True) as session:
             authenticated = await auth.verify_api_key(session, raw_key)
         if authenticated is not None and scopes.satisfies(authenticated.scopes, scopes.SCOPE_READ):
             # The console cannot verify capability and possession headers.
@@ -1911,7 +2226,7 @@ def add_console_routes(
         if claims is None:
             return _redirect_to_signin()
         org_id = str(claims["org"])
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             data = await _overview_data(session, org_id)
             causal = await crud.causal_effects(session, org_id)
             org = await session.get(Organization, org_id)
@@ -1935,6 +2250,138 @@ def add_console_routes(
             auto_refresh_seconds=45,
         )
 
+    async def _learning_view(
+        claims: dict,
+        *,
+        error: str = "",
+        flash: str = "",
+        draft: dict | None = None,
+        draft_operation: str = "configure",
+        status_code: int = 200,
+    ) -> Response:
+        try:
+            data = await learning.operate(
+                session_factory,
+                str(claims["org"]),
+                "key:" + str(claims["kid"]),
+                "status",
+                scope={"tenant": str(claims["org"])},
+                admin=_is_admin(claims),
+            )
+        except learning_contract.LearningError as exc:
+            if exc.code != "not_configured":
+                raise
+            data = None
+        except (SQLAlchemyError, WorkerCapacityError):
+            logger.warning("learning console status temporarily unavailable")
+            data = None
+            error = "Learning status is temporarily unavailable. Retry shortly."
+            status_code = 503
+        response = _page(
+            "Learning",
+            _render_learning(
+                data,
+                _is_admin(claims),
+                error=error,
+                flash=flash,
+                draft=draft,
+                draft_operation=draft_operation,
+                worker_available=(
+                    bool(worker.get("running") and worker.get("healthy"))
+                    if isinstance(worker := getattr(app.state, "learning_worker_health", None), dict)
+                    else None
+                ),
+            ),
+        )
+        response.status_code = status_code
+        return response
+
+    async def learning_page(request: Request) -> Response:
+        claims = await _claims(request)
+        if claims is None:
+            return _redirect_to_signin()
+        return await _learning_view(claims, flash=_LEARNING_FLASH.get(request.query_params.get("done", ""), ""))
+
+    async def learning_change(request: Request) -> Response:
+        claims = await _claims(request)
+        if claims is None:
+            return _redirect_to_signin()
+        if not _is_admin(claims):
+            return await _learning_view(claims, error="Learning changes require an admin-scoped key.", status_code=403)
+        operation = request.url.path.rsplit("/", 1)[-1]
+        form = await request.form(max_fields=8, max_files=0)
+        fields = {key: str(value) for key, value in form.items()}
+        allowed = {
+            "configure": {"mode", "holdout_rate", "min_arm", "utility", "confirm"},
+            "run": {"experiment_id"},
+            "rollback": {"experiment_id", "reason", "decision_revision"},
+        }[operation]
+        draft = fields if operation in ("configure", "rollback") else None
+        if set(fields) - allowed or len(form.multi_items()) != len(fields):
+            return await _learning_view(
+                claims,
+                error="Unexpected or repeated form fields.",
+                draft=draft,
+                draft_operation=operation,
+                status_code=400,
+            )
+        try:
+            if operation == "configure":
+                if fields.get("confirm") != "yes":
+                    raise ValueError("Confirm that saving starts a new experiment.")
+                utility = fields.get("utility", "").strip()
+                if len(utility) > 32768:
+                    raise ValueError("Metrics utility is too large.")
+                try:
+                    payload = {
+                        "mode": fields.get("mode", ""),
+                        "holdout_rate": float(fields.get("holdout_rate", "")),
+                        "min_arm": int(fields.get("min_arm", "")),
+                        "utility": json.loads(utility) if utility else None,
+                    }
+                except (ValueError, TypeError) as exc:
+                    raise ValueError("Enter a valid holdout rate, whole-number minimum, and utility JSON.") from exc
+            else:
+                payload = {"experiment_id": fields.get("experiment_id", "")}
+                if operation == "rollback":
+                    payload["reason"] = fields.get("reason", "").strip()
+                    if fields.get("decision_revision", "").strip():
+                        try:
+                            payload["decision_revision"] = int(fields["decision_revision"])
+                        except ValueError as exc:
+                            raise ValueError("Revision must be a nonnegative whole number.") from exc
+            await learning.operate(
+                session_factory,
+                str(claims["org"]),
+                "key:" + str(claims["kid"]),
+                operation,
+                payload,
+                scope={"tenant": str(claims["org"])},
+                admin=True,
+            )
+        except (learning_contract.LearningError, ValueError) as exc:
+            return await _learning_view(
+                claims,
+                error=str(exc),
+                draft=draft,
+                draft_operation=operation,
+                status_code=getattr(exc, "status_code", 400),
+            )
+        except PermissionError:
+            return await _learning_view(
+                claims, error="This key is not authorized for that learning operation.", status_code=403
+            )
+        except (WorkerCapacityError, SQLAlchemyError):
+            logger.warning("learning console operation temporarily unavailable")
+            return await _learning_view(
+                claims,
+                error="Learning is temporarily busy. Retry shortly.",
+                draft=draft,
+                draft_operation=operation,
+                status_code=503,
+            )
+        return RedirectResponse(f"{CONSOLE_PATH}/learning?done={operation}", status_code=303)
+
     async def billing_checkout(request: Request) -> Response:
         claims = await _claims(request)
         if claims is None:
@@ -1946,7 +2393,7 @@ def add_console_routes(
         if plan not in plans.BILLABLE_PLANS or not stripe.price_for_plan(plan):
             return RedirectResponse(CONSOLE_PATH, status_code=303)
         org_id = str(claims["org"])
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             org = await session.get(Organization, org_id)
         if org is None:
             return _redirect_to_signin()
@@ -1971,7 +2418,7 @@ def add_console_routes(
         if claims is None:
             return _redirect_to_signin()
         org_id = str(claims["org"])
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             org = await session.get(Organization, org_id)
         if org is None or not org.stripe_customer_id or not stripe.secret_key or not stripe.webhook_secret:
             return RedirectResponse(CONSOLE_PATH, status_code=303)
@@ -2002,7 +2449,7 @@ def add_console_routes(
         # float() accepts "nan"/"inf"; neither prices an occasion.
         if rate is not None and not (math.isfinite(rate) and rate > 0):
             rate = None
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             outcomes = await crud.fleet_outcomes(session, org_id)
             causal = await crud.causal_effects(session, org_id)
             worth = await crud.value_delivered(session, org_id, value_per_occasion=rate)
@@ -2037,7 +2484,7 @@ def add_console_routes(
         # one; a read-only key could otherwise publish the org's proof report.
         if not _is_admin(claims):
             return await _proof_view(request, org_id, False)
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             org = await session.get(Organization, org_id)
             generation = int(org.share_generation) if org is not None else 0
         token = issue_share_token(_secret(), org_id, generation=generation)
@@ -2052,7 +2499,7 @@ def add_console_routes(
         if not _is_admin(claims):
             return await _proof_view(request, org_id, False)
         actor = audit.actor_for_api_key(str(claims.get("key") or ""))
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             org = await session.get(Organization, org_id, with_for_update=True)
             if org is not None:
                 org.share_generation = int(org.share_generation) + 1
@@ -2080,7 +2527,7 @@ def add_console_routes(
                 status_code=429,
                 headers={"Retry-After": str(int(retry_after) + 1)},
             )
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             org = await session.get(Organization, org_id)
             if org is None or int(claims.get("gen", 0)) != int(org.share_generation):
                 return HTMLResponse("Not found.", status_code=404)
@@ -2094,7 +2541,7 @@ def add_console_routes(
         if claims is None:
             return _redirect_to_signin()
         org_id = str(claims["org"])
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             assignments = await crud.holdout_assignments(session, org_id)
         result = raw_export.export(assignments)
         return Response(
@@ -2161,7 +2608,7 @@ def add_console_routes(
             offset = min(100_000, max(0, int(request.query_params.get("offset") or 0)))
         except ValueError:
             offset = 0
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             try:
                 result = await crud.search_traces(session, org_id, query=query, limit=50, offset=offset)
             except ValueError as exc:
@@ -2179,7 +2626,7 @@ def add_console_routes(
         error: str = "",
         flash: str = "",
     ) -> Response:
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             submissions = await crud.list_my_kb_submissions(session, org_id)
             ent = await crud.entitlements(session, org_id)
             organization = await session.get(Organization, org_id)
@@ -2257,7 +2704,7 @@ def add_console_routes(
         tags = [t.strip() for t in str(form.get("tags") or "").split(",") if t.strip()]
         submit_config, submit_limiter = _write_deps()
         try:
-            async with session_scope(session_factory) as session:
+            async with session_scope(session_factory, org_id=org_id) as session:
                 await crud.submit_kb_entry(
                     session,
                     org_id,
@@ -2299,7 +2746,7 @@ def add_console_routes(
             )
         form = await request.form()
         enabled = str(form.get("enabled") or "").strip() == "1"
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             organization = await session.get(Organization, org_id)
             if organization is None:
                 return _redirect_to_signin()
@@ -2331,7 +2778,7 @@ def add_console_routes(
         trace_id = str(form.get("trace_id") or "").strip()
         feedback_tag = str(form.get("feedback_tag") or "").strip()
         try:
-            async with session_scope(session_factory) as session:
+            async with session_scope(session_factory, org_id=org_id) as session:
                 voted = await crud.vote_trace(
                     session,
                     org_id,
@@ -2352,7 +2799,7 @@ def add_console_routes(
         return RedirectResponse(f"{CONSOLE_PATH}/kb?done={done}", status_code=303)
 
     async def _list_users(org_id: str) -> list[User]:
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             return list(
                 (await session.execute(select(User).where(User.org_id == org_id).order_by(User.created_at)))
                 .scalars()
@@ -2412,7 +2859,7 @@ def add_console_routes(
         if not _is_admin(claims):
             users = await _list_users(org_id)
             return _page("Users & roles", _render_users(users, False, error="An admin-scoped API key is required."))
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             user = await session.get(User, user_id)
         if user is None or user.org_id != org_id:
             users = await _list_users(org_id)
@@ -2450,7 +2897,7 @@ def add_console_routes(
         return await _mutate_own_org_user(request, request.path_params["user_id"], action)
 
     async def _list_keys(org_id: str) -> list[ApiKey]:
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             return list(
                 (await session.execute(select(ApiKey).where(ApiKey.org_id == org_id).order_by(ApiKey.created_at)))
                 .scalars()
@@ -2505,7 +2952,7 @@ def add_console_routes(
             keys = await _list_keys(org_id)
             return _page("API keys", _render_keys(keys, True, error=str(exc)))
         actor = audit.actor_for_api_key(str(claims.get("key") or ""))
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             issued = await auth.issue_api_key(
                 session,
                 org_id,
@@ -2533,13 +2980,13 @@ def add_console_routes(
             keys = await _list_keys(org_id)
             return _page("API keys", _render_keys(keys, False))
         key_id = request.path_params["key_id"]
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             key = await session.get(ApiKey, key_id)
         if key is None or key.org_id != org_id or key.revoked_at is not None:
             keys = await _list_keys(org_id)
             return _page("API keys", _render_keys(keys, True))
         actor = audit.actor_for_api_key(str(claims.get("key") or ""))
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             issued = await auth.rotate_api_key(session, key_id)
             await audit.record(
                 session,
@@ -2561,7 +3008,7 @@ def add_console_routes(
         if not _is_admin(claims):
             return RedirectResponse(f"{CONSOLE_PATH}/keys", status_code=303)
         key_id = request.path_params["key_id"]
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             key = await session.get(ApiKey, key_id)
             if key is None or key.org_id != org_id:
                 return RedirectResponse(f"{CONSOLE_PATH}/keys", status_code=303)
@@ -2578,7 +3025,7 @@ def add_console_routes(
         return RedirectResponse(f"{CONSOLE_PATH}/keys", status_code=303)
 
     async def _list_alert_rules(org_id: str) -> list[AlertRule]:
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             return await alerts.list_rules(session, org_id)
 
     async def alerts_page(request: Request) -> Response:
@@ -2610,7 +3057,7 @@ def add_console_routes(
         except ValueError:
             cooldown_minutes = alerts.DEFAULT_COOLDOWN_MINUTES
         actor = audit.actor_for_api_key(str(claims.get("key") or ""))
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             try:
                 await alerts.create_rule(
                     session,
@@ -2634,7 +3081,7 @@ def add_console_routes(
         if not _is_admin(claims):
             return RedirectResponse(f"{CONSOLE_PATH}/alerts", status_code=303)
         rule_id = request.path_params["rule_id"]
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             rule = await session.get(AlertRule, rule_id)
             if rule is None or rule.org_id != org_id:
                 return RedirectResponse(f"{CONSOLE_PATH}/alerts", status_code=303)
@@ -2649,7 +3096,7 @@ def add_console_routes(
         if not _is_admin(claims):
             rules = await _list_alert_rules(org_id)
             return _page("Alerts", _render_alerts(rules, False))
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             try:
                 report = await alerts.generate_report(session, org_id)
             except alerts.AlertError as exc:
@@ -2665,14 +3112,18 @@ def add_console_routes(
         error: str = "",
         fresh: dict | None = None,
     ) -> Response:
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             endpoints = await events.endpoints_for(session, org_id)
             pending = await events.pending_count(session, org_id)
             failed = await events.failed_deliveries(session, org_id, limit=10)
         rows = [
             {
                 "id": e.id,
-                "url": (cipher.decrypt(e.url) if is_admin else events.destination_label(cipher.decrypt(e.url))),
+                "url": (
+                    events.endpoint_url(cipher, e)
+                    if is_admin
+                    else events.destination_label(events.endpoint_url(cipher, e))
+                ),
                 "enabled": e.enabled,
                 "events": list(e.events),
                 "key_version": e.key_version,
@@ -2703,7 +3154,7 @@ def add_console_routes(
             return await _webhooks_view(org_id, True, error="events must be text fields")
         chosen_events = [event for event in event_fields if isinstance(event, str)] or None
         actor = audit.actor_for_api_key(str(claims.get("key") or ""))
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             try:
                 endpoint, secret = await events.add_endpoint(
                     session,
@@ -2734,12 +3185,12 @@ def add_console_routes(
         if not _is_admin(claims):
             return await _webhooks_view(org_id, False)
         endpoint_id = request.path_params["endpoint_id"]
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             endpoint = await session.get(WebhookEndpoint, endpoint_id)
         if endpoint is None or endpoint.org_id != org_id:
             return await _webhooks_view(org_id, True)
         actor = audit.actor_for_api_key(str(claims.get("key") or ""))
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             secret = await events.rotate_secret(session, endpoint_id, signing_key=signing_key)
             endpoint = await session.get_one(WebhookEndpoint, endpoint_id)
             await audit.record(
@@ -2761,7 +3212,7 @@ def add_console_routes(
         if not _is_admin(claims):
             return RedirectResponse(f"{CONSOLE_PATH}/webhooks", status_code=303)
         endpoint_id = request.path_params["endpoint_id"]
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             endpoint = await session.get(WebhookEndpoint, endpoint_id)
             if endpoint is None or endpoint.org_id != org_id:
                 return RedirectResponse(f"{CONSOLE_PATH}/webhooks", status_code=303)
@@ -2774,7 +3225,7 @@ def add_console_routes(
                 org_id=org_id,
                 target_type="webhook_endpoint",
                 target_id=endpoint_id,
-                summary=cipher.decrypt(endpoint.url),
+                summary=events.endpoint_url(cipher, endpoint),
             )
         return RedirectResponse(f"{CONSOLE_PATH}/webhooks", status_code=303)
 
@@ -2897,7 +3348,7 @@ def add_console_routes(
         except ValueError:
             offset = 0
         limit = 50
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=org_id) as session:
             rows = list(
                 (
                     await session.execute(
@@ -2922,6 +3373,9 @@ def add_console_routes(
     app.add_route(f"{CONSOLE_PATH}/signin", refuse_cross_origin(signin), methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/signout", refuse_cross_origin(signout), methods=["GET", "POST"])
     app.add_route(CONSOLE_PATH, overview, methods=["GET"])
+    app.add_route(f"{CONSOLE_PATH}/learning", learning_page, methods=["GET"])
+    for operation in ("configure", "run", "rollback"):
+        app.add_route(f"{CONSOLE_PATH}/learning/{operation}", refuse_cross_origin(learning_change), methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/proof", proof, methods=["GET"])
     app.add_route(f"{CONSOLE_PATH}/proof/share", refuse_cross_origin(proof_share), methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/proof/share/revoke", refuse_cross_origin(proof_share_revoke), methods=["POST"])

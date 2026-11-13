@@ -656,6 +656,10 @@ def analyze(
             effect, p = aipw[slug].effect, aipw[slug].p_value
         baseline = ((s_inj + s_wit) / (n_inj + n_wit)) if (n_inj + n_wit) else 0.0
         mde = minimum_detectable_effect(min(n_inj, n_wit), baseline)
+        if slug in aipw:
+            # Raw counts do not establish power for an adaptive estimator. Do
+            # not publish a balanced-design MDE for this different estimator.
+            mde = None
 
         if n_inj < min_arm or n_wit < min_arm:
             verdict = VERDICT_UNDERPOWERED
@@ -668,18 +672,27 @@ def analyze(
         else:
             significant = sig_by_slug.get(slug, False)
             lo, hi = interval_by_slug[slug]
-            if significant and effect > 0:
+            if significant and lo > 0:
                 verdict, note = VERDICT_HELPS, "Injecting this lesson causes better outcomes."
-            elif significant and effect < 0:
+            elif significant and hi < 0:
                 verdict, note = (
                     VERDICT_HURTS,
                     "Outcomes are WORSE when this is injected. Correlational scoring "
                     "cannot see this -- only the holdout can.",
                 )
-            elif mde is None or mde > detectable:
+            elif (slug in aipw and (lo <= -detectable or hi >= detectable)) or (
+                slug not in aipw and (mde is None or mde > detectable)
+            ):
                 verdict = VERDICT_UNDERPOWERED
                 seen = f"~{mde:.0%}" if mde is not None else "no effect at all"
-                if use_fixed:
+                if slug in aipw:
+                    note = (
+                        f"The AIPW interval ({lo:+.1%} to {hi:+.1%}) does not rule out "
+                        f"effects of {detectable:.0%}. Changing propensities determine "
+                        "its uncertainty; raw arm counts cannot establish power. "
+                        "This is 'cannot answer yet', not 'no effect'."
+                    )
+                elif use_fixed:
                     note = (
                         f"{n_inj} injected / {n_wit} withheld clears the {min_arm}-per-arm "
                         f"floor, but this design could only have detected {seen} or larger, "
@@ -703,12 +716,20 @@ def analyze(
             else:
                 verdict = VERDICT_NO_EFFECT
                 note = (
-                    "No effect distinguishable from noise, on a sample that could have "
+                    f"The AIPW interval ({lo:+.1%} to {hi:+.1%}) lies strictly within "
+                    f"the practical-effect margin of +/-{detectable:.0%}."
+                    if slug in aipw
+                    else "No effect distinguishable from noise, on a sample that could have "
                     f"detected ~{mde:.0%} -- which is smaller than the {detectable:.0%} "
                     "worth acting on, so this is evidence of absence rather than absence "
                     "of evidence."
                 )
 
+        if significant and ((lo > 0 and effect <= 0) or (hi < 0 and effect >= 0)):
+            note += (
+                " Direction follows the running confidence intersection; "
+                "the latest point estimate has the opposite sign."
+            )
         out.append(
             CausalEffect(
                 lesson_slug=slug,
@@ -742,14 +763,23 @@ def analyze(
     # Downward censoring (non-candidates get e = 0) preserves e-validity while
     # retaining interval/sample-size admission as an additional conservative gate.
     family = [
-        e_values.get(effect.lesson_slug, {}).get("helps", 0.0) if effect.significant and effect.effect > 0 else 0.0
+        e_values.get(effect.lesson_slug, {}).get("helps", 0.0) if effect.verdict == VERDICT_HELPS else 0.0
         for effect in out
     ]
     confirmed = eprocess.ebh(family, alpha) if family else []
     for i, causal_effect in enumerate(out):
         evidence = e_values.get(causal_effect.lesson_slug)
         if evidence is not None:
-            causal_effect.e_value = evidence["helps" if causal_effect.effect > 0 else "hurts"]
+            direction = (
+                "helps"
+                if causal_effect.verdict == VERDICT_HELPS
+                else "hurts"
+                if causal_effect.verdict == VERDICT_HURTS
+                else "helps"
+                if causal_effect.effect > 0
+                else "hurts"
+            )
+            causal_effect.e_value = evidence[direction]
         if not shared:
             continue
         if use_fixed:

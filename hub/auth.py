@@ -202,6 +202,7 @@ class UserPrincipal(AuthenticatedKey):
 _AUTH_CACHE_TTL = 0.0
 _AUTH_CACHE_MAX = 4096
 _AUTH_CACHE: dict[str, tuple[float, "AuthenticatedKey"]] = {}
+_AUTH_CACHE_GENERATION = 0
 _AUTH_CACHE_REQUIRES_LISTENER = False
 _AUTH_CACHE_LISTENER_LIVE = False
 
@@ -210,14 +211,14 @@ def configure_auth_cache(seconds: float, *, require_listener: bool = False) -> N
     global _AUTH_CACHE_TTL, _AUTH_CACHE_REQUIRES_LISTENER
     _AUTH_CACHE_TTL = max(0.0, min(float(seconds), 60.0))
     _AUTH_CACHE_REQUIRES_LISTENER = require_listener
-    _AUTH_CACHE.clear()
+    clear_auth_cache()
 
 
 def set_auth_listener_live(live: bool) -> None:
     """Called by hub/auth_invalidation.py as its connection comes and goes."""
     global _AUTH_CACHE_LISTENER_LIVE
     _AUTH_CACHE_LISTENER_LIVE = live
-    _AUTH_CACHE.clear()
+    clear_auth_cache()
 
 
 def _cache_usable() -> bool:
@@ -227,6 +228,8 @@ def _cache_usable() -> bool:
 
 
 def clear_auth_cache() -> None:
+    global _AUTH_CACHE_GENERATION
+    _AUTH_CACHE_GENERATION += 1
     _AUTH_CACHE.clear()
 
 
@@ -298,6 +301,7 @@ async def _region_ok(session: AsyncSession, org_id: str) -> bool:
 async def verify_api_key(session: AsyncSession, raw_key: str) -> AuthenticatedKey | None:
     if not raw_key or not raw_key.startswith(_KEY_PREFIX):
         return None
+    generation = _AUTH_CACHE_GENERATION
     now = datetime.now(timezone.utc)
 
     key = await _verify_by_hmac(session, raw_key, now)
@@ -305,7 +309,9 @@ async def verify_api_key(session: AsyncSession, raw_key: str) -> AuthenticatedKe
         key = await _verify_by_legacy_scan(session, raw_key, now)
     if key is not None and not await _region_ok(session, key.org_id):
         return None
-    if key is not None:
+    # A revocation notification can arrive while the database/region lookup
+    # is suspended. Never refill the cleared cache from that older read.
+    if key is not None and generation == _AUTH_CACHE_GENERATION:
         _remember(raw_key, key)
     return key
 
@@ -362,15 +368,22 @@ async def _verify_by_legacy_scan(session: AsyncSession, raw_key: str, now: datet
             pass
         return None
     for candidate in candidates:
+        verified_hash = candidate.key_hash
         try:
-            await asyncio.to_thread(_hasher.verify, candidate.key_hash, raw_key)
+            await asyncio.to_thread(_hasher.verify, verified_hash, raw_key)
         except VerifyMismatchError:
             continue
         except InvalidHashError:
             continue
-        revoked_at = await session.scalar(select(ApiKey.revoked_at).where(ApiKey.id == candidate.id))
-        if revoked_at is not None:
+        # Argon2 yields to other transactions. Re-read every authorization field,
+        # bypassing the identity map, and keep the row locked through backfill.
+        # A scalar revoked_at lookup cannot distinguish a deleted key from a
+        # live one, and the pre-verification scopes/expiry may now be stale.
+        current = await session.get(ApiKey, candidate.id, populate_existing=True, with_for_update=True)
+        now = datetime.now(timezone.utc)
+        if current is None or current.revoked_at is not None or current.key_hash != verified_hash:
             return None
+        candidate = current
         if candidate.expires_at is not None and candidate.expires_at <= now:
             return None
         if candidate.last_used_at is None or (now - candidate.last_used_at) >= _LAST_USED_AT_UPDATE_INTERVAL:
@@ -391,6 +404,7 @@ async def _verify_by_legacy_scan(session: AsyncSession, raw_key: str, now: datet
 current_org_id: contextvars.ContextVar[str | None] = contextvars.ContextVar("current_org_id", default=None)
 
 current_actor: contextvars.ContextVar[str | None] = contextvars.ContextVar("current_actor", default=None)
+current_key_id: contextvars.ContextVar[str | None] = contextvars.ContextVar("current_key_id", default=None)
 
 current_scopes: contextvars.ContextVar[tuple[str, ...] | None] = contextvars.ContextVar("current_scopes", default=None)
 

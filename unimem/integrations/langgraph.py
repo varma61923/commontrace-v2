@@ -198,11 +198,15 @@ def record_outcome(
     memory: CausalMemory,
     config: dict[str, Any] | None,
     *,
-    succeeded: bool,
+    succeeded: bool | None = None,
+    reward: float | None = None,
     state: dict[str, Any] | None = None,
     recall_kwargs: Callable[[dict[str, Any] | None], dict[str, Any]] | None = None,
 ) -> bool:
     """Report a hook turn's outcome with ``state``, or legacy with_lessons thread.
+
+    Give `succeeded`, or a graded `reward` in [0, 1] (an evaluator score, a test pass
+    fraction) realized by `unimem.rewards` randomized rounding.
 
     If the hook forwards scope using ``recall_kwargs``, pass the same callback
     here. Final graph state preserves the human message ID across tool calls.
@@ -219,4 +223,4 @@ def record_outcome(
         )
     except (ValueError, TypeError, KeyError):
         return False
-    return memory.record_outcome(occasion_id, succeeded=succeeded)
+    return memory.record_outcome(occasion_id, succeeded=succeeded, reward=reward)

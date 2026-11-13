@@ -26,6 +26,13 @@ def test_demo_recovers_planted_effects_and_governs_them(tmp_path, capsys):
     }
     assert result["store"] == str(store)
 
+    learn = result["learn"]
+    assert learn["audit"] == "SOUND"
+    effects = {row["memory"]: row["effects"] for row in learn["memories"]}
+    assert effects["move-fast-skip-checks"]["robot"]["mean"] < -0.05
+    assert abs(effects["move-fast-skip-checks"]["agent"]["mean"]) <= 0.08
+    assert all(effects["confirm-before-acting"][kind]["mean"] > 0.03 for kind in ("agent", "llm", "robot"))
+
 
 def test_demo_refuses_an_existing_directory_and_tiny_runs(tmp_path, capsys):
     assert cli.main(["demo", "--keep", str(tmp_path)]) == 2

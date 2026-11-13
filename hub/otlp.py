@@ -73,7 +73,7 @@ def add_otlp_routes(
         raw_key = request.headers.get("X-API-Key", "")
         if not raw_key:
             return _json_error(401, "unauthorized", "X-API-Key header is required")
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, operator=True) as session:
             authenticated = await auth.verify_api_key(session, raw_key)
         if authenticated is None:
             return _json_error(401, "unauthorized", "that key was not accepted")

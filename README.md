@@ -2,15 +2,16 @@
 
 **The memory system for intelligent machines.**
 
-UniMem gives AI agents and robots a complete, governed memory: reusable lessons, facts that know when they were true, a temporal knowledge graph, conversations, core-memory blocks and procedures, recalled through one token budget. Then it does what no retrieval score can: it measures which memories actually improve outcomes, by withholding each one from a small random share of tasks, and acts on the evidence. Harmful memories are withdrawn, proven ones are always delivered, and every change is reviewable and reversible.
+UniMem gives AI agents and robots a complete, governed memory: reusable lessons, facts that know when they were true, a temporal knowledge graph, conversations, core-memory blocks and procedures, recalled through one token budget. Then it does what no retrieval score can: it measures which memories actually improve outcomes, by withholding each one from a small random share of tasks, and acts on the evidence. Harmful memories are withdrawn, proven ones are prioritized, and every change is reviewable and reversible.
 
 - **A complete memory.** Lessons, bitemporal facts (`as_of` / `known_at`), knowledge graph, conversations, memory blocks, procedural memory and knowledge pages. Hybrid lexical and dense retrieval, ten named retrievers including multi-hop graph walks, rerankers, and contradiction detection at write time.
 - **Measured, not assumed.** A randomized holdout per memory and per task gives a real cause-and-effect estimate, with anytime-valid confidence sequences and an integrity audit that refuses to print a number from a broken experiment.
 - **Governed.** Review receipts bound to exact content, tenant scopes on every write, harm withdrawal, preregistered promotion and rollback, transparency logs, and subject erasure.
 - **Fast and local-first.** Pure Python with one dependency (PyYAML), offline, no LLM required. On LoCoMo the gateway delivers the gold evidence for 95.8% of 1,540 questions at 152 ms p50 on CPU ([benchmarks](docs/memory-benchmarks.md)).
 - **Agent- and robot-native.** MCP server with 60+ tools, HTTP gateway, framework middleware, one-command installs for coding agents, and a ROS 2 bridge for physical AI.
+- **One learning protocol.** [Versioned assignments, delivery receipts, graded outcomes and reversible selection policies](docs/learning.md) across local stores, the hosted Hub and agent/robot clients.
 
-### See the whole loop in 30 seconds
+### See the whole loop offline
 
 ```bash
 pip install -e .        # Python 3.10+
@@ -18,22 +19,32 @@ unimem demo             # offline, no LLM, no API key
 ```
 
 ```
-1/3 REMEMBER  facts that know when they were true
+1/4 REMEMBER  facts that know when they were true
     Q: How are refunds issued?
     today            → Refunds are issued through the v2 payments API.
     as of 2026-01-02 → Refunds are issued through the v1 refunds endpoint.
 
-2/3 MEASURE   1,000 simulated support tickets; every memory randomly withheld on half
+2/4 MEASURE   1,000 simulated support tickets; every memory randomly withheld on half
     integrity audit: SOUND
     memory                planted  measured   95% interval     verdict
     verify-owner             +20%      +20%   [+4%, +35%]      HELPS
     retry-429                 +0%       +1%   [-15%, +17%]     NO_MEASURABLE_EFFECT
     legacy-refund-api        -20%      -23%   [-38%, -7%]      HURTS
 
-3/3 GOVERN    the evidence changes what the agent sees next
+3/4 GOVERN    the evidence changes what the agent sees next
     withdrawn  (proven harmful, never delivered)  legacy-refund-api
     graduated  (proven helpful, always delivered) verify-owner
     under test (still randomized)                 retry-429
+
+4/4 LEARN     1,000 graded tasks from coding agents, LLM apps and robots in one store
+    reward: agent = share of tests passing · llm = evaluator score · robot = task progress
+    measured (planted)               agent           llm         robot
+    confirm-before-acting      +16% (+15%)   +20% (+15%)   +16% (+15%)
+    move-fast-skip-checks        -7% (+0%)     -4% (+0%)   -11% (-20%)
+    cite-sources                 +2% (+0%)   +11% (+10%)     +1% (+0%)
+    reward audit: SOUND
+    One memory can help one kind of client and hurt another; the store estimates each context
+    separately instead of averaging them together.
 ```
 
 <sub>The agent and its outcomes are simulated with planted effects so the measured effects can be checked against ground truth. The store, randomization, integrity audit, analysis and withdrawal are the real product. `--keep DIR` keeps the store for inspection.</sub>
@@ -42,7 +53,7 @@ unimem demo             # offline, no LLM, no API key
 
 ## Contents
 
-- [See the whole loop in 30 seconds](#see-the-whole-loop-in-30-seconds)
+- [See the whole loop offline](#see-the-whole-loop-offline)
 - [Quickstart](#quickstart)
 - [Prove that memory helps](#prove-that-memory-helps)
 - [Learn where each memory helps: the causal gate](#learn-where-each-memory-helps-the-causal-gate)
@@ -139,6 +150,12 @@ unimem experiment --dest ./mem
 
 <sub>Output from a synthetic 400-occasion run. The real report also includes an integrity audit, power projections and the exact text revision each effect describes.</sub>
 
+Outcomes do not have to be pass/fail. A robot's task progress and energy, an evaluator's score, or a patch's test-pass fraction can be recorded as a reward in [0, 1], or as metrics scored by a declared utility. Audited randomized rounding turns each reward into the canonical outcome, so every effect becomes an unbiased effect on expected reward ([graded outcomes](docs/rewards.md)):
+
+```python
+memory.record_outcome("ticket-1042", reward=0.8)  # or metrics={"progress": 0.7, "energy_wh": 30}
+```
+
 The integrity audit runs before any effect is shown. It checks for differential attrition between the arms, arm-balance (sample-ratio) mismatch, a reshuffled randomization, scorer drift, a memory edited mid-run, and censoring. If the run is compromised, UniMem says so instead of printing a confident wrong number.
 
 To act on the evidence automatically:
@@ -164,9 +181,10 @@ An average can hide two opposite effects. A lesson about the test runner helps t
 - **Thompson allocation.** Each memory is injected with the posterior probability that it helps in that context, clipped so both arms keep learning. The rates are published as hash-chained allocation schedules, so every contextual decision is audited exactly like the rest of the experiment.
 - **Drift detection.** UniMem flags a memory whose effect changed over time, for example after a tool upgrade or a codebase migration. With strong evidence of drift, the gate relearns that memory from the occasions after the change.
 - **An honest off-policy check.** The gate is fitted on earlier occasions and scored on later ones by importance sampling over each occasion's full assignment, against what was actually delivered.
+- **Evidence transfer between paraphrases.** An effect field, a Gaussian-process prior over lesson content, carries randomized evidence to similar memories, so a new rewording of a proven-harmful lesson starts mostly withheld. It is used only after leave-one-out prediction shows that content predicts effects in this store. It also flags look-alike lessons whose effects have opposite signs ([effect field](docs/effect-field.md)).
 
 ```bash
-unimem allocate enable --mode thompson --dest ./mem
+unimem allocate enable --mode thompson --dest ./mem   # or --mode thompson-field
 unimem allocate plan --if-due --dest ./mem      # run on a schedule, e.g. hourly
 unimem allocate gate --dest ./mem
 ```
@@ -246,6 +264,10 @@ unimem install --target claude-code     # also: cursor, windsurf, codex, copilot
 **Interop.** Adapters for Mem0, Letta, Zep, the Claude memory store and AgentCore, plus a portable import format.
 
 **SDKs.** TypeScript, Go, Rust and Java/Kotlin clients for the Hub, generated from its OpenAPI contract.
+The shared memory clients support hosted `turn`/`profile`, versioned `record-*`
+CRUD, and the measured-learning lifecycle. Legacy fact ingestion, reflection and
+local action-policy methods require the local gateway; see the
+[backend boundaries](docs/learning.md#evidence-and-recovery).
 
 ## The Hub: multi-tenant server
 
@@ -262,6 +284,10 @@ Deployment assets: a pinned Docker image, `docker-compose.yml` (database, migrat
 ```bash
 docker compose up    # set POSTGRES_PASSWORD and HUB_CONSOLE_SECRET for anything beyond a local trial
 ```
+
+For production rollout, secret provisioning, health checks, database connection
+budgets, monitoring, backup/restore and release verification, use the
+[production readiness and operations guide](docs/production-readiness.md).
 
 ## Architecture
 
@@ -280,15 +306,7 @@ flowchart LR
     Agent -->|"succeeded?"| Outcomes
 ```
 
-## Roadmaps
-
-The first roadmap (F1–F22) adds authenticated lineage and transparency,
-sequential release evidence, harm-budget admission, incident freezes, protected
-safety memory, utility retention, context economics, scoped recovery/spatial
-memory, valuation, targeting and optional robot/vendor integrations. The second
-roadmap (G1–G30) extends the same governance to skills, writers, optimizer edits,
-human help, team memory and robot fleets, and makes evidence portable across
-trust boundaries.
+## Advanced capabilities
 
 Start with the [feature status and workflow links](#project-status),
 [guarantees and assumptions](docs/guarantees.md), and
@@ -304,10 +322,16 @@ legacy hashes and defaults.
 
 ## Project status
 
-UniMem is pre-1.0 software under active development.
+UniMem is under active development. The feature statuses below distinguish
+supported paths, experimental capabilities and deployment-specific integrations.
+The [production guide](docs/production-readiness.md) defines rollout and verification criteria.
 
 | Area | Status |
 |---|---|
+| G32 Graded outcomes | Rewards and utility-scored metrics on the gateway, Python API, client SDK, LangGraph/Pydantic AI and the robot bridge, realized by reproducible randomized rounding with a recomputing audit; [estimand and limits](docs/rewards.md). |
+| G33 Memory signatures | Hashed-term and embedding signatures (any encoder, per-model spaces) let the effect field transfer evidence between gateway, agent and robot memories without stored text; erased by the canonical cascade; [privacy and cost](docs/effect-field.md#memories-from-any-agent-model-or-robot). |
+| G34 Fleet field | Per-memory validated transfer between (memory, context) cells by content x context-component similarity (`embodiment/site/skill`, `model/task`), so sparse robot or model contexts borrow from similar contexts and sibling memories; [kernel, validation and fleet benchmark](docs/effect-field.md#fleet-field-one-memory-across-a-fleet). |
+| G31 Effect field | Validated Gaussian-process transfer of randomized effects between similar lessons, forecasts for unmeasured lessons in `thompson-field` schedules, and opposite-effect look-alike detection; [model, validation and limits](docs/effect-field.md). |
 | G6 Delegated capabilities | Pinned holders, monotone HMAC/Ed25519 chains, request proofs, scoped retrieval, recipient handoffs and revocation quarantine; [workflow and limits](docs/capabilities.md). |
 | G7 Team isolation | Scoped point-read snapshots, commit-time stale-generation guards, fenced work leases and reviewable semantic merges; [guarantees and limits](docs/team-isolation.md). |
 | G29 Pooled evidence | Signed sufficient-statistics contributions, ownership-group random effects, modified Hartung–Knapp intervals, e-values and reference Gaussian privacy accounting; [workflow and limits](docs/pooled-evidence.md). |
@@ -371,20 +395,34 @@ Benchmark harnesses for LoCoMo, LongMemEval and BEAM (100K to 10M) are included,
 
 ## Development
 
+For optional numerical acceleration, install `unimem[performance]`. See the
+[research, paired performance measurements, and reproduction commands](docs/performance-research.md)
+for measured gains, first-call costs, correctness checks, and limits of a 10x target.
+
 ```bash
 python -m pip install -e ".[dev]"
 make lint        # ruff
 make test        # tests and e2e_tests
 make coverage    # with the 80% gate
+make clean       # ignored build outputs and caches; preserves dependencies and local stores
 ```
+
+Preview cleanup with `python -B scripts/dev.py clean --dry-run`. Cleanup keeps
+tracked files, virtual environments, installed dependencies, editable-install
+metadata, credentials, and local memory stores.
 
 To check the Hub and generated API contracts:
 
 ```bash
+python -m pip install -r hub/requirements.txt
 python scripts/dev.py test --hub -q  # requires HUB_TEST_DATABASE_URL: disposable PostgreSQL 16
 python scripts/export_openapi.py --check
 python scripts/export_hub_openapi.py --check
+make check-hub                      # both contracts; requires the Hub dependencies
 ```
+
+Use `make check-hub PYTHON=/path/to/hub-venv/bin/python` when the Hub has its own
+virtual environment. Core checks do not require the Hub dependencies.
 
 Run the focused governance boundary regressions with
 `python -m pytest tests/test_governance_audit_regressions.py -q`. They cover
@@ -416,6 +454,7 @@ Some components are adapted from permissively licensed projects (Apache-2.0 and 
 - The causal gate: Thompson (1933) for probability matching, and DerSimonian & Laird (1986) for between-unit variance in empirical-Bayes shrinkage.
 - Retrieval: HippoRAG (Gutiérrez et al., 2024), IRCoT (Trivedi et al., 2023), RM3 (Lavrenko & Croft, 2001), and HyDE (Gao et al., 2023).
 - Memory poisoning: AgentPoison (Chen et al., 2024) and MemoryGraft (2025).
+- The effect field: Gaussian-process regression (Rasmussen & Williams, 2006). It answers two problems raised in self-evolving agent memory work with randomized evidence: negative transfer between look-alike experiences (STRATA, 2026) and context-conditioned memory value (BEAM, 2026).
 
 Finite read, write, recall and export permissions support exhaustive change checks and reviewed activation. See [memory policy](docs/memory-policy.md) for the bounded guarantee, native Cedar adapter and optional relationship prefilter.
 

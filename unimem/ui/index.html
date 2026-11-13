@@ -12,11 +12,12 @@
 <body>
   <a class="skip" href="#main">Skip to content</a>
   <header class="bar">
+    <button id="menu-toggle" class="btn secondary menu-toggle" type="button" aria-expanded="false" aria-controls="nav">Menu</button>
     <div class="brand"><img src="/ui/favicon.svg" alt="" width="28" height="28"><span>UniMem</span><small>memory control plane</small></div>
     <span id="env" class="chip" hidden></span>
     <span id="tier" class="chip tier-chip" hidden></span>
     <span class="spacer"></span>
-    <button id="command-launch" class="command-launch" type="button" title="Open command center (⌘K)"><kbd>⌘K</kbd><span>Command center</span></button>
+    <button id="command-launch" class="command-launch" type="button" title="Open command center (⌘K)"><kbd>⌘K</kbd><span>Command center</span><span class="command-mobile-label">Commands</span></button>
     <p id="conn" class="conn" role="status" aria-live="polite">Connecting…</p>
     <button id="disconnect" class="btn secondary" type="button" hidden>Disconnect</button>
     <label class="theme"><span class="sr">Theme</span>
@@ -29,9 +30,9 @@
   </header>
   <div class="console-shell">
     <aside class="console-sidebar">
-      <p class="nav-label">WORKSPACE</p>
+      <p class="nav-label">MEMORY WORKSPACE</p>
       <nav class="tabs" aria-label="Console sections" id="nav"></nav>
-      <div class="sidebar-note"><span class="status-dot" aria-hidden="true"></span><span>Local memory workspace</span></div>
+      <div class="sidebar-note"><span class="status-dot" aria-hidden="true"></span><span>Local workspace<br>Agents · LLMs · Robots</span></div>
     </aside>
     <main id="main" tabindex="-1"></main>
   </div>

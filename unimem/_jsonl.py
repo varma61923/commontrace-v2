@@ -8,7 +8,7 @@ import json
 import os
 import tempfile
 import threading
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Generator, Iterable, Iterator
 from typing import Any, TextIO
 
 from unimem import frontmatter
@@ -44,13 +44,12 @@ def locked(path: str) -> Iterator[None]:
         held.discard(key)
 
 
-def read_rows(path: str) -> list[dict[str, Any]]:
-    """Every JSON object line in *path*; unreadable lines are skipped."""
-    rows: list[dict[str, Any]] = []
+def iter_rows(path: str) -> Generator[dict[str, Any], None, None]:
+    """Stream JSON object lines; close explicitly when stopping before exhaustion."""
     try:
         fh = open(path, encoding="utf-8")
     except FileNotFoundError:
-        return rows
+        return
     with fh:
         for line in fh:
             line = line.strip()
@@ -61,8 +60,12 @@ def read_rows(path: str) -> list[dict[str, Any]]:
             except ValueError:
                 continue
             if isinstance(row, dict):
-                rows.append(row)
-    return rows
+                yield row
+
+
+def read_rows(path: str) -> list[dict[str, Any]]:
+    """Every JSON object line in *path*; unreadable lines are skipped."""
+    return list(iter_rows(path))
 
 
 def _replace(path: str, write: Callable[[TextIO], None]) -> None:
@@ -118,6 +121,35 @@ def write_json(path: str, value: Any) -> None:
         fh.write("\n")
 
     _replace(path, _write)
+
+
+def discard_unterminated_tail(path: str) -> None:
+    """Drop an interrupted final row from an unsigned journal, under its caller's lock.
+
+    Only newline-terminated rows are committed by the incremental reward/signature
+    readers. Signed journals must retain their own fail-closed recovery policy.
+    """
+    try:
+        fh = open(path, "r+b")
+    except FileNotFoundError:
+        return
+    with fh:
+        end = fh.seek(0, os.SEEK_END)
+        if not end:
+            return
+        fh.seek(end - 1)
+        if fh.read(1) == b"\n":
+            return
+        while end:
+            start = max(0, end - 8192)
+            fh.seek(start)
+            chunk = fh.read(end - start)
+            boundary = chunk.rfind(b"\n")
+            if boundary >= 0:
+                fh.truncate(start + boundary + 1)
+                return
+            end = start
+        fh.truncate(0)
 
 
 def append_row(path: str, row: dict[str, Any], *, fsync: bool = False, nofollow: bool = False) -> None:

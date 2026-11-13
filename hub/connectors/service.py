@@ -7,6 +7,7 @@ import hmac
 import json
 import logging
 import re
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
@@ -16,7 +17,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from hub import audit, auth, crud
 from hub.connectors import PROVIDERS, base
 from hub.db import session_scope
-from hub.encryption import NULL_CIPHER, EncryptionError, EnvelopeCipher
+from hub.encryption import NULL_CIPHER, EncryptionError, EnvelopeCipher, field_aad
 from hub.models import Connector, ConnectorDelivery, PendingOutcome
 
 logger = logging.getLogger("unimem.hub.connectors")
@@ -37,12 +38,16 @@ class Result:
     body: dict = field(default_factory=dict)
 
 
-def seal_secret(cipher: EnvelopeCipher, org_id: str, secret: str) -> str:
-    return cipher.encrypt(f"{org_id}:{secret}")
+def seal_secret(cipher: EnvelopeCipher, org_id: str, secret: str, *, connector_id: str) -> str:
+    return cipher.encrypt(f"{org_id}:{secret}", aad=field_aad(org_id, "connectors", connector_id, "secret"))
 
 
-def open_secret(cipher: EnvelopeCipher, org_id: str, sealed: str) -> str:
-    plain = cipher.decrypt(sealed)
+def open_secret(
+    cipher: EnvelopeCipher, org_id: str, sealed: str, *, connector_id: str, allow_legacy: bool = False
+) -> str:
+    plain = cipher.decrypt(
+        sealed, aad=field_aad(org_id, "connectors", connector_id, "secret"), allow_legacy=allow_legacy
+    )
     bound, sep, secret = plain.partition(":")
     if not sep or not hmac.compare_digest(bound.encode(), org_id.encode()):
         raise EncryptionError("a connector secret is not bound to the org that holds it")
@@ -76,14 +81,16 @@ async def create_connector(
         cleaned = module.validate_config(config or {})
     except base.ConfigError as exc:
         raise ConnectorError(str(exc)) from None
+    identity = str(uuid.uuid4())
     connector = Connector(
+        id=identity,
         org_id=org_id,
         provider=provider,
         name=name,
         config=cleaned,
         dry_run=True,
         enabled=True,
-        secret=seal_secret(cipher, org_id, secret),
+        secret=seal_secret(cipher, org_id, secret, connector_id=identity),
     )
     session.add(connector)
     await session.flush()
@@ -158,7 +165,7 @@ async def ingest(
 
     snapshot: dict | None = None
     if _UUID.match(str(connector_id)):
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, operator=True) as session:
             row = await session.get(Connector, connector_id)
             if row is not None:
                 snapshot = {
@@ -175,7 +182,7 @@ async def ingest(
         _burn("unknown", body)
         return _INVALID
     try:
-        secret = open_secret(cipher, snapshot["org_id"], snapshot["secret"])
+        secret = open_secret(cipher, snapshot["org_id"], snapshot["secret"], connector_id=snapshot["id"])
     except EncryptionError:
         logger.error("connector %s: secret cannot be opened", snapshot["id"])
         _burn("unknown", body)
@@ -200,7 +207,7 @@ async def ingest(
 
     token = auth.current_org_id.set(snapshot["org_id"])
     try:
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=snapshot["org_id"]) as session:
             return await _handle(session, module, snapshot, headers, payload, delivery, now)
     finally:
         auth.current_org_id.reset(token)
@@ -329,7 +336,7 @@ async def _apply(session, snapshot, sig: base.Signal, now: datetime, dry: bool) 
 async def finalize_matured(session_factory, *, now: datetime | None = None, limit: int = 500) -> int:
     """Record success for every candidate whose window has passed with no reversal."""
     now = now or datetime.now(timezone.utc)
-    async with session_scope(session_factory) as session:
+    async with session_scope(session_factory, operator=True) as session:
         await session.execute(
             delete(ConnectorDelivery).where(ConnectorDelivery.received_at < now - timedelta(days=LEDGER_RETENTION_DAYS))
         )
@@ -345,7 +352,7 @@ async def finalize_matured(session_factory, *, now: datetime | None = None, limi
     for pending_id, org_id in due:
         token = auth.current_org_id.set(org_id)
         try:
-            async with session_scope(session_factory) as session:
+            async with session_scope(session_factory, org_id=org_id) as session:
                 row = (
                     await session.execute(
                         select(PendingOutcome).where(PendingOutcome.id == pending_id).with_for_update(skip_locked=True)

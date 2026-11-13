@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import copy
 import json
+import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from typing import overload
@@ -10,6 +12,76 @@ from typing import overload
 from unimem import additive_extract, memory_control
 from unimem.configuration import configured
 from unimem.retry import read_within
+
+LEARNING_SCHEMA = "unimem.learning.v1"
+LEARNING_OPERATIONS = frozenset(
+    {"capabilities", "configure", "assign", "delivery", "outcome", "run", "status", "rollback"}
+)
+
+
+def learning_reply(result: dict) -> dict:
+    """Reject incompatible peers instead of reporting a legacy outcome as learning."""
+    if isinstance(result, dict) and result.get("error"):
+        error = result["error"]
+        code = error.get("code", "learning_refused") if isinstance(error, dict) else str(error)
+        detail = error.get("message", code) if isinstance(error, dict) else result.get("detail", code)
+        raise RuntimeError(f"learning operation refused ({code}): {detail}")
+    if not isinstance(result, dict) or result.get("schema") != LEARNING_SCHEMA:
+        raise RuntimeError("peer does not support unimem.learning.v1")
+    return result
+
+
+def learning_capabilities_reply(result: dict) -> dict:
+    result = learning_reply(result)
+    operations = result.get("operations")
+    if not isinstance(operations, list) or any(not isinstance(operation, str) for operation in operations):
+        raise RuntimeError("peer returned malformed learning capabilities")
+    return result
+
+
+class LearningClient:
+    """Versioned measured-learning operations bound to a memory client's authority."""
+
+    def __init__(self, client: "MemoryClient"):
+        self._client = client
+
+    def capabilities(self) -> dict:
+        return learning_capabilities_reply(self._client._learning_request("capabilities", {}))
+
+    def call(self, operation: str, payload: dict | None = None) -> dict:
+        if operation not in LEARNING_OPERATIONS:
+            raise ValueError("unknown learning operation")
+        if operation == "capabilities":
+            return self.capabilities()
+        request = copy.deepcopy(dict(payload or {}))
+        supported = self.capabilities().get("operations", [])
+        if operation not in supported:
+            raise RuntimeError(f"peer does not support learning {operation}")
+        return learning_reply(self._client._learning_request(operation, request))
+
+    def configure(self, mode: str, **options) -> dict:
+        return self.call("configure", {**options, "mode": mode})
+
+    def assign(self, occasion_id: str, memory_ids: list[str], **options) -> dict:
+        return self.call("assign", {**options, "occasion_id": occasion_id, "memory_ids": memory_ids})
+
+    def delivery(self, occasion_id: str, memory_ids: list[str], **options) -> dict:
+        return self.call("delivery", {**options, "occasion_id": occasion_id, "memory_ids": memory_ids})
+
+    def outcome(self, occasion_id: str, succeeded: bool | None = None, **options) -> dict:
+        body = {**options, "occasion_id": occasion_id}
+        if succeeded is not None:
+            body["succeeded"] = succeeded
+        return self.call("outcome", body)
+
+    def run(self, **options) -> dict:
+        return self.call("run", options)
+
+    def status(self, **options) -> dict:
+        return self.call("status", options)
+
+    def rollback(self, reason: str, **options) -> dict:
+        return self.call("rollback", {**options, "reason": reason})
 
 
 class MemoryClient:
@@ -24,6 +96,7 @@ class MemoryClient:
         prewarm: Callable[[str], object] | None = None,
     ):
         self.root, self.url, self.token, self.agent_id = root, url, token, agent_id
+        self.learning = LearningClient(self)
         self.context = memory_control.scopes({**(context or {}), **({"agent": agent_id} if agent_id else {})})
         if prewarm is not None:
             prewarm("session-start")
@@ -63,6 +136,38 @@ class MemoryClient:
             if not isinstance(result, dict):
                 raise ValueError("gateway response must be an object")
             return result
+
+    @configured
+    def _learning_request(self, operation: str, payload: dict) -> dict:
+        if operation not in LEARNING_OPERATIONS:
+            raise ValueError("unknown learning operation")
+        if not self.url:
+            from unimem.learning import operate
+
+            return operate(self.root, operation, payload, context=self.context, untrusted=bool(self.agent_id))
+        from unimem import offline
+
+        offline.check_url(self.url, "the remote learning API")
+        read = operation in {"capabilities", "status"}
+        endpoint = self.url.rstrip("/") + "/v1/learning/" + operation
+        if read:
+            endpoint += "?" + urllib.parse.urlencode({**payload, "context": self.context}, doseq=True)
+        request = urllib.request.Request(
+            endpoint,
+            data=None if read else json.dumps({**payload, "context": self.context}, allow_nan=False).encode(),
+            method="GET" if read else "POST",
+            headers={"Content-Type": "application/json", "Authorization": "Bearer " + self.token},
+        )
+
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                return None
+
+        with urllib.request.build_opener(NoRedirect()).open(request, timeout=60) as response:
+            raw = read_within(response, 8 * 1024 * 1024, 60)
+            if len(raw) > 8 * 1024 * 1024:
+                raise ValueError("learning response exceeds 8 MiB")
+            return learning_reply(json.loads(raw))
 
     def put_record(self, record) -> dict:
         return self._record_operation("record-put", {"record": record.to_dict()})
@@ -467,27 +572,54 @@ class MemoryClient:
         assurance.record_recall(self.root, result["occasion_id"], [*combined, *rules], result["context"], self.context)
         return result
 
-    def outcome(self, occasion_id: str, succeeded: bool, *, secondary_metrics: dict | None = None) -> bool:
+    def outcome(
+        self,
+        occasion_id: str,
+        succeeded: bool | None = None,
+        *,
+        reward: float | None = None,
+        metrics: dict | None = None,
+        secondary_metrics: dict | None = None,
+    ) -> bool:
+        """Record how the occasion went: `succeeded`, a graded `reward` in [0, 1], or utility `metrics`.
+
+        A graded outcome feeds the reflect policy and the exploration learner at full
+        resolution and the holdout experiment through audited randomized rounding
+        (`unimem.rewards`), locally or through a remote gateway's memory API.
+        """
+        if sum(v is not None for v in (succeeded, reward, metrics)) != 1:
+            raise ValueError("give exactly one of succeeded, reward or metrics")
         occasion_id = self._occasion(occasion_id)
         if self.url:
-            body = {"occasion_id": occasion_id, "succeeded": succeeded}
+            body: dict = {"occasion_id": occasion_id}
+            for key, value in (("succeeded", succeeded), ("reward", reward), ("metrics", metrics)):
+                if value is not None:
+                    body[key] = value
             if secondary_metrics is not None:
                 body["secondary_metrics"] = secondary_metrics
             return self._request("outcome", body)["recorded"]
+        if succeeded is None:
+            return self._graded_outcome(occasion_id, reward, metrics, secondary_metrics)
         from unimem import causal_policy, holdout_io, policy
 
         if not isinstance(succeeded, bool):
             raise ValueError("succeeded must be boolean")
-        if secondary_metrics is not None:
-            from unimem import sycophancy_io
-
-            sycophancy_io.record_metrics(self.root, occasion_id, secondary_metrics)
+        written = holdout_io.record_outcome(self.root, occasion_id, succeeded, secondary_metrics=secondary_metrics)
         policy.outcome(self.root, occasion_id, float(succeeded))
         exploration = causal_policy.record_outcome(self.root, occasion_id, float(succeeded))
-        return (
-            holdout_io.record_outcome(self.root, occasion_id, succeeded, secondary_metrics=secondary_metrics)
-            or exploration
+        return written or exploration
+
+    def _graded_outcome(
+        self, occasion_id: str, reward: float | None, metrics: dict | None, secondary_metrics: dict | None
+    ) -> bool:
+        from unimem import causal_policy, policy, rewards
+
+        out = rewards.record(
+            self.root, occasion_id, reward=reward, metrics=metrics, secondary_metrics=secondary_metrics
         )
+        policy.outcome(self.root, occasion_id, out["reward"])
+        exploration = causal_policy.record_outcome(self.root, occasion_id, out["reward"])
+        return bool(out["recorded"]) or exploration
 
     def check_action(self, tool: str, *, tags: list[str] | None = None) -> None:
         if self.url:

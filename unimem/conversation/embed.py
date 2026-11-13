@@ -15,7 +15,7 @@ from _thread import LockType
 from collections import OrderedDict
 from dataclasses import dataclass
 
-from unimem.configuration import getenv as _configuration_getenv
+from unimem.configuration import setting as _configuration_setting
 from unimem.conversation import store as _store
 
 MODELS = {
@@ -101,7 +101,7 @@ def configured() -> str | None:
 
     Any tag from `unimem.embeddings` is accepted, e.g. ``openai:text-embedding-3-small``.
     """
-    raw = _configuration_getenv("UNIMEM_CONVERSATION_EMBEDDER", DEFAULT).strip()
+    raw = _configuration_setting("UNIMEM_CONVERSATION_EMBEDDER", DEFAULT).strip()
     if raw.lower() in ("", "none", "off", "0"):
         return None
     tag = raw.lower() if raw.lower() in MODELS else canonical(raw)
@@ -119,7 +119,13 @@ def _model(tag: str):
             with _no_progress_bars():
                 try:
                     model = SentenceTransformer(name, device="cpu", local_files_only=True)
-                except Exception:  # noqa: BLE001 - not cached yet: fetch it once
+                except Exception as exc:  # noqa: BLE001 - model runtimes use backend-specific cache errors
+                    from unimem import offline
+
+                    if offline.enabled():
+                        raise offline.OfflineError(
+                            f"offline mode: local embedding model {name!r} is not available in the cache"
+                        ) from exc
                     model = SentenceTransformer(name, device="cpu")
             model.max_seq_length = MAX_SEQ
             _MODELS[tag] = model
